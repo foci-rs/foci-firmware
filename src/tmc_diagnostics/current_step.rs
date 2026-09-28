@@ -222,33 +222,6 @@ where
             let mut encoder_delta = 0i32;
             let mut adc_vm_raw = 0u16;
 
-            if !runtime.restore_phase_advance_now(tmc).await {
-                defmt::warn!("phase advance: failed to restore ABN offset before current step");
-                return handled_current_step(
-                    reply,
-                    CurrentStepReport {
-                        oid,
-                        status: CURRENT_STEP_STATUS_SPI,
-                        torque_target,
-                        flux_target,
-                        duration_ms,
-                        voltage_limit,
-                        torque_before,
-                        torque_during,
-                        torque_after,
-                        flux_during,
-                        iq_during,
-                        id_during,
-                        uq_limited,
-                        ud_limited,
-                        encoder_before,
-                        encoder_after,
-                        encoder_delta,
-                        adc_vm_raw,
-                    },
-                );
-            }
-
             let result: Result<(), RunnerFailure> = async {
                 use foci_tmc4671::registers::*;
 

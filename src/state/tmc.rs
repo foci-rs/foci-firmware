@@ -2,7 +2,7 @@
 //! (TMC_REQUEST_SENDER) stays in the board crate — its Sender type's
 //! generic params bind to the board's RTIC app declaration.
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -227,14 +227,6 @@ pub struct TmcChannelState {
     pub accel_feedforward_decel_gain_permille: AtomicU16,
     /// One-tick feedforward reset request after direction changes.
     pub feedforward_reset: AtomicBool,
-    /// Runtime commutation phase-advance diagnostic enable flag.
-    pub phase_advance: AtomicBool,
-    /// Signed gain in ppm of command velocity reference.
-    pub phase_advance_gain_ppm: AtomicI32,
-    /// Maximum absolute ABN PHI_E advance in electrical-angle counts.
-    pub phase_advance_max_counts: AtomicU16,
-    /// TMC velocity-reference deadband in counts.
-    pub phase_advance_deadband: AtomicU16,
     /// PID error-sum clear request after motion drains.
     pub pid_error_sums_clear: AtomicBool,
     /// Configurable PID velocity limit.
@@ -282,12 +274,12 @@ pub struct TmcChannelState {
     /// call sites).
     pub cancel_requested: AtomicBool,
     /// A commissioning phase is driving the step queue and wants the
-    /// planner-referenced control paths (feedforward, phase advance, fast
-    /// control period) live exactly as production runs them. Set and
+    /// planner-referenced control paths (feedforward, fast control period)
+    /// live exactly as production runs them. Set and
     /// cleared only by the stimulus facet; read by the control tick.
     pub commission_stimulus_active: AtomicBool,
     /// Mirror written by the control tick after every pass: true when no
-    /// feedforward or phase-advance surface is left applied on the chip.
+    /// feedforward surface is left applied on the chip.
     /// A stimulus phase polls this after clearing the opt-in.
     pub feedforward_surfaces_idle: AtomicBool,
     /// `motor_armed` as it was when a commissioning stimulus armed the step
@@ -383,10 +375,6 @@ impl TmcChannelState {
             accel_feedforward_accel_gain_permille: AtomicU16::new(1000),
             accel_feedforward_decel_gain_permille: AtomicU16::new(1000),
             feedforward_reset: AtomicBool::new(false),
-            phase_advance: AtomicBool::new(false),
-            phase_advance_gain_ppm: AtomicI32::new(0),
-            phase_advance_max_counts: AtomicU16::new(0),
-            phase_advance_deadband: AtomicU16::new(16),
             pid_error_sums_clear: AtomicBool::new(false),
             velocity_limit_cfg: AtomicU32::new(500_000),
             voltage_limit_cfg: AtomicU32::new(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT),
@@ -473,10 +461,6 @@ impl TmcChannelState {
         self.accel_feedforward_decel_gain_permille
             .store(1000, Relaxed);
         self.feedforward_reset.store(false, Relaxed);
-        self.phase_advance.store(false, Relaxed);
-        self.phase_advance_gain_ppm.store(0, Relaxed);
-        self.phase_advance_max_counts.store(0, Relaxed);
-        self.phase_advance_deadband.store(16, Relaxed);
         self.pid_error_sums_clear.store(false, Relaxed);
         self.velocity_limit_cfg.store(500_000, Relaxed);
         self.voltage_limit_cfg
@@ -916,7 +900,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 160);
+        assert_eq!(size_of::<TmcChannelState>(), 148);
     }
 
     #[test]
@@ -999,22 +983,6 @@ mod tests {
     #[test]
     fn tmc_channel_rejects_out_of_range_index() {
         assert!(tmc_channel(MAX_TMC_CHANNELS as u8).is_none());
-    }
-
-    #[test]
-    fn reset_clears_phase_advance_state() {
-        let channel = TmcChannelState::new();
-        channel.phase_advance.store(true, Relaxed);
-        channel.phase_advance_gain_ppm.store(60_000, Relaxed);
-        channel.phase_advance_max_counts.store(64, Relaxed);
-        channel.phase_advance_deadband.store(4, Relaxed);
-
-        channel.reset();
-
-        assert!(!channel.phase_advance.load(Relaxed));
-        assert_eq!(channel.phase_advance_gain_ppm.load(Relaxed), 0);
-        assert_eq!(channel.phase_advance_max_counts.load(Relaxed), 0);
-        assert_eq!(channel.phase_advance_deadband.load(Relaxed), 16);
     }
 
     #[test]

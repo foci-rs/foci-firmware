@@ -358,39 +358,6 @@ pub fn tmc_set_accel_feedforward(
     );
 }
 
-/// Enable or disable runtime commutation phase advance from a live command.
-#[klipper_command]
-pub fn tmc_set_phase_advance(
-    ctx: &mut dyn ShutdownRecovery,
-    oid: u8,
-    enable: u8,
-    gain_ppm: i32,
-    max_counts: u16,
-    deadband: u16,
-) {
-    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
-        return;
-    };
-    state.phase_advance.store(enable != 0, Ordering::Relaxed);
-    state
-        .phase_advance_gain_ppm
-        .store(gain_ppm, Ordering::Relaxed);
-    state.phase_advance_max_counts.store(
-        max_counts.min(crate::tmc::PHASE_ADVANCE_MAX_SAFE_COUNTS),
-        Ordering::Relaxed,
-    );
-    state
-        .phase_advance_deadband
-        .store(deadband, Ordering::Relaxed);
-    defmt::info!(
-        "Phase advance: {} gain_ppm={} max_counts={} deadband={}",
-        enable != 0,
-        gain_ppm,
-        max_counts,
-        deadband
-    );
-}
-
 /// Set PID velocity limit from host config.
 ///
 /// Caps position PID output to prevent integrator-driven velocity runaway.

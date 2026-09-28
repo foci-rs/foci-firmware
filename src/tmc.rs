@@ -53,35 +53,6 @@ pub struct AccelFeedforwardGains {
     pub decel_permille: u16,
 }
 
-/// Runtime configuration for velocity-proportional commutation phase advance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct PhaseAdvanceConfig {
-    /// Whether runtime phase advance is enabled.
-    pub enable: bool,
-    /// Signed gain in parts per million of TMC velocity-reference counts.
-    pub gain_ppm: i32,
-    /// Maximum absolute electrical-angle advance in ABN PHI_E counts.
-    pub max_counts: u16,
-    /// Absolute TMC velocity-reference counts below which output is zero.
-    pub deadband_velocity: u16,
-}
-
-/// Computed runtime phase-advance output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct PhaseAdvanceOutput {
-    /// Signed electrical-angle advance in ABN PHI_E counts.
-    pub counts: i16,
-    /// Feature was configured enabled.
-    pub enabled: bool,
-    /// Output was zeroed by the velocity deadband.
-    pub deadbanded: bool,
-    /// Output reached `max_counts`.
-    pub clamped: bool,
-}
-
-/// Maximum phase-advance cap accepted by firmware for live diagnostics.
-pub const PHASE_ADVANCE_MAX_SAFE_COUNTS: u16 = 512;
-
 /// Axis selected by the scalar current-step diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CurrentStepAxis {
@@ -232,16 +203,6 @@ pub enum TmcRequestKind {
         accel_gain_permille: u16,
         /// Gain in permille applied while step intervals grow.
         decel_gain_permille: u16,
-    },
-    /// Enable or disable runtime commutation phase advance in the 1 ms tick loop.
-    SetPhaseAdvance {
-        enable: bool,
-        /// Signed gain in ppm of the command velocity reference.
-        gain_ppm: i32,
-        /// Maximum absolute advance in ABN PHI_E counts.
-        max_counts: u16,
-        /// Absolute TMC velocity-reference deadband in counts.
-        deadband: u16,
     },
     /// Set operational PIDOUT_UQ_UD_LIMITS for authority diagnostics.
     SetVoltageLimit { voltage_limit: u32 },
@@ -524,25 +485,6 @@ pub fn tmc_set_accel_feedforward(
             enable,
             accel_gain_permille,
             decel_gain_permille,
-        },
-    )
-}
-
-/// Build a `SetPhaseAdvance` request.
-pub fn tmc_set_phase_advance(
-    channel: u8,
-    enable: bool,
-    gain_ppm: i32,
-    max_counts: u16,
-    deadband: u16,
-) -> TmcRequest {
-    TmcRequest::new(
-        channel,
-        TmcRequestKind::SetPhaseAdvance {
-            enable,
-            gain_ppm,
-            max_counts,
-            deadband,
         },
     )
 }
@@ -871,62 +813,6 @@ fn product_leq(factors: &[u64], limit: u128) -> bool {
         .is_some()
 }
 
-/// Compute a bounded runtime commutation phase advance.
-///
-/// `target_velocity` is the command-derived TMC velocity reference in
-/// electrical-angle counts per PWM period, using the same sign convention as
-/// `PID_VELOCITY_OFFSET`.
-pub fn compute_phase_advance_counts(
-    target_velocity: i32,
-    config: PhaseAdvanceConfig,
-) -> PhaseAdvanceOutput {
-    if !config.enable || config.gain_ppm == 0 || config.max_counts == 0 {
-        return PhaseAdvanceOutput {
-            counts: 0,
-            enabled: config.enable,
-            deadbanded: false,
-            clamped: false,
-        };
-    }
-
-    if target_velocity.unsigned_abs() <= u32::from(config.deadband_velocity) {
-        return PhaseAdvanceOutput {
-            counts: 0,
-            enabled: true,
-            deadbanded: true,
-            clamped: false,
-        };
-    }
-
-    let raw = i64::from(target_velocity) * i64::from(config.gain_ppm);
-    let scaled = raw / 1_000_000;
-    let limit = i64::from(
-        config
-            .max_counts
-            .min(PHASE_ADVANCE_MAX_SAFE_COUNTS)
-            .min(i16::MAX as u16),
-    );
-    let clamped = scaled.clamp(-limit, limit);
-    let limit_ppm = limit.saturating_mul(1_000_000);
-
-    PhaseAdvanceOutput {
-        counts: clamped as i16,
-        enabled: true,
-        deadbanded: false,
-        clamped: raw.unsigned_abs() > limit_ppm as u64,
-    }
-}
-
-/// Pack a runtime phase advance into ABN_DECODER_PHI_E_PHI_M_OFFSET.
-///
-/// The lower halfword is PHI_M and is preserved. The upper halfword is PHI_E
-/// and receives the signed wrapping advance.
-pub fn pack_abn_phi_offset(base_register: u32, phase_advance_counts: i16) -> u32 {
-    let base = foci_tmc4671::registers::AbnDecoderPhiOffset::from_bits(base_register);
-    base.with_phi_e_offset(base.phi_e_offset().wrapping_add(phase_advance_counts))
-        .into_bits()
-}
-
 /// Compute the diagnostic acceleration feedforward torque offset.
 ///
 /// The input `interval_add` is Klipper's `queue_step add`: the interval change
@@ -1246,25 +1132,6 @@ mod tests {
     }
 
     #[test]
-    fn phase_advance_uses_planner_command_rate_independent_of_encoder_ppr() {
-        let counts = |scale| {
-            compute_phase_advance_counts(
-                compute_planner_command_velocity_reference(scale, 1, false),
-                PhaseAdvanceConfig {
-                    enable: true,
-                    gain_ppm: 500_000,
-                    max_counts: 10,
-                    deadband_velocity: 0,
-                },
-            )
-            .counts
-        };
-
-        assert_eq!(counts(planner_scale(500)), 1);
-        assert_eq!(counts(planner_scale(4_000)), 1);
-    }
-
-    #[test]
     fn velocity_offset_dir_high_matches_tmc_negative_velocity() {
         let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(272_160, 1);
         let offset = compute_planner_command_velocity_reference(scale, 420, true);
@@ -1396,133 +1263,6 @@ mod tests {
     fn clamp_zero_command_forces_zero_offset() {
         assert_eq!(clamp_velocity_offset_rpm(4_000, 0, 3), (0, true));
         assert_eq!(clamp_velocity_offset_rpm(0, 0, 3), (0, false));
-    }
-
-    #[test]
-    fn phase_advance_is_zero_when_disabled_or_idle() {
-        let config = PhaseAdvanceConfig {
-            enable: false,
-            gain_ppm: 60_000,
-            max_counts: 64,
-            deadband_velocity: 16,
-        };
-        let output = compute_phase_advance_counts(1080, config);
-        assert_eq!(output.counts, 0);
-        assert!(!output.enabled);
-
-        let config = PhaseAdvanceConfig {
-            enable: true,
-            gain_ppm: 60_000,
-            max_counts: 64,
-            deadband_velocity: 16,
-        };
-        let output = compute_phase_advance_counts(0, config);
-        assert_eq!(output.counts, 0);
-        assert!(output.enabled);
-        assert!(output.deadbanded);
-    }
-
-    #[test]
-    fn phase_advance_applies_deadband() {
-        let config = PhaseAdvanceConfig {
-            enable: true,
-            gain_ppm: 60_000,
-            max_counts: 64,
-            deadband_velocity: 16,
-        };
-        let output = compute_phase_advance_counts(15, config);
-        assert_eq!(output.counts, 0);
-        assert!(output.deadbanded);
-    }
-
-    #[test]
-    fn phase_advance_scales_and_clamps_signed_velocity() {
-        let config = PhaseAdvanceConfig {
-            enable: true,
-            gain_ppm: 60_000,
-            max_counts: 64,
-            deadband_velocity: 16,
-        };
-        let positive = compute_phase_advance_counts(1080, config);
-        assert_eq!(positive.counts, 64);
-        assert!(positive.clamped);
-
-        let negative = compute_phase_advance_counts(-1080, config);
-        assert_eq!(negative.counts, -64);
-        assert!(negative.clamped);
-    }
-
-    #[test]
-    fn phase_advance_negative_gain_flips_sign() {
-        let config = PhaseAdvanceConfig {
-            enable: true,
-            gain_ppm: -60_000,
-            max_counts: 64,
-            deadband_velocity: 16,
-        };
-        let output = compute_phase_advance_counts(1080, config);
-        assert_eq!(output.counts, -64);
-        assert!(output.clamped);
-    }
-
-    #[test]
-    fn phase_advance_zero_gain_or_cap_is_safe_noop() {
-        let zero_gain = PhaseAdvanceConfig {
-            enable: true,
-            gain_ppm: 0,
-            max_counts: 64,
-            deadband_velocity: 16,
-        };
-        let output = compute_phase_advance_counts(1080, zero_gain);
-        assert_eq!(output.counts, 0);
-        assert!(output.enabled);
-        assert!(!output.clamped);
-
-        let zero_cap = PhaseAdvanceConfig {
-            enable: true,
-            gain_ppm: 60_000,
-            max_counts: 0,
-            deadband_velocity: 16,
-        };
-        let output = compute_phase_advance_counts(1080, zero_cap);
-        assert_eq!(output.counts, 0);
-        assert!(output.enabled);
-        assert!(!output.clamped);
-    }
-
-    #[test]
-    fn phase_advance_caps_to_firmware_safety_limit() {
-        let config = PhaseAdvanceConfig {
-            enable: true,
-            gain_ppm: 1_000_000,
-            max_counts: 10_000,
-            deadband_velocity: 0,
-        };
-        let output = compute_phase_advance_counts(10_000, config);
-        assert_eq!(output.counts, PHASE_ADVANCE_MAX_SAFE_COUNTS as i16);
-        assert!(output.clamped);
-    }
-
-    #[test]
-    fn phase_advance_deadband_boundary_is_inclusive() {
-        let config = PhaseAdvanceConfig {
-            enable: true,
-            gain_ppm: 60_000,
-            max_counts: 64,
-            deadband_velocity: 16,
-        };
-        let output = compute_phase_advance_counts(16, config);
-        assert_eq!(output.counts, 0);
-        assert!(output.deadbanded);
-    }
-
-    #[test]
-    fn pack_abn_phi_offset_preserves_phi_m_and_wraps_phi_e() {
-        assert_eq!(pack_abn_phi_offset(0x0000_0000, 64), 0x0040_0000);
-        assert_eq!(pack_abn_phi_offset(0xABCD_1234, 0), 0xABCD_1234);
-        assert_eq!(pack_abn_phi_offset(0x0000_ABCD, 64), 0x0040_ABCD);
-        assert_eq!(pack_abn_phi_offset(0xFFFF_0000, 10), 0x0009_0000);
-        assert_eq!(pack_abn_phi_offset(0x0000_5000, -1), 0xFFFF_5000);
     }
 
     #[test]

@@ -386,10 +386,6 @@ where
                 }
 
                 if let Some(post_action) = runtime.prepare_enable_request(board.tmc_state()) {
-                    if !runtime.restore_phase_advance_now(tmc).await {
-                        defmt::warn!("phase advance: failed to restore ABN offset before arm");
-                        return TmcControlRequestOutcome::skip_tick_tail();
-                    }
                     if let Err(error) = board.arm_motor(runtime, tmc, post_action).await {
                         defmt::error!("Motor enable rejected by sentinel verify: {}", error);
                         board.disarm_motor(runtime, tmc).await;
@@ -403,18 +399,8 @@ where
                 let actions = runtime.prepare_disable_request();
                 board.apply_stepper_actions(actions);
 
-                let phase_advance_restored = runtime.restore_phase_advance_now(tmc).await;
-                if !phase_advance_restored {
-                    defmt::warn!("phase advance: failed to restore ABN offset before disarm");
-                }
-
                 board.disarm_motor(runtime, tmc).await;
                 board.emit_motor_disarm_event();
-
-                if !phase_advance_restored {
-                    runtime.take_commission_engine();
-                    return TmcControlRequestOutcome::skip_tick_tail();
-                }
 
                 runtime.take_commission_engine_after_handled_stop();
                 defmt::info!("TMC4671 motor disabled");
@@ -574,25 +560,6 @@ where
             );
         }
         TmcRequest {
-            kind:
-                TmcRequestKind::SetPhaseAdvance {
-                    enable,
-                    gain_ppm,
-                    max_counts,
-                    deadband,
-                },
-            ..
-        } => {
-            defmt::info!(
-                "Phase advance: {} gain_ppm={} max_counts={} deadband={} \
-                (via queue)",
-                enable,
-                gain_ppm,
-                max_counts,
-                deadband
-            );
-        }
-        TmcRequest {
             kind: TmcRequestKind::Commission { oid, profile },
             ..
         } => {
@@ -737,19 +704,6 @@ where
                     Ok(v) => v,
                     Err(outcome) => return outcome,
                 };
-            if !runtime.restore_phase_advance_now(tmc).await {
-                defmt::warn!("phase advance: failed to restore ABN offset before tune");
-                board
-                    .tmc_state()
-                    .commission_in_flight
-                    .store(false, core::sync::atomic::Ordering::Relaxed);
-                emit_commission_phase_failure::<Board, Spi>(
-                    board,
-                    oid,
-                    CommissionError::Spi.status_code(),
-                );
-                return TmcControlRequestOutcome::skip_tick_tail();
-            }
             let entry_snapshot = match build_entry_snapshot::<Spi, Board>(board, oid) {
                 Ok(snapshot) => snapshot,
                 Err(outcome) => return outcome,
@@ -1620,7 +1574,6 @@ mod tests {
     use core::sync::atomic::Ordering::Relaxed;
 
     use embedded_hal_async::spi::{ErrorKind, ErrorType, Operation};
-    use foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET;
 
     use crate::autotune::CommissionProfile;
     use crate::calibration::CalibrationError;
@@ -2632,48 +2585,6 @@ mod tests {
             Some(EngineKind::Calibrate)
         );
         assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
-    }
-
-    #[fixture_test]
-    async fn tune_restore_phase_advance_failure_emits_spi_failure() {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_calibrated_for_test(true);
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-        let mut board = RecordingBoard::skip_tick_tail();
-        tmc_channel0()
-            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-            .expect("valid motion scale");
-        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
-        let mut tmc = Tmc4671Spi::new(
-            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
-        );
-
-        let outcome = handle_tmc_control_request(
-            tune_request(),
-            TmcPreRequestDisposition::ContinueRequest,
-            &mut runtime,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-
-        // Production routes the breakaway campaign, so the workflow envelope is
-        // emitted before the phase-advance restore runs; its failure then adds
-        // the commission-phase failure. Both builds emit the same two replies.
-        assert_eq!(board.replies.len(), 2);
-        assert_eq!(board.reply_channels, std::vec![0, 0]);
-        assert!(matches!(
-            board.replies[0],
-            ReplyPayload::CommissioningWorkflowPlan { .. }
-        ));
-        assert_commission_phase_failure(
-            board.replies.get(1).unwrap(),
-            4,
-            CommissionError::Spi.status_code(),
-        );
-        assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
-        assert!(runtime.phase_advance_active_for_test());
     }
 
     #[fixture_test]

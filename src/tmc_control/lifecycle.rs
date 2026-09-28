@@ -149,25 +149,20 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
 ///
 /// Drops any runtime-owned homing state (stall detector, clamp retry
 /// budget) and clears the channel's homing latch/clamp flags, then
-/// de-energizes the motor through [`disarm_motor`], then restores phase
-/// advance, then stops any active commissioning engine. A retained
-/// breakaway campaign is completed only after both safe-state operations
-/// succeed.
+/// de-energizes the motor through [`disarm_motor`], then stops any active
+/// commissioning engine. A retained breakaway campaign is completed only
+/// after the disarm.
 ///
 /// Both boards' shutdown loops funnel through this shared helper, so a
 /// shutdown landing mid-homing clears the detector synchronously on either
 /// board; the homing tick's state-0 self-heal remains the backstop for a
 /// config reset.
-///
-/// Returns `true` when the phase-advance restore either was unnecessary or
-/// succeeded. Returns `false` when restore failed; callers should keep retrying
-/// this helper while shutdown remains active.
 pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
     runtime: &mut crate::tmc_control::TmcControlRuntime,
     backend: &mut B,
     tmc: &'static crate::state::tmc::TmcChannelState,
     stepper: &'static crate::state::stepper::StepperChannelState,
-) -> bool {
+) {
     // Halt the step-queue stimulus first, before anything below clears
     // `motor_armed` or writes a safe-state register. Clearing `motor_armed`
     // stops the step-timer ISR from emitting further steps, but does not
@@ -204,16 +199,7 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
         .store(false, core::sync::atomic::Ordering::Relaxed);
     let mut state = runtime.dispatch_state(tmc, stepper);
     disarm_motor(backend, &mut state).await;
-    let phase_advance_restored = runtime.restore_phase_advance_via_backend(backend).await;
-    if !phase_advance_restored {
-        defmt::warn!("phase advance: failed to restore ABN offset on shutdown");
-    }
-    if phase_advance_restored {
-        runtime.take_commission_engine_after_handled_stop();
-    } else {
-        runtime.take_commission_engine();
-    }
-    phase_advance_restored
+    runtime.take_commission_engine_after_handled_stop();
 }
 
 #[derive(Clone, Copy)]
@@ -1112,11 +1098,10 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn shutdown_safe_state_restores_phase_advance_and_disarms() {
+    async fn shutdown_safe_state_disarms() {
         use core::sync::atomic::Ordering;
 
         let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
         let mut backend = MockBackend::new();
         {
             let state = runtime.dispatch_state(
@@ -1128,7 +1113,7 @@ mod tests {
         }
         tmc_state().motor_armed.store(true, Ordering::Relaxed);
 
-        let complete = apply_shutdown_safe_state(
+        apply_shutdown_safe_state(
             &mut runtime,
             &mut backend,
             crate::state::tmc::tmc_channel0(),
@@ -1136,50 +1121,6 @@ mod tests {
         )
         .await;
 
-        assert!(complete);
-        assert!(!runtime.phase_advance_active_for_test());
-        assert_eq!(runtime.phase_advance_last_register_for_test(), 0x1111_2222);
-        assert_eq!(
-            backend
-                .registers
-                .get(&foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
-            Some(&0x1111_2222)
-        );
-        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-        assert!(!runtime.is_calibrated());
-        assert!(!runtime.is_motor_enabled());
-    }
-
-    #[fixture_test]
-    async fn shutdown_safe_state_reports_incomplete_when_phase_restore_fails() {
-        use core::sync::atomic::Ordering;
-
-        let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-        let mut backend = MockBackend::new();
-        backend.fail_on_write =
-            Some(foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
-        {
-            let state = runtime.dispatch_state(
-                crate::state::tmc::tmc_channel0(),
-                crate::state::stepper::stepper_channel0(),
-            );
-            *state.calibrated = true;
-            *state.motor_enabled = true;
-        }
-        tmc_state().motor_armed.store(true, Ordering::Relaxed);
-
-        let complete = apply_shutdown_safe_state(
-            &mut runtime,
-            &mut backend,
-            crate::state::tmc::tmc_channel0(),
-            crate::state::stepper::stepper_channel0(),
-        )
-        .await;
-
-        assert!(!complete);
-        assert!(runtime.phase_advance_active_for_test());
-        assert_eq!(runtime.phase_advance_last_register_for_test(), 0x3333_4444);
         assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
         assert!(!runtime.is_calibrated());
         assert!(!runtime.is_motor_enabled());
@@ -1191,7 +1132,6 @@ mod tests {
 
         let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
         runtime.set_commission_engine(breakaway_campaign_engine());
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
         let mut backend = MockBackend::new();
         backend.enable_pin = true;
         {
@@ -1217,7 +1157,6 @@ mod tests {
         }));
 
         assert!(reset.is_err(), "completion must reach the reset injection");
-        assert!(!runtime.phase_advance_active_for_test());
         assert!(!backend.enable_pin, "safe disarm must precede completion");
         assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
         assert!(
@@ -1232,23 +1171,23 @@ mod tests {
             })
         );
 
-        assert!(pollster::block_on(apply_shutdown_safe_state(
+        pollster::block_on(apply_shutdown_safe_state(
             &mut runtime,
             &mut backend,
             crate::state::tmc::tmc_channel0(),
             crate::state::stepper::stepper_channel0(),
-        )));
+        ));
         assert!(!runtime.is_commission_active());
     }
 
     #[test]
-    fn apply_shutdown_safe_state_lowers_gpio_before_phase_advance_write() {
+    fn apply_shutdown_safe_state_lowers_gpio_before_safe_state_writes() {
         pollster::block_on(async {
+            use crate::commission_dispatch::test_support::SpiOp;
+
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
-
             let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
-            runtime.set_phase_advance_for_test(true, 0, 0);
 
             apply_shutdown_safe_state(
                 &mut runtime,
@@ -1258,32 +1197,21 @@ mod tests {
             )
             .await;
 
-            let mut enable_pin_false_index = None;
-            let mut phase_advance_write_index = None;
-            for (i, op) in backend.spi_log.iter().enumerate() {
-                match op {
-                    crate::commission_dispatch::test_support::SpiOp::EnablePin(false)
-                        if enable_pin_false_index.is_none() =>
-                    {
-                        enable_pin_false_index = Some(i);
-                    }
-                    crate::commission_dispatch::test_support::SpiOp::Write(addr, _)
-                        if *addr
-                            == foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr() =>
-                    {
-                        phase_advance_write_index.get_or_insert(i);
-                    }
-                    _ => {}
-                }
-            }
-
-            let enable_pin_false_index =
-                enable_pin_false_index.expect("EnablePin(false) must be logged");
-            let phase_advance_write_index = phase_advance_write_index
-                .expect("phase-advance write must be logged when phase_advance_was_active");
+            let enable_pin_false_index = backend
+                .spi_log
+                .iter()
+                .position(|op| matches!(op, SpiOp::EnablePin(false)))
+                .expect("EnablePin(false) must be logged");
+            let first_write_index = backend
+                .spi_log
+                .iter()
+                .position(|op| matches!(op, SpiOp::Write(..)))
+                .expect("disarm must write the safe-state registers");
             assert!(
-                enable_pin_false_index < phase_advance_write_index,
-                "GPIO must be lowered before the phase-advance SPI write: enable_pin_false_index={enable_pin_false_index}, phase_advance_write_index={phase_advance_write_index}"
+                enable_pin_false_index < first_write_index,
+                "GPIO must be lowered before any safe-state SPI write: \
+                 enable_pin_false_index={enable_pin_false_index}, \
+                 first_write_index={first_write_index}"
             );
         });
     }
@@ -1309,38 +1237,6 @@ mod tests {
             tmc.homing_clamp_active.store(false, Relaxed);
             tmc.stall_latched.store(false, Relaxed);
         });
-    }
-
-    #[fixture_test]
-    async fn shutdown_breakaway_cancellation_restore_failure_stays_active() {
-        let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
-        runtime.set_commission_engine(breakaway_campaign_engine());
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-        let mut backend = MockBackend::new();
-        backend.fail_on_write =
-            Some(foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
-        backend.enable_pin = true;
-        crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
-        crate::diagnostic::begin_breakaway_campaign();
-
-        let complete = apply_shutdown_safe_state(
-            &mut runtime,
-            &mut backend,
-            crate::state::tmc::tmc_channel0(),
-            crate::state::stepper::stepper_channel0(),
-        )
-        .await;
-
-        assert!(!complete);
-        assert!(!runtime.is_commission_active());
-        assert!(!backend.enable_pin, "failed restoration must still disarm");
-        assert_eq!(
-            crate::diagnostic::current_breakaway_breadcrumb_for_test(),
-            Some(crate::diagnostic::BreakawayBreadcrumb {
-                checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignInstalled,
-                interrupted: true,
-            })
-        );
     }
 
     #[fixture_test]

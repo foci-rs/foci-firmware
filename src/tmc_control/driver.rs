@@ -155,7 +155,6 @@ pub struct ChannelDriver {
     poll_driver: CommissionPollDriver,
     reset_for_fast: bool,
     reset_for_maintenance: bool,
-    last_command_velocity_reference: i32,
     stimulus_restore_attempts: u8,
     /// Sequence number for commission trace engine events.
     pub commission_trace_engine_seq: u32,
@@ -185,7 +184,6 @@ impl ChannelDriver {
             poll_driver: CommissionPollDriver::new(),
             reset_for_fast: false,
             reset_for_maintenance: false,
-            last_command_velocity_reference: 0,
             stimulus_restore_attempts: 0,
             commission_trace_engine_seq: 0,
             #[cfg(test)]
@@ -379,9 +377,9 @@ impl ChannelDriver {
             return UnitOutcome::Shutdown(ShutdownReason::PendingConfigApplyFailed);
         }
         let reset = self.take_reset(tmc_state, true);
-        self.last_command_velocity_reference =
-            self.runtime
-                .command_velocity_reference(refs, ctx.homing_active, reset);
+        let _ = self
+            .runtime
+            .command_velocity_reference(refs, ctx.homing_active, reset);
         if self
             .runtime
             .apply_feedforward_tick(
@@ -429,15 +427,7 @@ impl ChannelDriver {
         {
             defmt::warn!("TMC slow feedforward tick failed");
         }
-        self.runtime
-            .apply_phase_and_position_tick(
-                backend.tmc_spi(),
-                refs,
-                self.last_command_velocity_reference,
-                homing_active,
-                reset,
-            )
-            .await;
+        self.runtime.publish_feedforward_surfaces_idle(refs);
         let homing = self
             .runtime
             .apply_slow_channel_maintenance_tick(
@@ -501,7 +491,8 @@ impl ChannelDriver {
         if self.runtime.is_restore_pending() {
             tmc_state.commission_stimulus_active.store(false, Relaxed);
             if self.runtime.feedforward_restoration_pending() {
-                self.apply_stimulus_ticks(backend, &ctx).await;
+                self.carry_feedforward_ticks_while_commissioning(backend, &ctx)
+                    .await;
                 if self.runtime.feedforward_restoration_pending() {
                     self.stimulus_restore_attempts =
                         self.stimulus_restore_attempts.saturating_add(1);
@@ -579,7 +570,8 @@ impl ChannelDriver {
         if tmc_state.commission_stimulus_active.load(Relaxed)
             || self.runtime.feedforward_restoration_pending()
         {
-            self.apply_stimulus_ticks(backend, &ctx).await;
+            self.carry_feedforward_ticks_while_commissioning(backend, &ctx)
+                .await;
         }
         let driver_action = match self.poll_driver.classify(&poll, ctx.now_us) {
             Ok(action) => action,
@@ -636,22 +628,19 @@ impl ChannelDriver {
         outcome
     }
 
-    /// Run the feedforward and phase-advance ticks a commissioning stimulus
-    /// depends on. The scheduler hands a Commissioning-mode channel neither
-    /// the fast nor the maintenance unit, so while a phase drives the step
-    /// queue the commission unit has to carry those ticks itself, at the
-    /// engine's poll cadence, and keep carrying them after the opt-in
-    /// clears until every applied surface is restored.
-    async fn apply_stimulus_ticks<B>(&mut self, backend: &mut B, ctx: &DriveCtx<'_>)
-    where
+    async fn carry_feedforward_ticks_while_commissioning<B>(
+        &mut self,
+        backend: &mut B,
+        ctx: &DriveCtx<'_>,
+    ) where
         B: CommissioningBackend + CommissionTmcSpiAccess + CommissionTmcStateAccess,
     {
         let tmc_state = backend.tmc_state();
         let refs = self.refs(tmc_state);
         let reset = self.take_reset(tmc_state, true);
-        self.last_command_velocity_reference =
-            self.runtime
-                .command_velocity_reference(refs, ctx.homing_active, reset);
+        let _ = self
+            .runtime
+            .command_velocity_reference(refs, ctx.homing_active, reset);
         if self
             .runtime
             .apply_feedforward_tick(
@@ -667,15 +656,7 @@ impl ChannelDriver {
         {
             defmt::warn!("stimulus feedforward tick failed");
         }
-        self.runtime
-            .apply_phase_and_position_tick(
-                backend.tmc_spi(),
-                refs,
-                self.last_command_velocity_reference,
-                ctx.homing_active,
-                reset,
-            )
-            .await;
+        self.runtime.publish_feedforward_surfaces_idle(refs);
     }
 }
 
@@ -727,8 +708,7 @@ mod tests {
     use foci_firmware_macros::fixture_test;
     use foci_tmc4671::CHIP_ID;
     use foci_tmc4671::registers::{
-        ABN_DECODER_PHI_E_PHI_M_OFFSET, PID_TORQUE_FLUX_OFFSET, PID_VELOCITY_OFFSET, STATUS_FLAGS,
-        STATUS_MASK,
+        PID_TORQUE_FLUX_OFFSET, PID_VELOCITY_OFFSET, STATUS_FLAGS, STATUS_MASK,
     };
     use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -977,7 +957,7 @@ mod tests {
 
     #[test]
     fn maintenance_obligations_are_invalidated_by_each_audited_field() {
-        let cases: [MaintenanceObligationCase; 10] = [
+        let cases: [MaintenanceObligationCase; 9] = [
             ("driver.reset_for_maintenance", |driver| {
                 driver.reset_for_maintenance = true;
             }),
@@ -1002,9 +982,6 @@ mod tests {
                 driver
                     .runtime
                     .set_torque_flux_offset_was_active_for_test(true);
-            }),
-            ("runtime.phase_advance_was_active", |driver| {
-                driver.runtime.set_phase_advance_for_test(true, 0, 0);
             }),
             ("runtime.stall_detector", |driver| {
                 driver.runtime.arm_stall_detector_for_test(1, 1, 1);
@@ -1031,7 +1008,7 @@ mod tests {
 
     #[test]
     fn maintenance_obligations_ignore_passive_caches_and_configuration() {
-        let cases: [MaintenanceObligationCase; 7] = [
+        let cases: [MaintenanceObligationCase; 6] = [
             ("runtime.applied_velocity_offset", |driver| {
                 driver.runtime.set_applied_velocity_offset_for_test(Some(1));
             }),
@@ -1039,11 +1016,6 @@ mod tests {
                 driver
                     .runtime
                     .set_applied_torque_flux_offset_for_test(Some(1));
-            }),
-            ("runtime.phase_advance register caches", |driver| {
-                driver
-                    .runtime
-                    .set_phase_advance_for_test(false, 0x1111_2222, 0x3333_4444);
             }),
             ("runtime.stored_gains", |driver| {
                 driver
@@ -1598,9 +1570,6 @@ mod tests {
         let tmc_state = crate::state::tmc::tmc_channel0();
         tmc_state.commission_stimulus_active.store(true, Relaxed);
         rig.driver.runtime.set_feedforward_was_active(true);
-        rig.driver
-            .runtime
-            .set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
         let writes_before = rig.spi().writes.len();
 
         let outcome = rig.drive(UnitClass::Restore).await;
@@ -1615,7 +1584,6 @@ mod tests {
         assert!(!tmc_state.commission_stimulus_active.load(Relaxed));
         let tail = &rig.spi().writes[writes_before..];
         assert!(tail.contains(&(PID_VELOCITY_OFFSET.addr(), 0)));
-        assert!(tail.contains(&(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr(), 0x1111_2222)));
         assert!(!rig.driver.runtime.feedforward_restoration_pending());
         assert!(tmc_state.feedforward_surfaces_idle.load(Relaxed));
         assert!(
@@ -1630,15 +1598,13 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn restore_branch_holds_the_terminal_while_the_abn_restore_keeps_failing() {
+    async fn restore_branch_holds_the_terminal_while_the_velocity_offset_restore_keeps_failing() {
         let mut rig = terminal_rig(
             RuntimeMockSpi::default()
                 .echo_writes()
-                .fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
+                .fail_writes_to(PID_VELOCITY_OFFSET.addr()),
         );
-        rig.driver
-            .runtime
-            .set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        rig.driver.runtime.set_feedforward_was_active(true);
 
         for attempt in 1..STIMULUS_RESTORE_ATTEMPT_LIMIT {
             let outcome = rig.drive(UnitClass::Restore).await;
@@ -1663,10 +1629,10 @@ mod tests {
             rig.spi()
                 .write_attempts
                 .iter()
-                .filter(|(addr, _)| *addr == ABN_DECODER_PHI_E_PHI_M_OFFSET.addr())
+                .filter(|(addr, _)| *addr == PID_VELOCITY_OFFSET.addr())
                 .count()
                 >= usize::from(STIMULUS_RESTORE_ATTEMPT_LIMIT - 1),
-            "every restore drive retried the ABN base write"
+            "every restore drive retried the velocity offset clear"
         );
 
         let outcome = rig.drive(UnitClass::Restore).await;

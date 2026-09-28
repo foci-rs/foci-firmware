@@ -122,17 +122,10 @@ mod tests {
             cached_accel_torque_offset: 44,
             cached_accel_gain_permille: 55,
             cached_accel_flags: 0xA5,
-            phase_advance_last_counts: -7,
-            phase_advance_last_flags: 0x5A,
-            phase_advance_emit_once: true,
-            phase_advance_write_failed: true,
         };
         let tick = TmcControlTraceTick {
             sample_tick: 123,
             control_tick: 456,
-            phase_advance_due: true,
-            phase_advance_counts: -8,
-            phase_advance_flags: 0xC3,
             status_detail_due: true,
             metadata_due: true,
         };
@@ -157,9 +150,6 @@ mod tests {
         let tick = TmcControlTraceTick {
             sample_tick: 10,
             control_tick: 20,
-            phase_advance_due: false,
-            phase_advance_counts: 0,
-            phase_advance_flags: 0,
             status_detail_due: false,
             metadata_due: false,
         };

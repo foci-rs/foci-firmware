@@ -102,17 +102,6 @@ where
 
             let mut report = empty_voltage_step_report(oid, 0, uq_ext, ud_ext, sample_delay_ms);
 
-            if !runtime.restore_phase_advance_now(tmc).await {
-                defmt::warn!("phase advance: failed to restore ABN offset before voltage step");
-                return handled_voltage_step(empty_voltage_step_report(
-                    oid,
-                    CURRENT_STEP_STATUS_SPI,
-                    uq_ext,
-                    ud_ext,
-                    sample_delay_ms,
-                ));
-            }
-
             let result: Result<(), RunnerFailure> = async {
                 use foci_tmc4671::registers::*;
 

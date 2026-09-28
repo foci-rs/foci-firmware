@@ -144,19 +144,6 @@ where
             let mut ff_torque = 0i16;
             let mut status_flags = 0u32;
 
-            if !runtime.restore_phase_advance_now(tmc).await {
-                defmt::warn!("phase advance: failed to restore ABN offset before torque sample");
-                return handled_torque_sample(empty_current_torque_sample_report(
-                    oid,
-                    TorqueSampleKind::CurrentTorqueSample,
-                    CURRENT_STEP_STATUS_SPI,
-                    target,
-                    flux_target,
-                    sample_delay_ms,
-                    voltage_limit,
-                ));
-            }
-
             let result: Result<(), RunnerFailure> = async {
                 use foci_tmc4671::registers::*;
 

@@ -27,12 +27,12 @@ use crate::tmc_control::test_spi::RuntimeMockSpi;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use foci_tmc4671::registers::{
-    ABN_DECODER_MODE, ABN_DECODER_PHI_E_PHI_M_OFFSET, ABN_DECODER_PPR, CONFIG_BIQUAD_T_ENABLE,
-    MODE_RAMP_MODE_MOTION, PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
-    PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_FLUX_P_FLUX_I,
-    PID_POSITION_ACTUAL, PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, PID_TORQUE_FLUX_LIMITS,
-    PID_TORQUE_FLUX_OFFSET, PID_TORQUE_P_TORQUE_I, PID_VELOCITY_OFFSET, PID_VELOCITY_P_VELOCITY_I,
-    PIDOUT_UQ_UD_LIMITS, STATUS_FLAGS, STEP_WIDTH,
+    ABN_DECODER_MODE, ABN_DECODER_PPR, CONFIG_BIQUAD_T_ENABLE, MODE_RAMP_MODE_MOTION,
+    PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM,
+    PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_FLUX_P_FLUX_I, PID_POSITION_ACTUAL,
+    PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET,
+    PID_TORQUE_P_TORQUE_I, PID_VELOCITY_OFFSET, PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS,
+    STATUS_FLAGS, STEP_WIDTH,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -72,9 +72,9 @@ fn channel_runtime_size_stays_bounded() {
     // The runtime embeds the `CommissioningEngine`, so it tracks that engine's
     // size plus the runtime's own fixed overhead.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_160);
-    #[cfg(not(feature = "trace"))]
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_144);
+    #[cfg(not(feature = "trace"))]
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_128);
 }
 
 #[test]
@@ -1298,55 +1298,6 @@ fn homing_channel_tick_preserves_openffboard_ungated_restore() {
 }
 
 #[test]
-fn homing_channel_tick_restore_failure_blocks_advance() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let stepper_state = crate::state::stepper::StepperChannelState::new();
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-        let raw_spi =
-            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
-        let mut tmc = Tmc4671Spi::new(raw_spi);
-
-        let result = runtime
-            .apply_homing_channel_tick(
-                &mut tmc,
-                TmcControlStateRefs::new(&tmc_state, &stepper_state),
-                &commissioning_runtime_config(),
-                1,
-                due_homing_window(),
-            )
-            .await;
-
-        assert_eq!(result, HomingMaintenanceResult::RetryCurrentState);
-        assert!(runtime.phase_advance_active_for_test());
-        assert!(
-            !tmc.into_inner()
-                .attempted_write_to(PID_POSITION_P_POSITION_I)
-        );
-    });
-}
-
-#[test]
-fn homing_state_1_phase_restore_failure_retries_twice_then_fails_closed() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let stepper_state = crate::state::stepper::StepperChannelState::new();
-        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-        let mut tmc = Tmc4671Spi::new(
-            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
-        );
-
-        assert_eq!(
-            three_homing_state_1_attempts(&mut runtime, &mut tmc, refs).await,
-            expected_exhausted_homing_state_1_budget()
-        );
-    });
-}
-
-#[test]
 fn homing_state_1_outer_gain_failure_retries_twice_then_fails_closed() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
@@ -1783,22 +1734,18 @@ fn homing_state_1_mixed_failure_causes_share_one_retry_budget() {
         let tmc_state = homing_state(&mut runtime);
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-        let mut phase_restore_failure = Tmc4671Spi::new(
-            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
-        );
-
-        let first = homing_tick(&mut runtime, &mut phase_restore_failure, refs, 1).await;
-
         tmc_state.corrupt_outer_gain_for_test(0x8000);
         let mut outer_gain_failure = Tmc4671Spi::new(RuntimeMockSpi::default());
-        let second = homing_tick(&mut runtime, &mut outer_gain_failure, refs, 1).await;
+        let first = homing_tick(&mut runtime, &mut outer_gain_failure, refs, 1).await;
 
         tmc_state.store_outer_gains(crate::pid::test_outer_gains(123, 0, 1152, 0), Relaxed);
         let mut clamp_write_failure = Tmc4671Spi::new(
             RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr()),
         );
-        let third = homing_tick(&mut runtime, &mut clamp_write_failure, refs, 1).await;
+        let second = homing_tick(&mut runtime, &mut clamp_write_failure, refs, 1).await;
+
+        tmc_state.corrupt_outer_gain_for_test(0x8000);
+        let third = homing_tick(&mut runtime, &mut outer_gain_failure, refs, 1).await;
 
         assert_eq!(first, HomingMaintenanceResult::RetryCurrentState);
         assert_eq!(second, HomingMaintenanceResult::RetryCurrentState);
@@ -1850,18 +1797,14 @@ fn homing_state_1_attempts_preserve_state_3_retry_budget() {
             HomingMaintenanceResult::ReadyToAdvance
         );
 
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-        let mut phase_restore_failure = Tmc4671Spi::new(
-            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
-        );
-        assert_eq!(
-            homing_tick(&mut runtime, &mut phase_restore_failure, refs, 1).await,
-            HomingMaintenanceResult::RetryCurrentState
-        );
-
         let mut restore_failure = Tmc4671Spi::new(
             RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr()),
         );
+        assert_eq!(
+            homing_tick(&mut runtime, &mut restore_failure, refs, 1).await,
+            HomingMaintenanceResult::RetryCurrentState
+        );
+
         assert_eq!(
             homing_tick(&mut runtime, &mut restore_failure, refs, 3).await,
             HomingMaintenanceResult::RetryCurrentState
@@ -2754,47 +2697,6 @@ fn torque_flux_offset_runs_under_stimulus_and_restores_after_the_opt_in_clears()
 }
 
 #[test]
-fn phase_advance_runs_under_stimulus_and_restores_the_base_after_the_opt_in_clears() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_planner_velocity_scale_for_test(84_000_000);
-        runtime.set_commission_engine(breakaway_campaign_engine());
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let stepper_state = crate::state::stepper::StepperChannelState::new();
-        tmc_state.commission_stimulus_active.store(true, Relaxed);
-        tmc_state.phase_advance.store(true, Relaxed);
-        tmc_state.phase_advance_gain_ppm.store(1_000, Relaxed);
-        tmc_state.phase_advance_max_counts.store(20, Relaxed);
-        tmc_state.phase_advance_deadband.store(0, Relaxed);
-        let base_register = 0x0100_2345;
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(base_register));
-        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
-
-        runtime
-            .apply_phase_and_position_tick(&mut tmc, refs, 10_000, false, false)
-            .await;
-        assert!(runtime.phase_advance_active_for_test());
-        assert!(runtime.feedforward_restoration_pending());
-        assert!(!tmc_state.feedforward_surfaces_idle.load(Relaxed));
-
-        tmc_state.commission_stimulus_active.store(false, Relaxed);
-        runtime
-            .apply_phase_and_position_tick(&mut tmc, refs, 10_000, false, false)
-            .await;
-
-        let raw_spi = tmc.into_inner();
-        assert_eq!(
-            raw_spi.write_attempts.last(),
-            Some(&(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr(), base_register))
-        );
-        assert!(!runtime.phase_advance_active_for_test());
-        assert!(!runtime.feedforward_restoration_pending());
-        assert!(tmc_state.feedforward_surfaces_idle.load(Relaxed));
-    });
-}
-
-#[test]
 fn control_period_goes_fast_under_commissioning_only_with_the_stimulus_opt_in() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     runtime.set_motor_enabled_for_test(true);
@@ -3535,218 +3437,6 @@ fn planner_velocity_scale_accessors_round_trip() {
     );
 }
 
-#[test]
-fn phase_advance_state_tracks_restore_to_base_register() {
-    let mut runtime = TmcControlRuntime::new_for_channel(0);
-    runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-
-    runtime.mark_phase_advance_restored_for_test();
-
-    assert!(!runtime.phase_advance_active_for_test());
-    assert_eq!(runtime.phase_advance_last_register_for_test(), 0x1111_2222);
-}
-
-#[test]
-fn phase_advance_restore_now_writes_base_and_clears_active_state() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-        let restored = runtime.restore_phase_advance_now(&mut tmc).await;
-
-        assert!(restored);
-        assert!(!runtime.phase_advance_active_for_test());
-        assert_eq!(runtime.phase_advance_last_register_for_test(), 0x1111_2222);
-        assert_eq!(
-            tmc.into_inner().writes,
-            std::vec![(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr(), 0x1111_2222)]
-        );
-    });
-}
-
-#[test]
-fn phase_advance_restore_now_failure_preserves_retry_state() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-        let raw_spi =
-            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
-        let mut tmc = Tmc4671Spi::new(raw_spi);
-
-        let restored = runtime.restore_phase_advance_now(&mut tmc).await;
-
-        assert!(!restored);
-        assert!(runtime.phase_advance_active_for_test());
-        assert_eq!(runtime.phase_advance_last_register_for_test(), 0x3333_4444);
-        let raw_spi = tmc.into_inner();
-        assert_eq!(
-            raw_spi.write_attempts,
-            std::vec![(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr(), 0x1111_2222)]
-        );
-        assert!(raw_spi.writes.is_empty());
-    });
-}
-
-#[test]
-fn phase_advance_restore_via_backend_writes_base_and_clears_active_state() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-        let mut backend = MockBackend::new();
-
-        let restored = runtime
-            .restore_phase_advance_via_backend(&mut backend)
-            .await;
-
-        assert!(restored);
-        assert!(!runtime.phase_advance_active_for_test());
-        assert_eq!(runtime.phase_advance_last_register_for_test(), 0x1111_2222);
-        assert_eq!(
-            backend
-                .registers
-                .get(&ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
-            Some(&0x1111_2222)
-        );
-    });
-}
-
-#[test]
-fn phase_advance_restore_via_backend_failure_preserves_retry_state() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-        let mut backend = MockBackend::new();
-        backend.fail_on_write = Some(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
-
-        let restored = runtime
-            .restore_phase_advance_via_backend(&mut backend)
-            .await;
-
-        assert!(!restored);
-        assert!(runtime.phase_advance_active_for_test());
-        assert_eq!(runtime.phase_advance_last_register_for_test(), 0x3333_4444);
-        assert_eq!(
-            backend
-                .registers
-                .get(&ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
-            None
-        );
-    });
-}
-
-#[test]
-fn phase_advance_tick_snapshots_base_and_writes_adjusted_offset() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_planner_velocity_scale_for_test(84_000_000);
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let stepper_state = crate::state::stepper::StepperChannelState::new();
-        tmc_state.phase_advance.store(true, Relaxed);
-        tmc_state.phase_advance_gain_ppm.store(1_000, Relaxed);
-        tmc_state.phase_advance_max_counts.store(20, Relaxed);
-        tmc_state.phase_advance_deadband.store(0, Relaxed);
-        let base_register = 0x0100_2345;
-        let command_velocity_reference = 10_000;
-        let phase_output = crate::tmc::compute_phase_advance_counts(
-            command_velocity_reference,
-            crate::tmc::PhaseAdvanceConfig {
-                enable: true,
-                gain_ppm: 1_000,
-                max_counts: 20,
-                deadband_velocity: 0,
-            },
-        );
-        let expected_register = crate::tmc::pack_abn_phi_offset(base_register, phase_output.counts);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(base_register));
-
-        runtime
-            .apply_phase_and_position_tick(
-                &mut tmc,
-                TmcControlStateRefs::new(&tmc_state, &stepper_state),
-                command_velocity_reference,
-                false,
-                false,
-            )
-            .await;
-
-        let raw_spi = tmc.into_inner();
-        assert!(raw_spi.read_requested(ABN_DECODER_PHI_E_PHI_M_OFFSET));
-        assert_eq!(
-            raw_spi.write_attempts,
-            std::vec![(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr(), expected_register)]
-        );
-        assert!(runtime.phase_advance_active_for_test());
-        assert_eq!(
-            runtime.phase_advance_last_register_for_test(),
-            expected_register
-        );
-    });
-}
-
-#[test]
-fn phase_advance_tick_reset_gate_skips_abn_snapshot_and_write() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_planner_velocity_scale_for_test(84_000_000);
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let stepper_state = crate::state::stepper::StepperChannelState::new();
-        tmc_state.phase_advance.store(true, Relaxed);
-        tmc_state
-            .configure_motion_scale(&stepper_state, 1_000, 3_200)
-            .unwrap();
-        stepper_state.interval.store(2_800, Relaxed);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1_000));
-
-        runtime
-            .apply_phase_and_position_tick(
-                &mut tmc,
-                TmcControlStateRefs::new(&tmc_state, &stepper_state),
-                123,
-                false,
-                true,
-            )
-            .await;
-
-        assert!(!runtime.phase_advance_active_for_test());
-        let raw_spi = tmc.into_inner();
-        assert!(!raw_spi.read_requested(ABN_DECODER_PHI_E_PHI_M_OFFSET));
-        assert!(!raw_spi.attempted_write_to(ABN_DECODER_PHI_E_PHI_M_OFFSET));
-    });
-}
-
-#[test]
-fn phase_and_position_tick_disabled_runtime_writes_nothing() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_planner_velocity_scale_for_test(84_000_000);
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let stepper_state = crate::state::stepper::StepperChannelState::new();
-        tmc_state.phase_advance.store(true, Relaxed);
-        tmc_state
-            .configure_motion_scale(&stepper_state, 1_000, 3_200)
-            .unwrap();
-        stepper_state.interval.store(2_800, Relaxed);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1_000));
-
-        runtime
-            .apply_phase_and_position_tick(
-                &mut tmc,
-                TmcControlStateRefs::new(&tmc_state, &stepper_state),
-                123,
-                false,
-                false,
-            )
-            .await;
-
-        let raw_spi = tmc.into_inner();
-        assert!(raw_spi.read_requests.is_empty());
-        assert!(raw_spi.write_attempts.is_empty());
-    });
-}
-
 #[cfg(feature = "trace")]
 #[test]
 fn trace_tick_returns_sample_before_incremented_control_tick() {
@@ -3758,7 +3448,6 @@ fn trace_tick_returns_sample_before_incremented_control_tick() {
     assert_eq!(tick.control_tick, 1);
     assert!(!tick.status_detail_due);
     assert!(!tick.metadata_due);
-    assert!(!tick.phase_advance_due);
 }
 
 #[cfg(feature = "trace")]
@@ -3787,52 +3476,6 @@ fn trace_tick_marks_metadata_due_at_1000() {
     assert_eq!(tick.control_tick, 1000);
     assert!(tick.status_detail_due);
     assert!(tick.metadata_due);
-}
-
-#[cfg(feature = "trace")]
-#[test]
-fn trace_tick_consumes_phase_advance_one_shot_once() {
-    let mut runtime = TmcControlRuntime::new_for_channel(0);
-    runtime.set_trace_phase_advance_for_test(true, 0x01, 7);
-
-    let first = runtime.advance_trace_tick();
-    let second = runtime.advance_trace_tick();
-
-    assert!(first.phase_advance_due);
-    assert_eq!(first.phase_advance_flags, 0x01);
-    assert_eq!(first.phase_advance_counts, 7);
-    assert!(!second.phase_advance_due);
-}
-
-#[cfg(feature = "trace")]
-#[test]
-fn trace_tick_emits_phase_advance_periodically_when_nonzero() {
-    let mut runtime = TmcControlRuntime::new_for_channel(0);
-    runtime.set_trace_control_tick_for_test(9);
-    runtime.set_trace_phase_advance_for_test(false, 0x02, 5);
-
-    let due = runtime.advance_trace_tick();
-    let not_due = runtime.advance_trace_tick();
-
-    assert_eq!(due.control_tick, 10);
-    assert!(due.phase_advance_due);
-    assert_eq!(due.phase_advance_flags, 0x02);
-    assert_eq!(due.phase_advance_counts, 5);
-    assert_eq!(not_due.control_tick, 11);
-    assert!(!not_due.phase_advance_due);
-}
-
-#[cfg(feature = "trace")]
-#[test]
-fn trace_tick_does_not_emit_periodic_phase_advance_when_zero() {
-    let mut runtime = TmcControlRuntime::new_for_channel(0);
-    runtime.set_trace_control_tick_for_test(9);
-    runtime.set_trace_phase_advance_for_test(false, 0, 0);
-
-    let tick = runtime.advance_trace_tick();
-
-    assert_eq!(tick.control_tick, 10);
-    assert!(!tick.phase_advance_due);
 }
 
 // --- terminal-restore cancellation ------------------------------------------

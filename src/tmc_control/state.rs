@@ -40,14 +40,6 @@ pub struct TmcControlTraceState {
     pub cached_accel_gain_permille: u16,
     /// Last acceleration trace flags.
     pub cached_accel_flags: u8,
-    /// Last phase-advance counts emitted to trace sampling.
-    pub phase_advance_last_counts: i16,
-    /// Last phase-advance trace flags.
-    pub phase_advance_last_flags: u8,
-    /// Force one phase-advance trace sample on the next trace tick.
-    pub phase_advance_emit_once: bool,
-    /// Last phase-advance register write failed.
-    pub phase_advance_write_failed: bool,
 }
 
 impl TmcControlTraceState {
@@ -61,10 +53,6 @@ impl TmcControlTraceState {
             cached_accel_torque_offset: 0,
             cached_accel_gain_permille: 0,
             cached_accel_flags: 0,
-            phase_advance_last_counts: 0,
-            phase_advance_last_flags: 0,
-            phase_advance_emit_once: false,
-            phase_advance_write_failed: false,
         }
     }
 }
@@ -82,12 +70,6 @@ pub struct TmcControlTraceTick {
     pub sample_tick: u32,
     /// Incremented trace control tick for status frames and metadata cadence.
     pub control_tick: u32,
-    /// Whether a phase-advance frame should be emitted this tick.
-    pub phase_advance_due: bool,
-    /// Phase-advance counts cached by the runtime tick.
-    pub phase_advance_counts: i16,
-    /// Phase-advance flags cached by the runtime tick.
-    pub phase_advance_flags: u8,
     /// Whether detailed status frames are due.
     pub status_detail_due: bool,
     /// Whether trace metadata is due.
@@ -155,9 +137,6 @@ pub struct TmcControlRuntime {
     torque_flux_offset_was_active: bool,
     applied_velocity_offset: Option<u32>,
     applied_torque_flux_offset: Option<u32>,
-    phase_advance_was_active: bool,
-    phase_advance_base_register: u32,
-    phase_advance_last_register: u32,
     pid_error_clear_countdown_ms: u8,
     stall_detector: Option<crate::tmc_control::stall_detector::StallDetector>,
     homing_state_1_retries: u8,
@@ -183,9 +162,6 @@ impl TmcControlRuntime {
             torque_flux_offset_was_active: false,
             applied_velocity_offset: None,
             applied_torque_flux_offset: None,
-            phase_advance_was_active: false,
-            phase_advance_base_register: 0,
-            phase_advance_last_register: 0,
             pid_error_clear_countdown_ms: 0,
             stall_detector: None,
             homing_state_1_retries: 0,
@@ -206,7 +182,6 @@ impl TmcControlRuntime {
             && self.restore_machine.is_none()
             && !self.feedforward_was_active
             && !self.torque_flux_offset_was_active
-            && !self.phase_advance_was_active
             && self.stall_detector.is_none()
             && self.homing_state_1_retries == 0
             && self.homing_state_3_retries == 0
@@ -292,9 +267,6 @@ impl TmcControlRuntime {
         self.torque_flux_offset_was_active = false;
         self.applied_velocity_offset = None;
         self.applied_torque_flux_offset = None;
-        self.phase_advance_was_active = false;
-        self.phase_advance_base_register = 0;
-        self.phase_advance_last_register = 0;
         self.pid_error_clear_countdown_ms = 0;
         self.clear_homing_runtime();
         #[cfg(feature = "trace")]
@@ -424,23 +396,15 @@ impl TmcControlRuntime {
         self.commission_engine.is_some()
     }
 
-    /// Whether the planner-referenced control paths (feedforward, phase
-    /// advance, fast control period) may run: either no commissioning
-    /// engine is installed, or the installed one is driving a step-queue
-    /// stimulus and has opted those paths back on.
     pub(crate) fn planner_paths_allowed(&self, refs: TmcControlStateRefs<'_>) -> bool {
         self.commission_engine.is_none() || refs.tmc.commission_stimulus_active.load(Relaxed)
     }
 
-    /// True while any feedforward or phase-advance surface is still applied
-    /// on the chip and needs a tick to restore it.
     pub(crate) fn feedforward_restoration_pending(&self) -> bool {
-        self.feedforward_was_active
-            || self.torque_flux_offset_was_active
-            || self.phase_advance_was_active
+        self.feedforward_was_active || self.torque_flux_offset_was_active
     }
 
-    fn publish_feedforward_surfaces_idle(&self, refs: TmcControlStateRefs<'_>) {
+    pub(super) fn publish_feedforward_surfaces_idle(&self, refs: TmcControlStateRefs<'_>) {
         refs.tmc
             .feedforward_surfaces_idle
             .store(!self.feedforward_restoration_pending(), Relaxed);
@@ -1187,239 +1151,6 @@ impl TmcControlRuntime {
         Ok(())
     }
 
-    /// Restore the ABN phase-offset register to the saved base value.
-    ///
-    /// Returns `true` when no phase advance is active or when the restore write
-    /// succeeds. Returns `false` on SPI write failure and leaves the active
-    /// state intact so the caller can retry before arming, disarming, or
-    /// entering diagnostic/tuning modes.
-    ///
-    /// # Parameters
-    /// - `tmc_spi`: TMC4671 SPI transport used for the register write.
-    pub async fn restore_phase_advance_now<B>(
-        &mut self,
-        tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
-    ) -> bool
-    where
-        B: embedded_hal_async::spi::SpiDevice<u8>,
-    {
-        if !self.phase_advance_was_active {
-            return true;
-        }
-
-        match tmc_spi
-            .write_register(
-                foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET,
-                self.phase_advance_base_register,
-            )
-            .await
-        {
-            Ok(()) => {
-                self.mark_phase_advance_restored();
-                true
-            }
-            Err(_) => {
-                #[cfg(feature = "trace")]
-                {
-                    let trace = self.trace_state_mut();
-                    trace.phase_advance_write_failed = true;
-                    trace.phase_advance_emit_once = true;
-                }
-                false
-            }
-        }
-    }
-
-    /// Restore the ABN phase-offset register through a commissioning backend.
-    ///
-    /// This has the same retry-state semantics as [`Self::restore_phase_advance_now`],
-    /// but writes through [`crate::commissioning::CommissionRegisterIo`] so
-    /// shared lifecycle helpers can restore phase advance while holding a
-    /// board backend.
-    pub async fn restore_phase_advance_via_backend<B>(&mut self, backend: &mut B) -> bool
-    where
-        B: crate::commissioning::CommissionRegisterIo,
-    {
-        if !self.phase_advance_was_active {
-            return true;
-        }
-
-        match backend
-            .write_register(
-                foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET,
-                self.phase_advance_base_register,
-            )
-            .await
-        {
-            Ok(()) => {
-                self.mark_phase_advance_restored();
-                true
-            }
-            Err(_) => {
-                #[cfg(feature = "trace")]
-                {
-                    let trace = self.trace_state_mut();
-                    trace.phase_advance_write_failed = true;
-                    trace.phase_advance_emit_once = true;
-                }
-                false
-            }
-        }
-    }
-
-    /// Apply slow phase-advance and position-lead tick work.
-    ///
-    /// The caller must pass the single consumed feedforward-reset latch used by
-    /// velocity feedforward for this same control tick. SPI failures are
-    /// best-effort except for warnings that match the former board-local path.
-    ///
-    /// # Parameters
-    /// - `tmc_spi`: TMC4671 SPI transport for register reads and writes.
-    /// - `refs`: Borrowed channel atomics for this motor.
-    /// - `command_velocity_reference`: The command velocity reference already
-    ///   computed for this tick using the same reset latch.
-    /// - `homing_active`: Whether homing is currently suppressing lead terms.
-    /// - `reset`: The single feedforward-reset latch consumed by the board tick.
-    pub async fn apply_phase_and_position_tick<B>(
-        &mut self,
-        tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
-        refs: TmcControlStateRefs<'_>,
-        command_velocity_reference: i32,
-        homing_active: bool,
-        reset: bool,
-    ) where
-        B: embedded_hal_async::spi::SpiDevice<u8>,
-    {
-        let phase_advance_requested = self.motor_enabled
-            && self.planner_velocity_scale.is_some()
-            && refs.tmc.phase_advance.load(Relaxed)
-            && self.planner_paths_allowed(refs);
-        let phase_advance_active = phase_advance_requested && !homing_active && !reset;
-
-        if phase_advance_active && !self.phase_advance_was_active {
-            match tmc_spi
-                .read_register(foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET)
-                .await
-            {
-                Ok(base) => {
-                    self.phase_advance_base_register = base;
-                    self.phase_advance_last_register = base;
-                    self.phase_advance_was_active = true;
-                    #[cfg(feature = "trace")]
-                    {
-                        self.trace_state_mut().phase_advance_emit_once = true;
-                    }
-                }
-                Err(_) => {
-                    defmt::warn!("phase advance: failed to snapshot ABN offset");
-                    self.phase_advance_was_active = false;
-                }
-            }
-        }
-
-        #[cfg(feature = "trace")]
-        let mut trace_phase_output = crate::tmc::PhaseAdvanceOutput {
-            counts: 0,
-            enabled: phase_advance_requested,
-            deadbanded: false,
-            clamped: false,
-        };
-
-        if phase_advance_active && self.phase_advance_was_active {
-            let phase_output = crate::tmc::compute_phase_advance_counts(
-                command_velocity_reference,
-                crate::tmc::PhaseAdvanceConfig {
-                    enable: true,
-                    gain_ppm: refs.tmc.phase_advance_gain_ppm.load(Relaxed),
-                    max_counts: refs.tmc.phase_advance_max_counts.load(Relaxed),
-                    deadband_velocity: refs.tmc.phase_advance_deadband.load(Relaxed),
-                },
-            );
-            #[cfg(feature = "trace")]
-            {
-                trace_phase_output = phase_output;
-            }
-            let next_register = crate::tmc::pack_abn_phi_offset(
-                self.phase_advance_base_register,
-                phase_output.counts,
-            );
-            if next_register != self.phase_advance_last_register {
-                if tmc_spi
-                    .write_register(
-                        foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET,
-                        next_register,
-                    )
-                    .await
-                    .is_ok()
-                {
-                    #[cfg(feature = "trace")]
-                    {
-                        let trace = self.trace_state_mut();
-                        if phase_output.counts != trace.phase_advance_last_counts {
-                            trace.phase_advance_emit_once = true;
-                        }
-                        trace.phase_advance_write_failed = false;
-                    }
-                    self.phase_advance_last_register = next_register;
-                } else {
-                    #[cfg(feature = "trace")]
-                    {
-                        let trace = self.trace_state_mut();
-                        trace.phase_advance_write_failed = true;
-                        trace.phase_advance_emit_once = true;
-                    }
-                }
-            }
-        } else if self.phase_advance_was_active && !self.restore_phase_advance_now(tmc_spi).await {
-            defmt::warn!("phase advance: failed to restore ABN offset; retrying");
-        }
-
-        #[cfg(feature = "trace")]
-        {
-            let write_failed = self.trace_state().phase_advance_write_failed;
-            let mut flags = if phase_advance_active && self.phase_advance_was_active {
-                crate::trace::stream::PHASE_ADVANCE_FLAG_ENABLED
-            } else if phase_advance_requested {
-                crate::trace::stream::PHASE_ADVANCE_FLAG_GATED
-            } else {
-                0
-            };
-            if trace_phase_output.counts != 0 {
-                flags |= crate::trace::stream::PHASE_ADVANCE_FLAG_NONZERO;
-            }
-            if trace_phase_output.clamped {
-                flags |= crate::trace::stream::PHASE_ADVANCE_FLAG_CLAMPED;
-            }
-            if trace_phase_output.deadbanded {
-                flags |= crate::trace::stream::PHASE_ADVANCE_FLAG_DEADBAND;
-            }
-            if write_failed {
-                flags |= crate::trace::stream::PHASE_ADVANCE_FLAG_WRITE_FAILED;
-            }
-
-            let trace = self.trace_state_mut();
-            if flags != trace.phase_advance_last_flags {
-                trace.phase_advance_emit_once = true;
-            }
-            trace.phase_advance_last_counts = trace_phase_output.counts;
-            trace.phase_advance_last_flags = flags;
-        }
-
-        self.publish_feedforward_surfaces_idle(refs);
-    }
-
-    fn mark_phase_advance_restored(&mut self) {
-        self.phase_advance_was_active = false;
-        self.phase_advance_last_register = self.phase_advance_base_register;
-        #[cfg(feature = "trace")]
-        {
-            let trace = self.trace_state_mut();
-            trace.phase_advance_last_counts = 0;
-            trace.phase_advance_write_failed = false;
-            trace.phase_advance_emit_once = true;
-        }
-    }
-
     /// Apply one channel's homing maintenance for a frozen homing state.
     ///
     /// The caller owns global homing state advancement. This method only
@@ -1451,11 +1182,6 @@ impl TmcControlRuntime {
                 if !homing_clamp_due(window, config.clock_freq) {
                     return HomingMaintenanceResult::Deferred;
                 }
-                if !self.restore_phase_advance_now(tmc_spi).await {
-                    defmt::warn!("phase advance: failed to restore ABN offset before homing");
-                    return self.retry_homing_state_1();
-                }
-
                 let gains = match refs.tmc.load_outer_gains(Relaxed) {
                     Ok(gains) => gains,
                     Err(_) => return self.retry_homing_state_1(),
@@ -1727,21 +1453,10 @@ impl TmcControlRuntime {
     pub fn advance_trace_tick(&mut self) -> TmcControlTraceTick {
         let sample_tick = self.advance_trace_sample_tick();
         let control_tick = self.trace.control_tick;
-        let phase_advance_counts = self.trace.phase_advance_last_counts;
-        let phase_advance_flags = self.trace.phase_advance_last_flags;
-        let phase_advance_periodic = control_tick.is_multiple_of(10)
-            && (phase_advance_flags != 0 || phase_advance_counts != 0);
-        let phase_advance_due = self.trace.phase_advance_emit_once || phase_advance_periodic;
-        if phase_advance_due {
-            self.trace.phase_advance_emit_once = false;
-        }
 
         TmcControlTraceTick {
             sample_tick,
             control_tick,
-            phase_advance_due,
-            phase_advance_counts,
-            phase_advance_flags,
             status_detail_due: control_tick.is_multiple_of(100),
             metadata_due: control_tick.is_multiple_of(1000),
         }
@@ -1869,33 +1584,6 @@ impl TmcControlRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_phase_advance_for_test(
-        &mut self,
-        active: bool,
-        base_register: u32,
-        last_register: u32,
-    ) {
-        self.phase_advance_was_active = active;
-        self.phase_advance_base_register = base_register;
-        self.phase_advance_last_register = last_register;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_phase_advance_restored_for_test(&mut self) {
-        self.mark_phase_advance_restored();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn phase_advance_active_for_test(&self) -> bool {
-        self.phase_advance_was_active
-    }
-
-    #[cfg(test)]
-    pub(crate) fn phase_advance_last_register_for_test(&self) -> u32 {
-        self.phase_advance_last_register
-    }
-
-    #[cfg(test)]
     pub(crate) fn pending_calibrate_inner_gains_for_test(
         &self,
     ) -> Option<crate::pid::InnerLoopGains> {
@@ -1912,18 +1600,6 @@ impl TmcControlRuntime {
     #[cfg(all(test, feature = "trace"))]
     pub(crate) fn set_trace_control_tick_for_test(&mut self, value: u32) {
         self.trace.control_tick = value;
-    }
-
-    #[cfg(all(test, feature = "trace"))]
-    pub(crate) fn set_trace_phase_advance_for_test(
-        &mut self,
-        emit_once: bool,
-        last_flags: u8,
-        last_counts: i16,
-    ) {
-        self.trace.phase_advance_emit_once = emit_once;
-        self.trace.phase_advance_last_flags = last_flags;
-        self.trace.phase_advance_last_counts = last_counts;
     }
 }
 
