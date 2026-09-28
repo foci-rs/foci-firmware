@@ -211,7 +211,7 @@ doc = "Run the retained fixed-I gain from highest to lowest amplitude."
 [[action]]
 ident = "BreakawaySeeded"
 wire_code = 7
-label = "breakaway_seeded"
+label = "velocity_p_tune"
 doc = """
 Run the breakaway probe, additive discovery, held-out confirmation, and
 the existing velocity-integral continuation as one bounded command.
@@ -223,7 +223,7 @@ top of the same campaign, not the campaign itself."""
 [[action]]
 ident = "IntegralResume"
 wire_code = 8
-label = "integral_resume"
+label = "velocity_i_tune"
 doc = """
 Re-run the velocity-integral response ladder against retained firmware
 authority.
@@ -235,7 +235,7 @@ campaign in between resets the slot."""
 [[action]]
 ident = "RobustnessReversal"
 wire_code = 9
-label = "robustness_reversal"
+label = "velocity_tune_check"
 doc = """
 Run the reversal/standstill robustness confirmation gates.
 
@@ -246,7 +246,7 @@ constant-direction runs the other actions use."""
 [[action]]
 ident = "PositionTune"
 wire_code = 10
-label = "position_tune"
+label = "position_p_tune"
 doc = """
 Run the two-bound position-P ladder sweep against the already-tuned
 velocity loop.
