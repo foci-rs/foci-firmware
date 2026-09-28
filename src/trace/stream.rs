@@ -338,8 +338,6 @@ pub struct CriticalSample {
     pub accel_feedforward_gain_permille: u16,
     /// Acceleration feedforward diagnostic flags.
     pub accel_feedforward_flags: u8,
-    /// Cached velocity-surface transient feedforward component.
-    pub cached_velocity_transient_offset: i32,
     /// Velocity feedforward offset was clamped for this sample.
     pub cached_velocity_clamped: bool,
 }
@@ -512,7 +510,8 @@ pub fn encode_critical_payload(sample: &CriticalSample, out: &mut [u8; CRITICAL_
     } else {
         0
     };
-    put_i32(out, 84, sample.cached_velocity_transient_offset);
+    // Bytes 84..88 are reserved and always zero.
+    put_i32(out, 84, 0);
 }
 
 /// Encode a current-path payload.
@@ -665,7 +664,6 @@ mod tests {
             cached_accel_torque_offset: -19,
             accel_feedforward_gain_permille: 2000,
             accel_feedforward_flags: 0x03,
-            cached_velocity_transient_offset: 21,
             cached_velocity_clamped: false,
         };
 
@@ -684,7 +682,52 @@ mod tests {
         assert_eq!(&payload[80..82], &2000u16.to_le_bytes());
         assert_eq!(&payload[82..83], &[0x03]);
         assert_eq!(&payload[83..84], &[0]);
-        assert_eq!(&payload[84..88], &21i32.to_le_bytes());
+    }
+
+    #[test]
+    fn critical_payload_reserves_bytes_84_to_88_as_zero_under_protocol_23() {
+        let sample = CriticalSample {
+            step_position: -1,
+            tmc_position_actual: 2,
+            position_error: -3,
+            target_velocity: 4,
+            pid_velocity_actual: -5,
+            cached_pid_velocity_offset: 6,
+            velocity_error: -7,
+            enable_and_direction: 0x81,
+            sample_flags: 0x02,
+            timer_queue_depth: 9,
+            step_timer_jitter: 10,
+            min_deadline_slack: -11,
+            last_served_step_tick: 12,
+            last_klipper_command_service_tick: 13,
+            missed_or_deferred_step_counter: 14,
+            interim_pidin_target_torque: 15,
+            interim_pid_torque_target_actual: 16,
+            interim_foc_uq_ud: 17,
+            interim_foc_uq_ud_limited: 18,
+            cached_accel_torque_offset: -19,
+            accel_feedforward_gain_permille: 2000,
+            accel_feedforward_flags: 0x03,
+            cached_velocity_clamped: true,
+        };
+        let mut payload = [0xAA; CRITICAL_PAYLOAD_LEN];
+        encode_critical_payload(&sample, &mut payload);
+        assert_eq!(&payload[84..88], &[0, 0, 0, 0]);
+
+        let mut frame = FrameBuf::new();
+        frame.write_header(FrameHeader {
+            frame_type: FRAME_TYPE_CRITICAL,
+            flags: 0,
+            payload_len: CRITICAL_PAYLOAD_LEN as u16,
+            source_kind: SOURCE_KIND_FOCI,
+            source_index: 0,
+            sequence: 0,
+            timestamp_ticks: 0,
+            boot_id: 0,
+        });
+        assert_eq!(frame.bytes()[4], PROTOCOL_VERSION);
+        assert_eq!(PROTOCOL_VERSION, 23);
     }
 
     #[test]
@@ -712,7 +755,6 @@ mod tests {
             cached_accel_torque_offset: 0,
             accel_feedforward_gain_permille: 0,
             accel_feedforward_flags: 0,
-            cached_velocity_transient_offset: 0,
             cached_velocity_clamped: true,
         };
 

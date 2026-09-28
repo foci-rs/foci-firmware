@@ -329,47 +329,6 @@ pub fn tmc_set_velocity_feedforward_rpm(
     );
 }
 
-/// Enable or disable velocity-surface transient feedforward from a live command.
-#[allow(clippy::too_many_arguments)]
-#[klipper_command]
-pub fn tmc_set_velocity_transient_feedforward(
-    ctx: &mut dyn ShutdownRecovery,
-    oid: u8,
-    enable: u8,
-    lead_time_us: u16,
-    gain_permille: u16,
-    max_offset: u16,
-    rate_hz: u16,
-) {
-    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
-        return;
-    };
-    let rate_hz = crate::tmc::normalize_velocity_transient_rate_hz(rate_hz);
-    state
-        .velocity_transient_feedforward
-        .store(enable != 0, Ordering::Relaxed);
-    state
-        .velocity_transient_lead_time_us
-        .store(lead_time_us, Ordering::Relaxed);
-    state
-        .velocity_transient_gain_permille
-        .store(gain_permille, Ordering::Relaxed);
-    state
-        .velocity_transient_max_offset
-        .store(max_offset, Ordering::Relaxed);
-    state
-        .velocity_transient_rate_hz
-        .store(rate_hz, Ordering::Relaxed);
-    defmt::info!(
-        "Velocity transient feedforward: {} lead_time_us={} gain_permille={} max_offset={} rate_hz={}",
-        enable != 0,
-        lead_time_us,
-        gain_permille,
-        max_offset,
-        rate_hz
-    );
-}
-
 /// Enable or disable acceleration feedforward from a live diagnostic command.
 #[klipper_command]
 pub fn tmc_set_accel_feedforward(

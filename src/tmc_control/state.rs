@@ -32,8 +32,6 @@ pub struct TmcControlTraceState {
     pub cached_velocity_reference: i32,
     /// Last velocity feedforward offset emitted to trace sampling.
     pub cached_velocity_offset: i32,
-    /// Last transient velocity feedforward offset emitted to trace sampling.
-    pub cached_velocity_transient_offset: i32,
     /// Velocity feedforward offset was clamped on the last tick.
     pub cached_velocity_clamped: bool,
     /// Last acceleration/decoupling torque offset emitted to trace sampling.
@@ -59,7 +57,6 @@ impl TmcControlTraceState {
             control_tick: 0,
             cached_velocity_reference: 0,
             cached_velocity_offset: 0,
-            cached_velocity_transient_offset: 0,
             cached_velocity_clamped: false,
             cached_accel_torque_offset: 0,
             cached_accel_gain_permille: 0,
@@ -1017,9 +1014,9 @@ impl TmcControlRuntime {
         reference
     }
 
-    /// Apply velocity, transient, acceleration, and decoupling feedforward.
+    /// Apply velocity, acceleration, and decoupling feedforward.
     ///
-    /// Velocity and transient offsets run on every control tick. Acceleration
+    /// The velocity offset runs on every control tick. Acceleration
     /// and decoupling offsets run only when `slow_control_tick` is true, matching
     /// the board-local decimation used by the surrounding maintenance path.
     ///
@@ -1042,10 +1039,6 @@ impl TmcControlRuntime {
             && self.planner_rpm_scale.is_some()
             && refs.tmc.velocity_feedforward.load(Relaxed)
             && self.planner_paths_allowed(refs);
-        let velocity_transient_active = self.motor_enabled
-            && self.planner_rpm_scale.is_some()
-            && refs.tmc.velocity_transient_feedforward.load(Relaxed)
-            && self.planner_paths_allowed(refs);
         let accel_ff_active = self.motor_enabled
             && self.planner_velocity_scale.is_some()
             && refs.tmc.accel_feedforward.load(Relaxed)
@@ -1055,19 +1048,13 @@ impl TmcControlRuntime {
             && refs.tmc.decoupling_feedforward.load(Relaxed)
             && self.planner_paths_allowed(refs);
 
-        let velocity_offset_active = ff_active || velocity_transient_active;
-        if velocity_offset_active {
+        if ff_active {
             let interval = refs.stepper.interval.load(Relaxed);
-            let interval_add = refs
-                .stepper
-                .interval_add
-                .load(Relaxed)
-                .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
             let forward = refs.stepper.direction.load(Relaxed);
             let rpm_scale = self
                 .planner_rpm_scale
                 .expect("active feedforward has planner rpm scale");
-            let base_offset = if ff_active && !homing_active && !reset {
+            let base_offset = if !homing_active && !reset {
                 let gain_permille = refs.tmc.velocity_feedforward_gain_permille.load(Relaxed);
                 crate::tmc::compute_planner_velocity_offset_rpm(
                     rpm_scale,
@@ -1078,28 +1065,10 @@ impl TmcControlRuntime {
             } else {
                 0
             };
-            let transient_offset = if velocity_transient_active && !homing_active && !reset {
-                crate::tmc::compute_planner_velocity_transient_offset(
-                    crate::tmc::PlannerVelocityTransientFeedforwardInput {
-                        scale: rpm_scale,
-                        clock_freq: config.clock_freq,
-                        step_interval: interval,
-                        interval_add,
-                        dir_high: forward,
-                    },
-                    crate::tmc::VelocityTransientFeedforwardConfig {
-                        lead_time_us: refs.tmc.velocity_transient_lead_time_us.load(Relaxed),
-                        gain_permille: refs.tmc.velocity_transient_gain_permille.load(Relaxed),
-                        max_offset: refs.tmc.velocity_transient_max_offset.load(Relaxed),
-                    },
-                )
-            } else {
-                0
-            };
             let command_rpm =
                 crate::tmc::compute_planner_command_rpm_reference(rpm_scale, interval, forward);
             let (offset, clamp_engaged) = crate::tmc::clamp_velocity_offset_rpm(
-                base_offset.saturating_add(transient_offset),
+                base_offset,
                 command_rpm,
                 crate::tmc::VELOCITY_FF_CLAMP_K,
             );
@@ -1118,7 +1087,6 @@ impl TmcControlRuntime {
             {
                 let trace = self.trace_state_mut();
                 trace.cached_velocity_offset = offset;
-                trace.cached_velocity_transient_offset = transient_offset;
                 trace.cached_velocity_clamped = clamp_engaged;
             }
         } else if self.feedforward_was_active {
@@ -1131,11 +1099,10 @@ impl TmcControlRuntime {
             {
                 let trace = self.trace_state_mut();
                 trace.cached_velocity_offset = 0;
-                trace.cached_velocity_transient_offset = 0;
                 trace.cached_velocity_clamped = false;
             }
         }
-        self.feedforward_was_active = velocity_offset_active;
+        self.feedforward_was_active = ff_active;
 
         if !slow_control_tick {
             self.publish_feedforward_surfaces_idle(refs);
@@ -2185,22 +2152,13 @@ mod tests {
     }
 
     #[test]
-    fn control_period_us_returns_active_period_when_enabled_regardless_of_transient_state() {
+    fn control_period_us_returns_active_period_when_enabled() {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         let tmc = crate::state::tmc::TmcChannelState::new();
         let stepper = crate::state::stepper::StepperChannelState::new();
         let refs = TmcControlStateRefs::new(&tmc, &stepper);
 
-        assert_eq!(
-            runtime.control_period_us(refs),
-            crate::tmc::CONTROL_PERIOD_ACTIVE_US
-        );
-
-        tmc.velocity_transient_feedforward
-            .store(true, core::sync::atomic::Ordering::Relaxed);
-        tmc.velocity_transient_rate_hz
-            .store(10_000, core::sync::atomic::Ordering::Relaxed);
         assert_eq!(
             runtime.control_period_us(refs),
             crate::tmc::CONTROL_PERIOD_ACTIVE_US

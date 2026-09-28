@@ -219,16 +219,6 @@ pub struct TmcChannelState {
     /// Runtime gain in permille applied to the RPM-domain velocity feedforward
     /// offset (1000 = unity).
     pub velocity_feedforward_gain_permille: AtomicU16,
-    /// Velocity-surface transient feedforward enable flag.
-    pub velocity_transient_feedforward: AtomicBool,
-    /// Transient feedforward lead time in microseconds.
-    pub velocity_transient_lead_time_us: AtomicU16,
-    /// Transient feedforward gain in permille.
-    pub velocity_transient_gain_permille: AtomicU16,
-    /// Maximum absolute transient contribution in raw velocity-offset counts.
-    pub velocity_transient_max_offset: AtomicU16,
-    /// Requested transient feedforward update rate in Hz.
-    pub velocity_transient_rate_hz: AtomicU16,
     /// Acceleration feedforward enable flag.
     pub accel_feedforward: AtomicBool,
     /// Runtime gain in permille while step intervals shrink.
@@ -409,11 +399,6 @@ impl TmcChannelState {
             flux_filter_hz: AtomicOptionalFilterHz::new(None),
             velocity_feedforward: AtomicBool::new(false),
             velocity_feedforward_gain_permille: AtomicU16::new(1_000),
-            velocity_transient_feedforward: AtomicBool::new(false),
-            velocity_transient_lead_time_us: AtomicU16::new(0),
-            velocity_transient_gain_permille: AtomicU16::new(0),
-            velocity_transient_max_offset: AtomicU16::new(0),
-            velocity_transient_rate_hz: AtomicU16::new(1000),
             accel_feedforward: AtomicBool::new(false),
             accel_feedforward_accel_gain_permille: AtomicU16::new(1000),
             accel_feedforward_decel_gain_permille: AtomicU16::new(1000),
@@ -512,11 +497,6 @@ impl TmcChannelState {
         self.velocity_feedforward.store(false, Relaxed);
         self.velocity_feedforward_gain_permille
             .store(1_000, Relaxed);
-        self.velocity_transient_feedforward.store(false, Relaxed);
-        self.velocity_transient_lead_time_us.store(0, Relaxed);
-        self.velocity_transient_gain_permille.store(0, Relaxed);
-        self.velocity_transient_max_offset.store(0, Relaxed);
-        self.velocity_transient_rate_hz.store(1000, Relaxed);
         self.accel_feedforward.store(false, Relaxed);
         self.accel_feedforward_accel_gain_permille
             .store(1000, Relaxed);
@@ -976,7 +956,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 192);
+        assert_eq!(size_of::<TmcChannelState>(), 184);
     }
 
     #[test]

@@ -53,32 +53,6 @@ pub struct AccelFeedforwardGains {
     pub decel_permille: u16,
 }
 
-/// Command-acceleration inputs for velocity-surface transient feedforward.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct PlannerVelocityTransientFeedforwardInput {
-    /// Exact planner-timing mechanical-RPM ratio.
-    pub scale: crate::motion_scale::PlannerRpmScale,
-    /// Step-timer clock frequency in Hz.
-    pub clock_freq: u32,
-    /// Current step interval in timer ticks.
-    pub step_interval: u32,
-    /// Klipper interval delta in timer ticks per step.
-    pub interval_add: i16,
-    /// True when the TMC4671 DIR input is high.
-    pub dir_high: bool,
-}
-
-/// Runtime configuration for velocity-surface transient feedforward.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct VelocityTransientFeedforwardConfig {
-    /// Commanded lead time in microseconds.
-    pub lead_time_us: u16,
-    /// Gain in permille applied to the predicted velocity delta.
-    pub gain_permille: u16,
-    /// Maximum absolute offset in raw `PID_VELOCITY_OFFSET` counts.
-    pub max_offset: u16,
-}
-
 /// Runtime configuration for velocity-proportional commutation phase advance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PhaseAdvanceConfig {
@@ -183,40 +157,12 @@ pub struct DecouplingFeedforwardConfig {
     pub max_offset: u16,
 }
 
-/// Default velocity-transient update rate in Hz.
-pub const VELOCITY_TRANSIENT_DEFAULT_RATE_HZ: u16 = 1_000;
-/// Highest supported velocity-transient update rate in Hz.
-pub const VELOCITY_TRANSIENT_MAX_RATE_HZ: u16 = 10_000;
-/// Fast-control period while a channel is `Ready` but not `motor_enabled`,
-/// in microseconds (100 Hz). Returned directly by `control_period_us` —
-/// deliberately not routed through `velocity_transient_period_us`, whose
-/// `normalize_velocity_transient_rate_hz` clamp floor (1000 Hz / 1000 us)
-/// would otherwise silently override any period below it.
-pub const VELOCITY_TRANSIENT_IDLE_PERIOD_US: u32 = 10_000;
-
 /// Control-tick period while a channel is not `motor_enabled` or planner paths
 /// are not allowed, in microseconds (100 Hz).
 pub const CONTROL_PERIOD_IDLE_US: u32 = 10_000;
 /// Control-tick period while the motor is enabled and planner paths are
 /// allowed, in microseconds (1 kHz).
 pub const CONTROL_PERIOD_ACTIVE_US: u32 = 1_000;
-
-/// Normalize a requested velocity-transient update rate.
-pub fn normalize_velocity_transient_rate_hz(rate_hz: u16) -> u16 {
-    if rate_hz == 0 {
-        VELOCITY_TRANSIENT_DEFAULT_RATE_HZ
-    } else {
-        rate_hz.clamp(
-            VELOCITY_TRANSIENT_DEFAULT_RATE_HZ,
-            VELOCITY_TRANSIENT_MAX_RATE_HZ,
-        )
-    }
-}
-
-/// Return the control period in microseconds for a transient update rate.
-pub fn velocity_transient_period_us(rate_hz: u16) -> u32 {
-    1_000_000 / u32::from(normalize_velocity_transient_rate_hz(rate_hz))
-}
 
 /// Operation carried by a [`TmcRequest`].
 #[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
@@ -306,18 +252,6 @@ pub enum TmcRequestKind {
         position_i: foci_tmc4671::pid::PidIGain,
         velocity_p: foci_tmc4671::pid::PidPGain,
         velocity_i: foci_tmc4671::pid::PidIGain,
-    },
-    /// Enable or disable velocity-surface transient feedforward.
-    SetVelocityTransientFeedforward {
-        enable: bool,
-        /// Lead time in microseconds applied to command acceleration.
-        lead_time_us: u16,
-        /// Gain in permille applied to the predicted velocity delta.
-        gain_permille: u16,
-        /// Maximum absolute raw velocity-offset contribution.
-        max_offset: u16,
-        /// Requested update rate in Hz.
-        rate_hz: u16,
     },
     /// Enable or disable acceleration feedforward in the 1ms tick loop.
     SetAccelFeedforward {
@@ -625,27 +559,6 @@ pub fn tmc_set_position_gains(
             position_i,
             velocity_p,
             velocity_i,
-        },
-    )
-}
-
-/// Build a `SetVelocityTransientFeedforward` request.
-pub fn tmc_set_velocity_transient_feedforward(
-    channel: u8,
-    enable: bool,
-    lead_time_us: u16,
-    gain_permille: u16,
-    max_offset: u16,
-    rate_hz: u16,
-) -> TmcRequest {
-    TmcRequest::new(
-        channel,
-        TmcRequestKind::SetVelocityTransientFeedforward {
-            enable,
-            lead_time_us,
-            gain_permille,
-            max_offset,
-            rate_hz: normalize_velocity_transient_rate_hz(rate_hz),
         },
     )
 }
@@ -1113,62 +1026,6 @@ pub fn compute_position_lead_target(
     (target as i32 as u32, applied_units)
 }
 
-/// Compute a bounded velocity-loop transient offset from command acceleration.
-///
-/// The value predicts how much the command velocity will change over
-/// `lead_time_us`, scales it by `gain_permille`, and applies it through the
-/// same sign convention as `PID_VELOCITY_OFFSET`. It is intended to be added to
-/// the existing velocity feedforward offset and written as one combined
-/// register value.
-/// Compute an exact planner-scale transient velocity offset.
-pub fn compute_planner_velocity_transient_offset(
-    input: PlannerVelocityTransientFeedforwardInput,
-    config: VelocityTransientFeedforwardConfig,
-) -> i32 {
-    if input.clock_freq == 0
-        || input.step_interval == 0
-        || input.interval_add == 0
-        || config.lead_time_us == 0
-        || config.gain_permille == 0
-        || config.max_offset == 0
-    {
-        return 0;
-    }
-
-    let interval = u64::from(input.step_interval);
-    let mut numerators = [
-        u64::from(input.interval_add.unsigned_abs()),
-        input.scale.numerator(),
-        u64::from(input.clock_freq),
-        u64::from(config.lead_time_us),
-        u64::from(config.gain_permille),
-    ];
-    let mut denominators = [
-        input.scale.denominator(),
-        interval,
-        interval,
-        interval,
-        1_000_000,
-        1_000,
-    ];
-    let magnitude = round_ratio_to_cap(
-        &mut numerators,
-        &mut denominators,
-        u64::from(config.max_offset),
-    ) as i32;
-    if magnitude == 0 {
-        return 0;
-    }
-
-    let accel_sign = if input.interval_add < 0 { 1 } else { -1 };
-    let direction_sign = if input.dir_high { -1 } else { 1 };
-    if accel_sign * direction_sign < 0 {
-        -magnitude
-    } else {
-        magnitude
-    }
-}
-
 /// Compute a bounded runtime commutation phase advance.
 ///
 /// `target_velocity` is the command-derived TMC velocity reference in
@@ -1485,18 +1342,6 @@ mod tests {
     }
 
     #[test]
-    fn velocity_transient_rate_is_normalized_to_supported_periods() {
-        assert_eq!(normalize_velocity_transient_rate_hz(0), 1_000);
-        assert_eq!(normalize_velocity_transient_rate_hz(500), 1_000);
-        assert_eq!(normalize_velocity_transient_rate_hz(10_000), 10_000);
-        assert_eq!(normalize_velocity_transient_rate_hz(25_000), 10_000);
-
-        assert_eq!(velocity_transient_period_us(1_000), 1_000);
-        assert_eq!(velocity_transient_period_us(10_000), 100);
-        assert_eq!(velocity_transient_period_us(25_000), 100);
-    }
-
-    #[test]
     fn auto_calibrate_on_enable_policy_can_be_toggled() {
         set_auto_calibrate_on_enable_allowed(0, false);
         assert!(!auto_calibrate_on_enable_allowed(0));
@@ -1587,13 +1432,6 @@ mod tests {
             .unwrap()
     }
 
-    fn planner_rpm_scale(encoder_ppr: u32) -> crate::motion_scale::PlannerRpmScale {
-        crate::motion_scale::MotionScale::new(encoder_ppr, 3_000)
-            .unwrap()
-            .planner_rpm_scale(100)
-            .unwrap()
-    }
-
     #[test]
     fn command_velocity_uses_exact_planner_scale_independent_of_encoder_ppr() {
         let low_ppr = compute_planner_command_velocity_reference(planner_scale(500), 3, false);
@@ -1610,29 +1448,6 @@ mod tests {
 
         assert_eq!(low_ppr, -1);
         assert_eq!(high_ppr, low_ppr);
-    }
-
-    #[test]
-    fn transient_feedforward_uses_exact_planner_scale_independent_of_encoder_ppr() {
-        let offset = |scale| {
-            compute_planner_velocity_transient_offset(
-                PlannerVelocityTransientFeedforwardInput {
-                    scale,
-                    clock_freq: 4,
-                    step_interval: 1,
-                    interval_add: -1,
-                    dir_high: false,
-                },
-                VelocityTransientFeedforwardConfig {
-                    lead_time_us: 62_500,
-                    gain_permille: 1_000,
-                    max_offset: 10,
-                },
-            )
-        };
-
-        assert_eq!(offset(planner_rpm_scale(500)), 1);
-        assert_eq!(offset(planner_rpm_scale(4_000)), 1);
     }
 
     #[test]
@@ -1908,158 +1723,6 @@ mod tests {
         assert_eq!(positive_applied, 10);
         assert_eq!(negative_target, i32::MIN as u32);
         assert_eq!(negative_applied, -10);
-    }
-
-    #[test]
-    fn velocity_transient_zero_cases_disable_offset() {
-        let config = VelocityTransientFeedforwardConfig {
-            lead_time_us: 1_000,
-            gain_permille: 1_000,
-            max_offset: 1_000,
-        };
-        assert_eq!(
-            compute_planner_velocity_transient_offset(
-                velocity_transient_input(0, 1_000, 1_000, -10, false),
-                config,
-            ),
-            0
-        );
-        assert_eq!(
-            compute_planner_velocity_transient_offset(
-                velocity_transient_input(1_000, 0, 1_000, -10, false),
-                config,
-            ),
-            0
-        );
-        assert_eq!(
-            compute_planner_velocity_transient_offset(
-                velocity_transient_input(1_000, 1_000, 0, -10, false),
-                config,
-            ),
-            0
-        );
-        assert_eq!(
-            compute_planner_velocity_transient_offset(
-                velocity_transient_input(1_000, 1_000, 1_000, 0, false),
-                config,
-            ),
-            0
-        );
-        assert_eq!(
-            compute_planner_velocity_transient_offset(
-                velocity_transient_input(1_000, 1_000, 1_000, -10, false),
-                VelocityTransientFeedforwardConfig {
-                    lead_time_us: 0,
-                    gain_permille: 1_000,
-                    max_offset: 1_000,
-                },
-            ),
-            0
-        );
-        assert_eq!(
-            compute_planner_velocity_transient_offset(
-                velocity_transient_input(1_000, 1_000, 1_000, -10, false),
-                VelocityTransientFeedforwardConfig {
-                    lead_time_us: 1_000,
-                    gain_permille: 0,
-                    max_offset: 1_000,
-                },
-            ),
-            0
-        );
-        assert_eq!(
-            compute_planner_velocity_transient_offset(
-                velocity_transient_input(1_000, 1_000, 1_000, -10, false),
-                VelocityTransientFeedforwardConfig {
-                    lead_time_us: 1_000,
-                    gain_permille: 1_000,
-                    max_offset: 0,
-                },
-            ),
-            0
-        );
-    }
-
-    #[test]
-    fn velocity_transient_uses_accel_direction_and_dir_sign() {
-        let config = VelocityTransientFeedforwardConfig {
-            lead_time_us: 1_000,
-            gain_permille: 1_000,
-            max_offset: 10_000,
-        };
-        assert_eq!(
-            compute_planner_velocity_transient_offset(
-                velocity_transient_input(1_000_000, 1_000_000, 1_000, -1_000, false),
-                config,
-            ),
-            1_000
-        );
-        assert_eq!(
-            compute_planner_velocity_transient_offset(
-                velocity_transient_input(1_000_000, 1_000_000, 1_000, 1_000, false),
-                config,
-            ),
-            -1_000
-        );
-        assert_eq!(
-            compute_planner_velocity_transient_offset(
-                velocity_transient_input(1_000_000, 1_000_000, 1_000, -1_000, true),
-                config,
-            ),
-            -1_000
-        );
-        assert_eq!(
-            compute_planner_velocity_transient_offset(
-                velocity_transient_input(1_000_000, 1_000_000, 1_000, 1_000, true),
-                config,
-            ),
-            1_000
-        );
-    }
-
-    #[test]
-    fn velocity_transient_applies_gain_and_clamp() {
-        assert_eq!(
-            compute_planner_velocity_transient_offset(
-                velocity_transient_input(1_000_000, 1_000_000, 1_000, -1_000, false),
-                VelocityTransientFeedforwardConfig {
-                    lead_time_us: 1_000,
-                    gain_permille: 500,
-                    max_offset: 10_000,
-                },
-            ),
-            500
-        );
-        assert_eq!(
-            compute_planner_velocity_transient_offset(
-                velocity_transient_input(1_000_000, 1_000_000, 1_000, -1_000, false),
-                VelocityTransientFeedforwardConfig {
-                    lead_time_us: 1_000,
-                    gain_permille: 2_000,
-                    max_offset: 750,
-                },
-            ),
-            750
-        );
-    }
-
-    fn velocity_transient_input(
-        scale_numerator: u32,
-        clock_freq: u32,
-        step_interval: u32,
-        interval_add: i16,
-        dir_high: bool,
-    ) -> PlannerVelocityTransientFeedforwardInput {
-        PlannerVelocityTransientFeedforwardInput {
-            scale: crate::motion_scale::PlannerRpmScale::from_reduced(
-                u64::from(scale_numerator),
-                1,
-            ),
-            clock_freq,
-            step_interval,
-            interval_add,
-            dir_high,
-        }
     }
 
     fn decoupling_input(

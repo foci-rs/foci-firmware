@@ -18,8 +18,6 @@ pub struct TraceSampleInputs {
     pub command_velocity_reference: i32,
     /// Last velocity feedforward offset emitted to trace sampling.
     pub cached_velocity_offset: i32,
-    /// Last transient velocity feedforward offset emitted to trace sampling.
-    pub cached_velocity_transient_offset: i32,
     /// Velocity feedforward offset was clamped on the last tick.
     pub cached_velocity_clamped: bool,
     /// Last acceleration/decoupling torque offset emitted to trace sampling.
@@ -38,7 +36,6 @@ impl TraceSampleInputs {
         Self {
             command_velocity_reference: 0,
             cached_velocity_offset: 0,
-            cached_velocity_transient_offset: 0,
             cached_velocity_clamped: false,
             cached_accel_torque_offset: 0,
             accel_feedforward_gain_permille: 0,
@@ -55,7 +52,6 @@ impl TraceSampleInputs {
         Self {
             command_velocity_reference: trace_state.cached_velocity_reference,
             cached_velocity_offset: trace_state.cached_velocity_offset,
-            cached_velocity_transient_offset: trace_state.cached_velocity_transient_offset,
             cached_velocity_clamped: trace_state.cached_velocity_clamped,
             cached_accel_torque_offset: trace_state.cached_accel_torque_offset,
             accel_feedforward_gain_permille: trace_state.cached_accel_gain_permille,
@@ -107,7 +103,6 @@ mod tests {
             TraceSampleInputs {
                 command_velocity_reference: 0,
                 cached_velocity_offset: 0,
-                cached_velocity_transient_offset: 0,
                 cached_velocity_clamped: false,
                 cached_accel_torque_offset: 0,
                 accel_feedforward_gain_permille: 0,
@@ -123,7 +118,6 @@ mod tests {
             control_tick: 999,
             cached_velocity_reference: -11,
             cached_velocity_offset: 22,
-            cached_velocity_transient_offset: -33,
             cached_velocity_clamped: true,
             cached_accel_torque_offset: 44,
             cached_accel_gain_permille: 55,
@@ -148,7 +142,6 @@ mod tests {
             TraceSampleInputs {
                 command_velocity_reference: -11,
                 cached_velocity_offset: 22,
-                cached_velocity_transient_offset: -33,
                 cached_velocity_clamped: true,
                 cached_accel_torque_offset: 44,
                 accel_feedforward_gain_permille: 55,

@@ -2802,10 +2802,6 @@ fn control_period_goes_fast_under_commissioning_only_with_the_stimulus_opt_in() 
     runtime.set_commission_engine(breakaway_campaign_engine());
     let tmc_state = crate::state::tmc::TmcChannelState::new();
     let stepper_state = crate::state::stepper::StepperChannelState::new();
-    tmc_state
-        .velocity_transient_feedforward
-        .store(true, Relaxed);
-    tmc_state.velocity_transient_rate_hz.store(1_000, Relaxed);
     let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
 
     assert_eq!(
@@ -2927,18 +2923,6 @@ fn feedforward_tick_retries_failed_velocity_offset_clear() {
         tmc_state
             .velocity_feedforward_gain_permille
             .store(1_000, Relaxed);
-        tmc_state
-            .velocity_transient_feedforward
-            .store(true, Relaxed);
-        tmc_state
-            .velocity_transient_lead_time_us
-            .store(1_000, Relaxed);
-        tmc_state
-            .velocity_transient_gain_permille
-            .store(1_000, Relaxed);
-        tmc_state
-            .velocity_transient_max_offset
-            .store(1_000, Relaxed);
         stepper_state.interval.store(2_800, Relaxed);
         stepper_state.interval_add.store(-10, Relaxed);
         stepper_state.direction.store(false, Relaxed);
@@ -2963,17 +2947,11 @@ fn feedforward_tick_retries_failed_velocity_offset_clear() {
         assert_ne!(active_offset, 0);
         assert!(runtime.feedforward_was_active());
         #[cfg(feature = "trace")]
-        let active_transient_offset = runtime.trace_state().cached_velocity_transient_offset;
-        #[cfg(feature = "trace")]
         {
             assert_eq!(runtime.trace_state().cached_velocity_offset, active_offset);
-            assert_ne!(active_transient_offset, 0);
         }
 
         tmc_state.velocity_feedforward.store(false, Relaxed);
-        tmc_state
-            .velocity_transient_feedforward
-            .store(false, Relaxed);
         let mut failed_tmc =
             Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(PID_VELOCITY_OFFSET.addr()));
 
@@ -2993,10 +2971,6 @@ fn feedforward_tick_retries_failed_velocity_offset_clear() {
         #[cfg(feature = "trace")]
         {
             assert_eq!(runtime.trace_state().cached_velocity_offset, active_offset);
-            assert_eq!(
-                runtime.trace_state().cached_velocity_transient_offset,
-                active_transient_offset
-            );
         }
 
         let mut retry_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
@@ -3021,7 +2995,6 @@ fn feedforward_tick_retries_failed_velocity_offset_clear() {
         #[cfg(feature = "trace")]
         {
             assert_eq!(runtime.trace_state().cached_velocity_offset, 0);
-            assert_eq!(runtime.trace_state().cached_velocity_transient_offset, 0);
         }
 
         let mut inactive_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());

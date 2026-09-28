@@ -336,7 +336,7 @@ pub trait CommissionBoardConfig {
     }
 
     /// Feedforward paths currently live on this channel: bit 0 velocity,
-    /// 1 transient, 2 acceleration, 3 decoupling, 4 phase advance.
+    /// 1 reserved (formerly transient, never set), 2 acceleration, 3 decoupling, 4 phase advance.
     fn feedforward_path_flags(&self) -> u8 {
         0
     }
@@ -1061,12 +1061,6 @@ where
             .load(core::sync::atomic::Ordering::Relaxed)
         {
             flags |= 0b0_0001;
-        }
-        if channel
-            .velocity_transient_feedforward
-            .load(core::sync::atomic::Ordering::Relaxed)
-        {
-            flags |= 0b0_0010;
         }
         if channel
             .accel_feedforward

@@ -558,27 +558,6 @@ where
         }
         TmcRequest {
             kind:
-                TmcRequestKind::SetVelocityTransientFeedforward {
-                    enable,
-                    lead_time_us,
-                    gain_permille,
-                    max_offset,
-                    rate_hz,
-                },
-            ..
-        } => {
-            defmt::info!(
-                "Velocity transient feedforward: {} lead_time_us={} \
-                gain_permille={} max_offset={} rate_hz={} (via queue)",
-                enable,
-                lead_time_us,
-                gain_permille,
-                max_offset,
-                rate_hz
-            );
-        }
-        TmcRequest {
-            kind:
                 TmcRequestKind::SetAccelFeedforward {
                     enable,
                     accel_gain_permille,
