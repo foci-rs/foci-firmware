@@ -977,7 +977,7 @@ mod tests {
 
     #[test]
     fn maintenance_obligations_are_invalidated_by_each_audited_field() {
-        let cases: [MaintenanceObligationCase; 11] = [
+        let cases: [MaintenanceObligationCase; 10] = [
             ("driver.reset_for_maintenance", |driver| {
                 driver.reset_for_maintenance = true;
             }),
@@ -1002,9 +1002,6 @@ mod tests {
                 driver
                     .runtime
                     .set_torque_flux_offset_was_active_for_test(true);
-            }),
-            ("runtime.position_lead_applied_units", |driver| {
-                driver.runtime.set_position_lead_applied_units_for_test(1);
             }),
             ("runtime.phase_advance_was_active", |driver| {
                 driver.runtime.set_phase_advance_for_test(true, 0, 0);

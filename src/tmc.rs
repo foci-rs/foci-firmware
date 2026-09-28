@@ -233,14 +233,6 @@ pub enum TmcRequestKind {
         /// Gain in permille applied while step intervals grow.
         decel_gain_permille: u16,
     },
-    /// Enable or disable diagnostic position-target lead in the 1ms tick loop.
-    SetPositionLead {
-        enable: bool,
-        /// Lead gain in permille of the unmultiplied velocity reference.
-        gain_permille: u16,
-        /// Maximum absolute lead in logical step counts.
-        max_counts: u16,
-    },
     /// Enable or disable runtime commutation phase advance in the 1 ms tick loop.
     SetPhaseAdvance {
         enable: bool,
@@ -532,23 +524,6 @@ pub fn tmc_set_accel_feedforward(
             enable,
             accel_gain_permille,
             decel_gain_permille,
-        },
-    )
-}
-
-/// Build a `SetPositionLead` request.
-pub fn tmc_set_position_lead(
-    channel: u8,
-    enable: bool,
-    gain_permille: u16,
-    max_counts: u16,
-) -> TmcRequest {
-    TmcRequest::new(
-        channel,
-        TmcRequestKind::SetPositionLead {
-            enable,
-            gain_permille,
-            max_counts,
         },
     )
 }
@@ -894,66 +869,6 @@ fn product_leq(factors: &[u64], limit: u128) -> bool {
                 .filter(|product| *product <= limit)
         })
         .is_some()
-}
-
-/// Compute a bounded logical position-target lead from the command velocity.
-///
-/// The returned value is in firmware logical step counts, not TMC4671
-/// electrical-position counts. With OpenFFBoard's current hardware STEP/DIR
-/// path, DIR high increments the firmware step counter even though the TMC
-/// velocity monitor reports a negative velocity for that same direction.
-pub fn compute_position_lead_counts_from_reference(
-    command_velocity_reference: i32,
-    dir_high: bool,
-    gain_permille: u16,
-    max_counts: u16,
-) -> i16 {
-    if command_velocity_reference == 0 || gain_permille == 0 || max_counts == 0 {
-        return 0;
-    }
-
-    let magnitude = (command_velocity_reference.unsigned_abs() as u64 * gain_permille as u64 / 1000)
-        .min(max_counts as u64)
-        .min(i16::MAX as u64) as i16;
-    if magnitude == 0 {
-        return 0;
-    }
-
-    if dir_high { magnitude } else { -magnitude }
-}
-
-/// Compute a relative `PID_POSITION_TARGET` with diagnostic lead applied.
-///
-/// `current_target` is the live TMC4671 target register value. The function
-/// removes the previously applied diagnostic delta before applying the new
-/// lead, so repeated calls do not accumulate lead into the TMC's target frame.
-/// Logical lead counts are converted through the exact planner ratio of 65536
-/// TMC4671 position units per mechanical revolution. It returns the register
-/// value to write and the delta actually applied in TMC4671 position units.
-pub fn compute_position_lead_target(
-    current_target: u32,
-    previous_lead_units: i32,
-    lead_counts: i16,
-    planner_steps_per_rev: u32,
-) -> (u32, i32) {
-    if planner_steps_per_rev == 0 {
-        return (current_target, 0);
-    }
-
-    let magnitude_numerator = i64::from(lead_counts.unsigned_abs()) * 65_536;
-    let denominator = i64::from(planner_steps_per_rev);
-    let rounded_magnitude = (magnitude_numerator + denominator / 2) / denominator;
-    let requested_lead_units = if lead_counts < 0 {
-        -rounded_magnitude
-    } else {
-        rounded_magnitude
-    };
-    let base_target = (i64::from(current_target as i32) - i64::from(previous_lead_units))
-        .clamp(i64::from(i32::MIN), i64::from(i32::MAX));
-    let target =
-        (base_target + requested_lead_units).clamp(i64::from(i32::MIN), i64::from(i32::MAX));
-    let applied_units = (target - base_target) as i32;
-    (target as i32 as u32, applied_units)
 }
 
 /// Compute a bounded runtime commutation phase advance.
@@ -1481,103 +1396,6 @@ mod tests {
     fn clamp_zero_command_forces_zero_offset() {
         assert_eq!(clamp_velocity_offset_rpm(4_000, 0, 3), (0, true));
         assert_eq!(clamp_velocity_offset_rpm(0, 0, 3), (0, false));
-    }
-
-    #[test]
-    fn position_lead_zero_cases_disable_lead() {
-        assert_eq!(
-            compute_position_lead_counts_from_reference(0, true, 10, 20),
-            0
-        );
-        assert_eq!(
-            compute_position_lead_counts_from_reference(19, true, 0, 20),
-            0
-        );
-        assert_eq!(
-            compute_position_lead_counts_from_reference(19, true, 10, 0),
-            0
-        );
-    }
-
-    #[test]
-    fn position_lead_uses_logical_step_direction() {
-        let dir_high = compute_position_lead_counts_from_reference(-19, true, 1000, 20);
-        let dir_low = compute_position_lead_counts_from_reference(19, false, 1000, 20);
-
-        assert_eq!(dir_high, 19);
-        assert_eq!(dir_low, -19);
-    }
-
-    #[test]
-    fn position_lead_caps_magnitude() {
-        assert_eq!(
-            compute_position_lead_counts_from_reference(-19, true, 4000, 20),
-            20
-        );
-        assert_eq!(
-            compute_position_lead_counts_from_reference(19, false, 4000, 20),
-            -20
-        );
-    }
-
-    #[test]
-    fn position_lead_target_does_not_jump_at_rest() {
-        let (target, applied) = compute_position_lead_target(12_345, 0, 0, 16);
-
-        assert_eq!(target, 12_345);
-        assert_eq!(applied, 0);
-    }
-
-    #[test]
-    fn position_lead_target_converts_forward_planner_steps_to_position_units() {
-        let (target, applied) = compute_position_lead_target(1_000, 0, 2, 3_200);
-
-        assert_eq!(target, 1_041);
-        assert_eq!(applied, 41);
-    }
-
-    #[test]
-    fn position_lead_target_converts_reverse_fractional_planner_scale() {
-        let (target, applied) = compute_position_lead_target(1_000, 0, -3, 40_000);
-
-        assert_eq!(target, 995);
-        assert_eq!(applied, -5);
-    }
-
-    #[test]
-    fn position_lead_target_does_not_accumulate_existing_lead() {
-        let previous_applied = 41;
-
-        let (unchanged, still_applied) =
-            compute_position_lead_target(1_041, previous_applied, 2, 3_200);
-        let (changed, changed_applied) =
-            compute_position_lead_target(1_041, previous_applied, 3, 3_200);
-
-        assert_eq!(unchanged, 1_041);
-        assert_eq!(still_applied, 41);
-        assert_eq!(changed, 1_061);
-        assert_eq!(changed_applied, 61);
-    }
-
-    #[test]
-    fn position_lead_target_clears_previous_relative_lead() {
-        let (target, applied) = compute_position_lead_target(1_041, 41, 0, 3_200);
-
-        assert_eq!(target, 1_000);
-        assert_eq!(applied, 0);
-    }
-
-    #[test]
-    fn position_lead_target_saturates_and_tracks_applied_units() {
-        let (positive_target, positive_applied) =
-            compute_position_lead_target(i32::MAX as u32 - 10, 0, 2, 3_200);
-        let (negative_target, negative_applied) =
-            compute_position_lead_target((i32::MIN + 10) as u32, 0, -2, 3_200);
-
-        assert_eq!(positive_target, i32::MAX as u32);
-        assert_eq!(positive_applied, 10);
-        assert_eq!(negative_target, i32::MIN as u32);
-        assert_eq!(negative_applied, -10);
     }
 
     #[test]

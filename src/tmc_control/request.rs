@@ -575,22 +575,6 @@ where
         }
         TmcRequest {
             kind:
-                TmcRequestKind::SetPositionLead {
-                    enable,
-                    gain_permille,
-                    max_counts,
-                },
-            ..
-        } => {
-            defmt::info!(
-                "Position lead: {} gain_permille={} max_counts={} (via queue)",
-                enable,
-                gain_permille,
-                max_counts
-            );
-        }
-        TmcRequest {
-            kind:
                 TmcRequestKind::SetPhaseAdvance {
                     enable,
                     gain_ppm,

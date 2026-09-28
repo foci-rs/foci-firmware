@@ -227,12 +227,6 @@ pub struct TmcChannelState {
     pub accel_feedforward_decel_gain_permille: AtomicU16,
     /// One-tick feedforward reset request after direction changes.
     pub feedforward_reset: AtomicBool,
-    /// Position-target lead diagnostic enable flag.
-    pub position_lead: AtomicBool,
-    /// Position-target lead gain in permille of the velocity reference.
-    pub position_lead_gain_permille: AtomicU16,
-    /// Maximum absolute position-target lead in logical step counts.
-    pub position_lead_max_counts: AtomicU16,
     /// Runtime commutation phase-advance diagnostic enable flag.
     pub phase_advance: AtomicBool,
     /// Signed gain in ppm of command velocity reference.
@@ -389,9 +383,6 @@ impl TmcChannelState {
             accel_feedforward_accel_gain_permille: AtomicU16::new(1000),
             accel_feedforward_decel_gain_permille: AtomicU16::new(1000),
             feedforward_reset: AtomicBool::new(false),
-            position_lead: AtomicBool::new(false),
-            position_lead_gain_permille: AtomicU16::new(0),
-            position_lead_max_counts: AtomicU16::new(0),
             phase_advance: AtomicBool::new(false),
             phase_advance_gain_ppm: AtomicI32::new(0),
             phase_advance_max_counts: AtomicU16::new(0),
@@ -482,9 +473,6 @@ impl TmcChannelState {
         self.accel_feedforward_decel_gain_permille
             .store(1000, Relaxed);
         self.feedforward_reset.store(false, Relaxed);
-        self.position_lead.store(false, Relaxed);
-        self.position_lead_gain_permille.store(0, Relaxed);
-        self.position_lead_max_counts.store(0, Relaxed);
         self.phase_advance.store(false, Relaxed);
         self.phase_advance_gain_ppm.store(0, Relaxed);
         self.phase_advance_max_counts.store(0, Relaxed);
@@ -928,7 +916,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 164);
+        assert_eq!(size_of::<TmcChannelState>(), 160);
     }
 
     #[test]

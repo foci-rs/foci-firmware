@@ -155,7 +155,6 @@ pub struct TmcControlRuntime {
     torque_flux_offset_was_active: bool,
     applied_velocity_offset: Option<u32>,
     applied_torque_flux_offset: Option<u32>,
-    position_lead_applied_units: i32,
     phase_advance_was_active: bool,
     phase_advance_base_register: u32,
     phase_advance_last_register: u32,
@@ -184,7 +183,6 @@ impl TmcControlRuntime {
             torque_flux_offset_was_active: false,
             applied_velocity_offset: None,
             applied_torque_flux_offset: None,
-            position_lead_applied_units: 0,
             phase_advance_was_active: false,
             phase_advance_base_register: 0,
             phase_advance_last_register: 0,
@@ -208,7 +206,6 @@ impl TmcControlRuntime {
             && self.restore_machine.is_none()
             && !self.feedforward_was_active
             && !self.torque_flux_offset_was_active
-            && self.position_lead_applied_units == 0
             && !self.phase_advance_was_active
             && self.stall_detector.is_none()
             && self.homing_state_1_retries == 0
@@ -295,7 +292,6 @@ impl TmcControlRuntime {
         self.torque_flux_offset_was_active = false;
         self.applied_velocity_offset = None;
         self.applied_torque_flux_offset = None;
-        self.position_lead_applied_units = 0;
         self.phase_advance_was_active = false;
         self.phase_advance_base_register = 0;
         self.phase_advance_last_register = 0;
@@ -1409,57 +1405,6 @@ impl TmcControlRuntime {
             trace.phase_advance_last_flags = flags;
         }
 
-        let position_lead_active = self.motor_enabled
-            && self.planner_velocity_scale.is_some()
-            && refs.tmc.position_lead.load(Relaxed)
-            && self.commission_engine.is_none()
-            && !homing_active;
-        if position_lead_active || self.position_lead_applied_units != 0 {
-            let interval = refs.stepper.interval.load(Relaxed);
-            let forward = refs.stepper.direction.load(Relaxed);
-            let gain_permille = refs.tmc.position_lead_gain_permille.load(Relaxed);
-            let max_counts = refs.tmc.position_lead_max_counts.load(Relaxed);
-            let lead_counts = if !position_lead_active || reset || interval == 0 {
-                0
-            } else {
-                crate::tmc::compute_position_lead_counts_from_reference(
-                    command_velocity_reference,
-                    forward,
-                    gain_permille,
-                    max_counts,
-                )
-            };
-            if let Some(planner_steps_per_rev) = refs.stepper.planner_steps_per_rev(refs.tmc) {
-                match tmc_spi
-                    .read_register(foci_tmc4671::registers::PID_POSITION_TARGET)
-                    .await
-                {
-                    Ok(current_target) => {
-                        let (target, applied_units) = crate::tmc::compute_position_lead_target(
-                            current_target,
-                            self.position_lead_applied_units,
-                            lead_counts,
-                            planner_steps_per_rev,
-                        );
-                        if applied_units != self.position_lead_applied_units
-                            && tmc_spi
-                                .write_register(
-                                    foci_tmc4671::registers::PID_POSITION_TARGET,
-                                    target,
-                                )
-                                .await
-                                .is_ok()
-                        {
-                            self.position_lead_applied_units = applied_units;
-                        }
-                    }
-                    Err(_) => {
-                        defmt::warn!("position lead: PID_POSITION_TARGET read failed");
-                    }
-                }
-            }
-        }
-
         self.publish_feedforward_surfaces_idle(refs);
     }
 
@@ -1859,11 +1804,6 @@ impl TmcControlRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_position_lead_applied_units_for_test(&mut self, value: i32) {
-        self.position_lead_applied_units = value;
-    }
-
-    #[cfg(test)]
     pub(crate) fn set_homing_state_1_retries_for_test(&mut self, value: u8) {
         self.homing_state_1_retries = value;
     }
@@ -1962,11 +1902,6 @@ impl TmcControlRuntime {
         self.commission_engine.as_ref().and_then(
             crate::commissioning::CommissioningEngine::calibrate_entry_inner_gains_for_test,
         )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn position_lead_applied_units_for_test(&self) -> i32 {
-        self.position_lead_applied_units
     }
 
     #[cfg(test)]

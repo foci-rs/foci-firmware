@@ -72,7 +72,7 @@ fn channel_runtime_size_stays_bounded() {
     // The runtime embeds the `CommissioningEngine`, so it tracks that engine's
     // size plus the runtime's own fixed overhead.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_176);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_160);
     #[cfg(not(feature = "trace"))]
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_144);
 }
@@ -3694,7 +3694,6 @@ fn phase_advance_tick_reset_gate_skips_abn_snapshot_and_write() {
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         tmc_state.phase_advance.store(true, Relaxed);
-        tmc_state.position_lead.store(true, Relaxed);
         tmc_state
             .configure_motion_scale(&stepper_state, 1_000, 3_200)
             .unwrap();
@@ -3726,9 +3725,6 @@ fn phase_and_position_tick_disabled_runtime_writes_nothing() {
         let tmc_state = crate::state::tmc::TmcChannelState::new();
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         tmc_state.phase_advance.store(true, Relaxed);
-        tmc_state.position_lead.store(true, Relaxed);
-        tmc_state.position_lead_gain_permille.store(1000, Relaxed);
-        tmc_state.position_lead_max_counts.store(20, Relaxed);
         tmc_state
             .configure_motion_scale(&stepper_state, 1_000, 3_200)
             .unwrap();
@@ -3748,50 +3744,6 @@ fn phase_and_position_tick_disabled_runtime_writes_nothing() {
         let raw_spi = tmc.into_inner();
         assert!(raw_spi.read_requests.is_empty());
         assert!(raw_spi.write_attempts.is_empty());
-        assert_eq!(runtime.position_lead_applied_units_for_test(), 0);
-    });
-}
-
-#[test]
-fn position_lead_tick_uses_planner_position_units() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_planner_velocity_scale_for_test(84_000_000);
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let stepper_state = crate::state::stepper::StepperChannelState::new();
-        tmc_state.position_lead.store(true, Relaxed);
-        tmc_state.position_lead_gain_permille.store(1000, Relaxed);
-        tmc_state.position_lead_max_counts.store(20, Relaxed);
-        tmc_state
-            .configure_motion_scale(&stepper_state, 1_000, 3_200)
-            .unwrap();
-        stepper_state.interval.store(2_800, Relaxed);
-        stepper_state.direction.store(false, Relaxed);
-        let lead_counts =
-            crate::tmc::compute_position_lead_counts_from_reference(30_000, false, 1000, 20);
-        let (expected_target, expected_applied_units) =
-            crate::tmc::compute_position_lead_target(1_000, 0, lead_counts, 3_200);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1_000));
-
-        runtime
-            .apply_phase_and_position_tick(
-                &mut tmc,
-                TmcControlStateRefs::new(&tmc_state, &stepper_state),
-                30_000,
-                false,
-                false,
-            )
-            .await;
-
-        assert_eq!(
-            runtime.position_lead_applied_units_for_test(),
-            expected_applied_units
-        );
-        assert_eq!(
-            tmc.into_inner().writes,
-            std::vec![(PID_POSITION_TARGET.addr(), expected_target)]
-        );
     });
 }
 
