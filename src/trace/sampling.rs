@@ -20,11 +20,11 @@ pub struct TraceSampleInputs {
     pub cached_velocity_offset: i32,
     /// Velocity feedforward offset was clamped on the last tick.
     pub cached_velocity_clamped: bool,
-    /// Last acceleration/decoupling torque offset emitted to trace sampling.
+    /// Last acceleration torque offset emitted to trace sampling.
     pub cached_accel_torque_offset: i32,
     /// Last acceleration feedforward gain emitted to trace sampling, in permille.
     pub accel_feedforward_gain_permille: u16,
-    /// Last acceleration/decoupling trace flags.
+    /// Last acceleration trace flags.
     pub accel_feedforward_flags: u8,
     /// Trace sample tick used for critical/current-path/control-detail cadence.
     pub control_tick: u32,

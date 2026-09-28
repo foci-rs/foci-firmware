@@ -2098,8 +2098,9 @@ pub struct PositionTuneProvenance {
     /// Count of rungs the walk measured before this terminal.
     pub rungs_measured: u8,
     /// Feedforward paths live on the last admitted motion stroke: bit 0
-    /// velocity, 1 transient, 2 acceleration, 3 decoupling, 4 phase advance.
-    /// Zero until a motion stroke has been admitted.
+    /// velocity, 2 acceleration, 4 phase advance. Bits 1 (formerly transient)
+    /// and 3 (formerly decoupling) are reserved and never set. Zero until a
+    /// motion stroke has been admitted.
     pub stimulus_feedforward_paths: u8,
 }
 

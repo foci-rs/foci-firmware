@@ -34,11 +34,11 @@ pub struct TmcControlTraceState {
     pub cached_velocity_offset: i32,
     /// Velocity feedforward offset was clamped on the last tick.
     pub cached_velocity_clamped: bool,
-    /// Last acceleration/decoupling torque offset emitted to trace sampling.
+    /// Last acceleration torque offset emitted to trace sampling.
     pub cached_accel_torque_offset: i32,
     /// Last acceleration gain emitted to trace sampling.
     pub cached_accel_gain_permille: u16,
-    /// Last acceleration/decoupling trace flags.
+    /// Last acceleration trace flags.
     pub cached_accel_flags: u8,
     /// Last phase-advance counts emitted to trace sampling.
     pub phase_advance_last_counts: i16,
@@ -1014,11 +1014,11 @@ impl TmcControlRuntime {
         reference
     }
 
-    /// Apply velocity, acceleration, and decoupling feedforward.
+    /// Apply velocity and acceleration feedforward.
     ///
-    /// The velocity offset runs on every control tick. Acceleration
-    /// and decoupling offsets run only when `slow_control_tick` is true, matching
-    /// the board-local decimation used by the surrounding maintenance path.
+    /// The velocity offset runs on every control tick. The acceleration offset
+    /// runs only when `slow_control_tick` is true, matching the board-local
+    /// decimation used by the surrounding maintenance path.
     ///
     /// Active feedforward SPI operations are best-effort to preserve existing
     /// board behavior. Failed inactive velocity- and torque-offset clears are
@@ -1042,10 +1042,6 @@ impl TmcControlRuntime {
         let accel_ff_active = self.motor_enabled
             && self.planner_velocity_scale.is_some()
             && refs.tmc.accel_feedforward.load(Relaxed)
-            && self.planner_paths_allowed(refs);
-        let decoupling_ff_active = self.motor_enabled
-            && self.planner_velocity_scale.is_some()
-            && refs.tmc.decoupling_feedforward.load(Relaxed)
             && self.planner_paths_allowed(refs);
 
         if ff_active {
@@ -1109,81 +1105,7 @@ impl TmcControlRuntime {
             return Ok(());
         }
 
-        if decoupling_ff_active {
-            let max_offset = refs.tmc.decoupling_max_offset.load(Relaxed);
-            let (torque_offset, flux_offset) = if homing_active || reset {
-                (0, 0)
-            } else {
-                let interval = refs.stepper.interval.load(Relaxed);
-                let forward = refs.stepper.direction.load(Relaxed);
-                let target_velocity = crate::tmc::compute_planner_command_velocity_reference(
-                    self.planner_velocity_scale
-                        .expect("active decoupling has planner velocity scale"),
-                    interval,
-                    forward,
-                );
-                let iq_id = if target_velocity == 0 {
-                    None
-                } else {
-                    tmc_spi
-                        .read_sub_register(foci_tmc4671::registers::INTERIM_FOC_IQ_ID)
-                        .await
-                        .ok()
-                };
-                if let Some(iq_id) = iq_id {
-                    let foc_iq = crate::tmc::decode_signed_upper_half(iq_id);
-                    let foc_id = crate::tmc::decode_signed_lower_half(iq_id);
-                    crate::tmc::compute_decoupling_current_offsets(
-                        crate::tmc::DecouplingFeedforwardInput {
-                            target_velocity,
-                            foc_iq,
-                            foc_id,
-                        },
-                        crate::tmc::DecouplingFeedforwardConfig {
-                            r_int: refs.tmc.decoupling_r_int.load(Relaxed),
-                            l_int: refs.tmc.decoupling_l_int.load(Relaxed),
-                            pole_pairs: refs.tmc.decoupling_pole_pairs.load(Relaxed),
-                            position_units_per_rev: refs
-                                .tmc
-                                .decoupling_position_units_per_rev
-                                .load(Relaxed),
-                            f_pwm_hz: refs.tmc.decoupling_f_pwm_hz.load(Relaxed),
-                            max_offset,
-                        },
-                    )
-                } else {
-                    (0, 0)
-                }
-            };
-            #[cfg(feature = "trace")]
-            {
-                let mut flags = if homing_active || reset {
-                    0
-                } else {
-                    crate::trace::stream::ACCEL_FF_FLAG_ENABLED
-                };
-                if torque_offset != 0 || flux_offset != 0 {
-                    flags |= crate::trace::stream::ACCEL_FF_FLAG_NONZERO;
-                }
-                if max_offset != 0
-                    && (torque_offset.unsigned_abs() >= max_offset
-                        || flux_offset.unsigned_abs() >= max_offset)
-                {
-                    flags |= crate::trace::stream::ACCEL_FF_FLAG_CLAMPED;
-                }
-                let trace = self.trace_state_mut();
-                trace.cached_accel_torque_offset = torque_offset as i32;
-                trace.cached_accel_gain_permille = 0;
-                trace.cached_accel_flags = flags;
-            }
-            let offset_reg = crate::tmc::pack_torque_flux_target(torque_offset, flux_offset);
-            if self.applied_torque_flux_offset != Some(offset_reg) {
-                let _ = tmc_spi
-                    .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, offset_reg)
-                    .await
-                    .inspect(|_| self.applied_torque_flux_offset = Some(offset_reg));
-            }
-        } else if accel_ff_active {
+        if accel_ff_active {
             let accel_gain_permille = refs.tmc.accel_feedforward_accel_gain_permille.load(Relaxed);
             let decel_gain_permille = refs.tmc.accel_feedforward_decel_gain_permille.load(Relaxed);
             let torque_limit = refs.tmc.load_current_limit(Relaxed).register_value();
@@ -1263,7 +1185,7 @@ impl TmcControlRuntime {
                 trace.cached_accel_flags = 0;
             }
         }
-        self.torque_flux_offset_was_active = accel_ff_active || decoupling_ff_active;
+        self.torque_flux_offset_was_active = accel_ff_active;
 
         self.publish_feedforward_surfaces_idle(refs);
         Ok(())

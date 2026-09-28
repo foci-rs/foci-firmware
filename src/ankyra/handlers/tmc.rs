@@ -358,50 +358,6 @@ pub fn tmc_set_accel_feedforward(
     );
 }
 
-/// Enable or disable q/d decoupling proxy feedforward from a live diagnostic command.
-#[allow(clippy::too_many_arguments)]
-#[klipper_command]
-pub fn tmc_set_decoupling_feedforward(
-    ctx: &mut dyn ShutdownRecovery,
-    oid: u8,
-    enable: u8,
-    r_int: u32,
-    l_int: u32,
-    pole_pairs: u16,
-    position_units_per_rev: u32,
-    f_pwm_hz: u32,
-    max_offset: u16,
-) {
-    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
-        return;
-    };
-    state
-        .decoupling_feedforward
-        .store(enable != 0, Ordering::Relaxed);
-    state.decoupling_r_int.store(r_int, Ordering::Relaxed);
-    state.decoupling_l_int.store(l_int, Ordering::Relaxed);
-    state
-        .decoupling_pole_pairs
-        .store(pole_pairs, Ordering::Relaxed);
-    state
-        .decoupling_position_units_per_rev
-        .store(position_units_per_rev, Ordering::Relaxed);
-    state.decoupling_f_pwm_hz.store(f_pwm_hz, Ordering::Relaxed);
-    state
-        .decoupling_max_offset
-        .store(max_offset, Ordering::Relaxed);
-    defmt::info!(
-        "Decoupling feedforward: {} r_int={} l_int={} pole_pairs={} position_units_per_rev={} f_pwm_hz={} max_offset={}",
-        enable != 0,
-        r_int,
-        l_int,
-        pole_pairs,
-        position_units_per_rev,
-        f_pwm_hz,
-        max_offset
-    );
-}
-
 /// Enable or disable diagnostic position-target lead from a live command.
 #[klipper_command]
 pub fn tmc_set_position_lead(

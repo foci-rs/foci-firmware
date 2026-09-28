@@ -575,31 +575,6 @@ where
         }
         TmcRequest {
             kind:
-                TmcRequestKind::SetDecouplingFeedforward {
-                    enable,
-                    r_int,
-                    l_int,
-                    pole_pairs,
-                    position_units_per_rev,
-                    f_pwm_hz,
-                    max_offset,
-                },
-            ..
-        } => {
-            defmt::info!(
-                "Decoupling feedforward: {} r_int={} l_int={} pole_pairs={} \
-                position_units_per_rev={} f_pwm_hz={} max_offset={} (via queue)",
-                enable,
-                r_int,
-                l_int,
-                pole_pairs,
-                position_units_per_rev,
-                f_pwm_hz,
-                max_offset
-            );
-        }
-        TmcRequest {
-            kind:
                 TmcRequestKind::SetPositionLead {
                     enable,
                     gain_permille,

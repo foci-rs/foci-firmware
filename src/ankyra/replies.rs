@@ -2112,8 +2112,9 @@ pub struct FociTuneResult {
     /// `PositionTune` count of rungs measured before this terminal.
     pub rungs_measured: u8,
     /// `PositionTune` feedforward paths live on the last admitted
-    /// motion stroke (bit 0 velocity, 1 transient, 2 acceleration,
-    /// 3 decoupling, 4 phase advance).
+    /// motion stroke (bit 0 velocity, 2 acceleration, 4 phase advance;
+    /// bits 1 (formerly transient) and 3 (formerly decoupling) are reserved
+    /// and never set).
     pub stimulus_feedforward_paths: u8,
     /// Wire code of the specific `PositionTuneOutcome` behind a
     /// `CommissionError::PositionTuneFailed` (0 = not applicable).

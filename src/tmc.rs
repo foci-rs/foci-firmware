@@ -129,34 +129,6 @@ impl TorqueSampleKind {
     }
 }
 
-/// Commanded-velocity and current inputs for q/d decoupling proxy feedforward.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct DecouplingFeedforwardInput {
-    /// Command velocity reference in TMC position counts per PWM cycle.
-    pub target_velocity: i32,
-    /// Actual q-axis current from `INTERIM_FOC_IQ_ID`.
-    pub foc_iq: i16,
-    /// Actual d-axis current from `INTERIM_FOC_IQ_ID`.
-    pub foc_id: i16,
-}
-
-/// Runtime configuration for q/d decoupling proxy feedforward.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct DecouplingFeedforwardConfig {
-    /// Identified count-space resistance, scaled by 1000.
-    pub r_int: u32,
-    /// Identified count-space inductance in microseconds.
-    pub l_int: u32,
-    /// Motor pole-pair count.
-    pub pole_pairs: u16,
-    /// Position units per mechanical revolution for `target_velocity`.
-    pub position_units_per_rev: u32,
-    /// PWM/current-loop update rate in Hz.
-    pub f_pwm_hz: u32,
-    /// Maximum absolute output current-target offset.
-    pub max_offset: u16,
-}
-
 /// Control-tick period while a channel is not `motor_enabled` or planner paths
 /// are not allowed, in microseconds (100 Hz).
 pub const CONTROL_PERIOD_IDLE_US: u32 = 10_000;
@@ -260,22 +232,6 @@ pub enum TmcRequestKind {
         accel_gain_permille: u16,
         /// Gain in permille applied while step intervals grow.
         decel_gain_permille: u16,
-    },
-    /// Enable or disable q/d decoupling proxy feedforward.
-    SetDecouplingFeedforward {
-        enable: bool,
-        /// Identified count-space resistance, scaled by 1000.
-        r_int: u32,
-        /// Identified count-space inductance in microseconds.
-        l_int: u32,
-        /// Motor pole-pair count.
-        pole_pairs: u16,
-        /// Position units per mechanical revolution.
-        position_units_per_rev: u32,
-        /// PWM/current-loop update rate in Hz.
-        f_pwm_hz: u32,
-        /// Maximum absolute output current-target offset.
-        max_offset: u16,
     },
     /// Enable or disable diagnostic position-target lead in the 1ms tick loop.
     SetPositionLead {
@@ -576,32 +532,6 @@ pub fn tmc_set_accel_feedforward(
             enable,
             accel_gain_permille,
             decel_gain_permille,
-        },
-    )
-}
-
-/// Build a `SetDecouplingFeedforward` request.
-#[allow(clippy::too_many_arguments)]
-pub fn tmc_set_decoupling_feedforward(
-    channel: u8,
-    enable: bool,
-    r_int: u32,
-    l_int: u32,
-    pole_pairs: u16,
-    position_units_per_rev: u32,
-    f_pwm_hz: u32,
-    max_offset: u16,
-) -> TmcRequest {
-    TmcRequest::new(
-        channel,
-        TmcRequestKind::SetDecouplingFeedforward {
-            enable,
-            r_int,
-            l_int,
-            pole_pairs,
-            position_units_per_rev,
-            f_pwm_hz,
-            max_offset,
         },
     )
 }
@@ -1082,64 +1012,6 @@ pub fn pack_abn_phi_offset(base_register: u32, phase_advance_counts: i16) -> u32
         .into_bits()
 }
 
-fn scale_decoupling_axis(
-    target_velocity: i32,
-    current: i16,
-    config: DecouplingFeedforwardConfig,
-) -> i16 {
-    if target_velocity == 0
-        || current == 0
-        || config.r_int == 0
-        || config.l_int == 0
-        || config.pole_pairs == 0
-        || config.position_units_per_rev == 0
-        || config.f_pwm_hz == 0
-        || config.max_offset == 0
-    {
-        return 0;
-    }
-
-    const TAU_MICRO: u128 = 6_283_185;
-    let magnitude = target_velocity.unsigned_abs() as u128
-        * current.unsigned_abs() as u128
-        * config.l_int as u128
-        * config.pole_pairs as u128
-        * config.f_pwm_hz as u128
-        * TAU_MICRO
-        * 1000;
-    let denominator = config.position_units_per_rev as u128
-        * 1_000_000u128
-        * 1_000_000u128
-        * config.r_int as u128;
-    if denominator == 0 {
-        return 0;
-    }
-
-    let clamped = (magnitude / denominator)
-        .min(config.max_offset as u128)
-        .min(i16::MAX as u128) as i16;
-    if (target_velocity < 0) ^ (current < 0) {
-        -clamped
-    } else {
-        clamped
-    }
-}
-
-/// Compute a bounded current-target proxy for q/d voltage decoupling.
-///
-/// The returned tuple is `(torque_offset, flux_offset)` for
-/// `PID_TORQUE_FLUX_OFFSET`. This intentionally stays in count space:
-/// `L_int` maps current-count and electrical-speed terms into voltage counts,
-/// then `R_int` maps the voltage-count estimate back into current counts.
-pub fn compute_decoupling_current_offsets(
-    input: DecouplingFeedforwardInput,
-    config: DecouplingFeedforwardConfig,
-) -> (i16, i16) {
-    let torque = scale_decoupling_axis(input.target_velocity, input.foc_id, config);
-    let flux = -scale_decoupling_axis(input.target_velocity, input.foc_iq, config);
-    (torque, flux)
-}
-
 /// Compute the diagnostic acceleration feedforward torque offset.
 ///
 /// The input `interval_add` is Klipper's `queue_step add`: the interval change
@@ -1459,23 +1331,6 @@ mod tests {
     }
 
     #[test]
-    fn decoupling_uses_planner_command_rate_independent_of_encoder_ppr() {
-        let offsets = |scale| {
-            compute_decoupling_current_offsets(
-                decoupling_input(
-                    compute_planner_command_velocity_reference(scale, 1, false),
-                    400,
-                    800,
-                ),
-                decoupling_config(5_000),
-            )
-        };
-
-        assert_eq!(offsets(planner_scale(500)), (261, -130));
-        assert_eq!(offsets(planner_scale(4_000)), (261, -130));
-    }
-
-    #[test]
     fn phase_advance_uses_planner_command_rate_independent_of_encoder_ppr() {
         let counts = |scale| {
             compute_phase_advance_counts(
@@ -1723,89 +1578,6 @@ mod tests {
         assert_eq!(positive_applied, 10);
         assert_eq!(negative_target, i32::MIN as u32);
         assert_eq!(negative_applied, -10);
-    }
-
-    fn decoupling_input(
-        target_velocity: i32,
-        foc_iq: i16,
-        foc_id: i16,
-    ) -> DecouplingFeedforwardInput {
-        DecouplingFeedforwardInput {
-            target_velocity,
-            foc_iq,
-            foc_id,
-        }
-    }
-
-    fn decoupling_config(max_offset: u16) -> DecouplingFeedforwardConfig {
-        DecouplingFeedforwardConfig {
-            r_int: 3000,
-            l_int: 4095,
-            pole_pairs: 50,
-            position_units_per_rev: 65_536,
-            f_pwm_hz: 25_000,
-            max_offset,
-        }
-    }
-
-    #[test]
-    fn decoupling_feedforward_zero_cases_disable_offsets() {
-        assert_eq!(
-            compute_decoupling_current_offsets(
-                decoupling_input(0, 400, 800),
-                decoupling_config(5000)
-            ),
-            (0, 0)
-        );
-        assert_eq!(
-            compute_decoupling_current_offsets(
-                decoupling_input(1080, 400, 800),
-                DecouplingFeedforwardConfig {
-                    r_int: 0,
-                    ..decoupling_config(5000)
-                },
-            ),
-            (0, 0)
-        );
-        assert_eq!(
-            compute_decoupling_current_offsets(
-                decoupling_input(1080, 400, 800),
-                DecouplingFeedforwardConfig {
-                    l_int: 0,
-                    ..decoupling_config(5000)
-                },
-            ),
-            (0, 0)
-        );
-    }
-
-    #[test]
-    fn decoupling_feedforward_uses_velocity_and_dq_current_signs() {
-        assert_eq!(
-            compute_decoupling_current_offsets(
-                decoupling_input(10, 400, 800),
-                decoupling_config(5000),
-            ),
-            (1308, -654)
-        );
-        assert_eq!(
-            compute_decoupling_current_offsets(
-                decoupling_input(-10, 400, 800),
-                decoupling_config(5000),
-            ),
-            (-1308, 654)
-        );
-    }
-
-    #[test]
-    fn decoupling_feedforward_clamps_both_axes() {
-        assert_eq!(
-            compute_decoupling_current_offsets(
-                decoupling_input(1080, 400, 800),
-                decoupling_config(500),
-            ),
-            (500, -500)
-        );
     }
 
     #[test]

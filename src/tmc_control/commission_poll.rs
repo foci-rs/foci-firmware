@@ -163,7 +163,6 @@ pub fn classify_wait_request(kind: &TmcRequestKind) -> CommissionWaitRequestDisp
         | TmcRequestKind::SetFluxFilter { .. }
         | TmcRequestKind::SetPositionGains { .. }
         | TmcRequestKind::SetAccelFeedforward { .. }
-        | TmcRequestKind::SetDecouplingFeedforward { .. }
         | TmcRequestKind::SetPositionLead { .. }
         | TmcRequestKind::SetPhaseAdvance { .. }
         | TmcRequestKind::SetVoltageLimit { .. } => CommissionWaitRequestDisposition::DropBusy,

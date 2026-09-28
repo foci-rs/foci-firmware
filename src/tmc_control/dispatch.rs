@@ -115,7 +115,6 @@ where
             Ok(SharedTmcDispatch::Handled)
         }
         TmcRequestKind::SetAccelFeedforward { .. }
-        | TmcRequestKind::SetDecouplingFeedforward { .. }
         | TmcRequestKind::SetPositionLead { .. }
         | TmcRequestKind::SetPhaseAdvance { .. } => Ok(SharedTmcDispatch::Handled),
         _ => Ok(SharedTmcDispatch::Unhandled),
