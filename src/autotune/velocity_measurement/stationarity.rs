@@ -908,11 +908,13 @@ impl StationarityWork {
             .and_then(|value| value.checked_sub(last_block_elapsed_us))
             .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
         let metrics = calculate_stationarity_metrics(
-            block_count as usize,
-            denominator,
-            slope_per_us,
-            residual_sum_q2,
-            lag_product_sum_q2,
+            BlockRegressionFit {
+                block_count: block_count as usize,
+                denominator,
+                slope_per_us,
+                residual_sum_q2,
+                lag_product_sum_q2,
+            },
             3,
             selection.variance_of_mean_q2,
             span_x2_us,
@@ -1719,11 +1721,13 @@ fn calculate_stationarity_metrics_from_source(
         .and_then(|value| value.checked_sub(last_block_elapsed_us))
         .ok_or(StationarityExclusion::Arithmetic)?;
     calculate_stationarity_metrics(
-        block_count,
-        denominator,
-        slope_per_us,
-        residual_sum_q2,
-        lag_product_sum_q2,
+        BlockRegressionFit {
+            block_count,
+            denominator,
+            slope_per_us,
+            residual_sum_q2,
+            lag_product_sum_q2,
+        },
         family_size,
         blocking_variance_of_mean_q2,
         span_x2_us,
@@ -1753,18 +1757,28 @@ pub(crate) fn drift_ratio_ppm(slope_q: i64, span_x2_us: u64, mean_rate_q: i64) -
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn calculate_stationarity_metrics(
+struct BlockRegressionFit {
     block_count: usize,
     denominator: i128,
     slope_per_us: f32,
     residual_sum_q2: f32,
     lag_product_sum_q2: f32,
+}
+
+fn calculate_stationarity_metrics(
+    fit: BlockRegressionFit,
     family_size: u16,
     blocking_variance_of_mean_q2: u128,
     span_x2_us: u64,
     settled: SettledRateContext,
 ) -> Result<StationarityMetrics, StationarityExclusion> {
+    let BlockRegressionFit {
+        block_count,
+        denominator,
+        slope_per_us,
+        residual_sum_q2,
+        lag_product_sum_q2,
+    } = fit;
     if block_count < 3 || !residual_sum_q2.is_finite() || !lag_product_sum_q2.is_finite() {
         return Err(StationarityExclusion::Arithmetic);
     }
