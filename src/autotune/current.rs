@@ -46,22 +46,11 @@ pub const CURRENT_AXIS_VALIDATION_STATUS_FLAGS: u8 = 7;
 /// Current target was zero, so response ratios cannot be classified.
 pub const CURRENT_AXIS_VALIDATION_ZERO_TARGET: u8 = 8;
 
-// Current validation directly gates sustained current-loop voltage from
-// INTERIM_FOC_UQ_UD_LIMITED. The TMC PID output bits latch on step-edge clipping,
-// so they stay as telemetry but are not the pass/fail saturation signal here.
 const CURRENT_AXIS_POSITION_VELOCITY_STATUS_MASK: u32 =
     (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 6) | (1 << 7);
 const CURRENT_AXIS_PID_OUTPUT_STATUS_MASK: u32 = (1 << 11) | (1 << 15);
-// enc_n/enc_2_n/aenc_n (bits 28-30) are documented as "N pulse detected" /
-// "N signal detected" events (registers.rs StatusFlags), not source-presence
-// faults, so they stay unconditionally excluded regardless of which encoder
-// is active.
 const CURRENT_AXIS_N_PULSE_STATUS_MASK: u32 = (1 << 28) | (1 << 29) | (1 << 30);
-// aenc_clipped (bit 27) is the one bit of the four that is a real analog-input
-// fault (signal out of range), so it is the only bit gated by feedback source.
 const CURRENT_AXIS_AENC_CLIPPED_STATUS_MASK: u32 = 1 << 27;
-// STATUS_FLAGS bit 31 is reserved in the TMC4671 status layout. It may appear
-// in sampled flags, but it is not an actionable current-validation fault.
 const CURRENT_AXIS_RESERVED_STATUS_MASK: u32 = 1 << 31;
 const CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK_BASE: u32 = CURRENT_AXIS_POSITION_VELOCITY_STATUS_MASK
     | CURRENT_AXIS_PID_OUTPUT_STATUS_MASK
@@ -70,18 +59,8 @@ const CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK_BASE: u32 = CURRENT_AXIS_POSITION_
 
 /// Status flags that fail current-loop validation and sustained-hold checks.
 ///
-/// `aenc_clipped` is actionable only when analog feedback is selected on
-/// either the commutation (`phi_e_source`) or position (`position_source`)
-/// selector; the ABN/analog N-pulse bits are never actionable regardless of
-/// source (see `CURRENT_AXIS_N_PULSE_STATUS_MASK`).
-///
-/// Known limitation: `feedback_config` reflects a channel's steady-state
-/// wiring, not the live `PHI_E_SELECTION`/`POSITION_SELECTION` register
-/// state. Electrical identification transiently overrides `PHI_E_SELECTION`
-/// away from its steady-state value during its open-loop phase; this is safe
-/// today only because no board declares `FeedbackSource::Analog` anywhere.
-/// A future ticket enabling `Analog` on a real board must re-audit those
-/// transient-override phases before relying on this function there.
+/// `aenc_clipped` counts only when analog feedback is selected as `phi_e_source` or
+/// `position_source`; the N-pulse bits never count.
 pub const fn current_loop_actionable_status_mask(
     feedback_config: crate::config::FeedbackConfig,
 ) -> u32 {
@@ -99,11 +78,6 @@ pub const fn current_loop_actionable_status_mask(
     }
 }
 
-// Demoted from the primitive-start entry check: transition/limiter bits a
-// preceding phase legitimately leaves set (ipark circular-limit 16-18,
-// reference-switch 20-22, PWM duty rails 24-25, flux/torque target and
-// errsum limits 8/10/12/14). They remain full-mask actionable on the
-// finish-phase checks.
 const CURRENT_AXIS_ENTRY_DEMOTED_STATUS_MASK: u32 = (1 << 8)
     | (1 << 10)
     | (1 << 12)
@@ -118,10 +92,8 @@ const CURRENT_AXIS_ENTRY_DEMOTED_STATUS_MASK: u32 = (1 << 8)
     | (1 << 25);
 
 /// Actionable status the guard checks at primitive start, before commanding
-/// motion. Narrower than [`current_loop_actionable_status_mask`]: it demotes the
-/// transition/limiter bits a preceding phase legitimately leaves set, so the
-/// entry check fails closed only on genuine pre-motion faults. The finish-phase
-/// checks keep the full mask.
+/// Narrower than [`current_loop_actionable_status_mask`]: transition/limiter bits left by a
+/// preceding phase are demoted.
 pub const fn current_loop_entry_actionable_status_mask(
     feedback_config: crate::config::FeedbackConfig,
 ) -> u32 {
@@ -478,8 +450,6 @@ pub fn current_axis_retry_decision(
 }
 
 fn retry_low_response_lambda_permille(_profile: CommissionProfile) -> u16 {
-    // Keep the retry section-wide but bounded. A full 0.5x lambda retry
-    // doubled P on OpenFFBoard and produced sustained holding squeal.
     750
 }
 
@@ -550,10 +520,7 @@ fn cap_higher_retry_at_physical_limit(
 
 /// Adjust current-loop gains according to the section retry policy.
 ///
-/// A retry changes the controller bandwidth for the whole current loop, not
-/// just the axis that first failed the short-sample gate. P tracks the new
-/// bandwidth; I stays fixed so retry does not move the tau-derived integrator
-/// zero.
+/// P tracks the new bandwidth; I stays fixed.
 pub fn retry_current_loop_gains(
     previous: CurrentGains,
     decision: CurrentAxisRetryDecision,
@@ -818,8 +785,6 @@ mod tests {
         assert!(retry.torque_p.raw() > previous.torque_p.raw());
         assert_eq!(retry.flux_i, previous.flux_i);
         assert_eq!(retry.torque_i, previous.torque_i);
-        // These metadata expectations track the retry constants. If hardware
-        // tuning moves those constants, update the expected metadata with them.
         assert_eq!(retry.effective_bandwidth_hz, 193);
         assert_eq!(retry.lambda_us, 700);
     }
@@ -877,8 +842,6 @@ mod tests {
         assert!(retry.torque_p.raw() < previous.torque_p.raw());
         assert_eq!(retry.flux_i, previous.flux_i);
         assert_eq!(retry.torque_i, previous.torque_i);
-        // These metadata expectations track the retry constants. If hardware
-        // tuning moves those constants, update the expected metadata with them.
         assert_eq!(retry.effective_bandwidth_hz, 72);
         assert_eq!(retry.lambda_us, 1868);
     }
@@ -993,8 +956,6 @@ mod tests {
             Err(CurrentGainSynthesisError::UnsupportedSynthesisPolicy { .. })
         ));
     }
-
-    // --- Validation classification ---
 
     #[test]
     fn current_sample_gate_accepts_good_flux_sample() {
@@ -1328,7 +1289,7 @@ mod tests {
             output_limited: 500,
             output_limit: 2000,
             encoder_delta_counts: 0,
-            status_flags: 0x0800_0000, // aenc_clipped only
+            status_flags: 0x0800_0000,
         };
         let feedback_config = crate::config::FeedbackConfig {
             phi_e_source: crate::config::FeedbackSource::Analog,
@@ -1351,7 +1312,7 @@ mod tests {
             output_limited: 500,
             output_limit: 2000,
             encoder_delta_counts: 0,
-            status_flags: 0x0800_0000, // aenc_clipped only
+            status_flags: 0x0800_0000,
         };
         let feedback_config = crate::config::FeedbackConfig {
             phi_e_source: crate::config::FeedbackSource::Abn,
@@ -1374,7 +1335,7 @@ mod tests {
             output_limited: 500,
             output_limit: 2000,
             encoder_delta_counts: 0,
-            status_flags: 0x7000_0000, // enc_n | enc_2_n | aenc_n, no aenc_clipped
+            status_flags: 0x7000_0000,
         };
         let feedback_config = crate::config::FeedbackConfig {
             phi_e_source: crate::config::FeedbackSource::Analog,

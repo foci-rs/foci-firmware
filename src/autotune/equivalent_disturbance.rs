@@ -72,9 +72,6 @@ impl EquivalentTorqueTargetInterval {
 }
 
 /// Transform exact encoder-rate evidence into equivalent controller disturbance.
-///
-/// The calculation retains raw displacement and elapsed-time totals through one
-/// checked `i128` rational. Each returned Q16.16 value is narrowed exactly once.
 pub fn equivalent_disturbance_from_rate(
     p_raw: u16,
     target_velocity_rpm: TmcMechanicalRpm,

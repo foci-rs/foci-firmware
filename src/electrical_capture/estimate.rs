@@ -166,9 +166,6 @@ pub struct SaliencyFinishInput {
 }
 
 /// Phi-domain second-harmonic accumulator for saliency evidence.
-///
-/// Every sum is in raw units: raw `i16` current counts, Q15 basis values,
-/// phi-count weights. Conversion to milli-counts happens once, in `finish`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcSaliencyAccumulator {
     sample_count: u32,
@@ -288,7 +285,6 @@ impl AcSaliencyAccumulator {
         let w = i128::from(self.weight_sum);
         let w_sq = w.checked_mul(w)?;
 
-        // Centered harmonic sums, still raw, scaled by W:  H' * W.
         let centered = |sum_vc: i64, sum_v: i64, basis: i64| -> Option<i128> {
             i128::from(sum_vc)
                 .checked_mul(w)?
@@ -299,7 +295,6 @@ impl AcSaliencyAccumulator {
         let hc_qc = centered(self.sum_iq_cos, self.sum_iq, self.sum_cos)?;
         let hc_qs = centered(self.sum_iq_sin, self.sum_iq, self.sum_sin)?;
 
-        // Harmonic coefficients in milli-counts: 2 * 1000 * H' / (W * Q15).
         let coefficient_denominator = w_sq.checked_mul(SALIENCY_Q15_SCALE)?;
         let coefficient = |hc: i128| -> Option<i128> {
             hc.checked_mul(2_000)?.checked_div(coefficient_denominator)
@@ -309,8 +304,6 @@ impl AcSaliencyAccumulator {
         let c_q = coefficient(hc_qc)?;
         let s_q = coefficient(hc_qs)?;
 
-        // Sensitivities of x_quad = U * |iq| / D at the frame means, in
-        // count-ratio milli per milli-count, scaled by 2^SALIENCY_JACOBIAN_SHIFT.
         let u = i128::from(input.ud_count).unsigned_abs();
         let u = i128::try_from(u).ok()?;
         let id_m = i128::from(input.frame.id_mean_milli_count);
@@ -345,7 +338,6 @@ impl AcSaliencyAccumulator {
             .checked_add(g_q.checked_mul(s_q)?)?
             .checked_div(jacobian_scale)?;
 
-        // Per-sample linearised reactance variance (count-ratio milli squared).
         let cov_dq = i128::from(self.sum_id_iq)
             .checked_mul(w)?
             .checked_sub(i128::from(self.sum_id).checked_mul(i128::from(self.sum_iq))?)?
@@ -364,8 +356,6 @@ impl AcSaliencyAccumulator {
             .checked_div(jacobian_scale.checked_mul(jacobian_scale)?)?
             .max(0);
 
-        // Centered weighted basis sums, sum(w^2 (c - c_m)^2) and friends,
-        // computed as Z * W^2 then divided back.
         let c = i128::from(self.sum_cos);
         let s = i128::from(self.sum_sin);
         let z_cc = self
@@ -396,7 +386,6 @@ impl AcSaliencyAccumulator {
             .checked_add(c.checked_mul(s)?.checked_mul(self.sum_w2)?)?
             .checked_div(w_sq)?;
 
-        // 2x2 covariance of (cos2, sin2): V = 4 sigma_x^2 Z / (W^2 Q15^2).
         let variance_denominator = w_sq
             .checked_mul(SALIENCY_Q15_SCALE)?
             .checked_mul(SALIENCY_Q15_SCALE)?;
@@ -410,7 +399,6 @@ impl AcSaliencyAccumulator {
         let v_ss = variance(z_ss)?;
         let v_cs = variance(z_cs)?;
 
-        // Largest eigenvalue: the amplitude noise variance in the worst direction.
         let mean = v_cc.checked_add(v_ss)?.checked_div(2)?;
         let half_diff = v_cc.checked_sub(v_ss)?.checked_div(2)?;
         let radicand = half_diff
@@ -990,8 +978,6 @@ fn integer_sqrt(value: u128) -> u128 {
 mod tests {
     use super::*;
 
-    /// One synthetic rotating-frame capture: samples plus the frame evidence and
-    /// accepted reactance the production path would hand to `finish`.
     struct SyntheticCapture {
         saliency: AcSaliencyAccumulator,
         frame: AcFrameEvidence,
@@ -1000,7 +986,6 @@ mod tests {
         phi_delta_counts: u32,
     }
 
-    /// Build a capture from `samples` of `(openloop_phi, weight, id, iq)`.
     fn synthetic_capture(ud_count: i16, samples: &[(u16, u32, i16, i16)]) -> SyntheticCapture {
         let mut frame_acc = AcFrameAccumulator::new();
         let mut saliency = AcSaliencyAccumulator::new();
@@ -1038,10 +1023,6 @@ mod tests {
         }
     }
 
-    /// Phasor-model currents for a salient machine: `i = U / (R + jX(theta))`
-    /// with `X(theta) = x_avg * (1 + rho * cos(2 theta + phase))`, `R / x_avg = 0.25`.
-    /// Returns `(id, iq)` in raw counts. `turns` integer electrical turns at
-    /// `per_turn` evenly spaced samples; phi is placed at Q15-table bin centers.
     fn phasor_samples(
         ud_count: i16,
         x_avg: f64,
@@ -1136,8 +1117,6 @@ mod tests {
 
     #[test]
     fn linear_estimator_centering_rejects_constant_current_under_skewed_weights() {
-        // Per-turn weights sum to one electrical turn but are concentrated in the
-        // first quadrant, so the weighted basis sums C and S are non-zero.
         let weights = [20_000u32, 20_000, 10_000, 5_000, 3_000, 3_000, 2_536, 2_000];
         let mut samples = std::vec::Vec::new();
         for _turn in 0..8u32 {
@@ -1155,16 +1134,12 @@ mod tests {
         assert_eq!(input.sin2_milli, 0);
     }
 
-    /// Deterministic pseudo-noise so the test is reproducible.
     fn lcg_noise(seed: &mut u64, amplitude: f64) -> f64 {
         *seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
         let unit = ((*seed >> 11) as f64) / ((1u64 << 53) as f64);
         (unit - 0.5) * 2.0 * amplitude
     }
 
-    /// Float reference for the spec's noise-floor formula (centered weighted
-    /// harmonic covariance, largest eigenvalue), from the same samples and the
-    /// frame's milli-count means and rms.
     fn reference_noise_floor(
         ud_count: i16,
         frame: AcFrameEvidence,
@@ -1242,7 +1217,6 @@ mod tests {
             "floor {} vs reference {reference:.1}",
             input.noise_floor_milli
         );
-        // Uniform weights over integer turns: sigma_A = sigma_x * sqrt(2 / n).
         let n = f64::from(input.sample_count);
         let sigma_x_sq_from_floor = f64::from(input.noise_floor_milli).powi(2) * n / 2.0;
         assert!(sigma_x_sq_from_floor > 0.0);

@@ -195,20 +195,14 @@ pub enum ResistanceError {
     PhaseDeadlineExceeded,
     /// An actionable TMC4671 status bit was sampled while energized.
     CriticalStatus,
-    /// The fitted or signed-anchor slope was zero or negative. Resistance is
-    /// physically always positive, so this indicates reversed current
-    /// polarity or a voltage/current sign error upstream, not a data-quality
-    /// issue the residual or drift gates would catch.
+    /// The fitted or signed-anchor slope was zero or negative.
     NonPositiveSlope,
 }
 
 impl ResistanceError {
     /// Non-zero status code for the Klipper protocol message.
     ///
-    /// Reuses [`crate::autotune::CommissionError`]'s stable numbering. A
-    /// backend I/O failure maps to the shared SPI code, and every resistance
-    /// precondition, quality-gate, or configuration failure gets its own
-    /// resistance-specific code so diagnostics can report the actionable cause.
+    /// Uses [`crate::autotune::CommissionError`]'s stable numbering.
     pub fn status_code(self) -> u8 {
         crate::autotune::CommissionError::from(self).status_code()
     }

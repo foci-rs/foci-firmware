@@ -149,7 +149,6 @@ fn slot_157_recent_directional_motion_cannot_be_masked_by_older_suffixes() {
     assert_eq!(decision.disposition, RestSelectionDisposition::Rejected);
 }
 
-/// Real values from a campaign-ending rejection.
 #[test]
 fn an_unfittable_shortest_window_does_not_veto_longer_windows_that_confirm_rest() {
     let decision = select_causal_rest_suffixes(
@@ -177,7 +176,6 @@ fn an_unfittable_shortest_window_does_not_veto_longer_windows_that_confirm_rest(
     );
 }
 
-/// The counterpart: a fittable shortest window excluding zero is recent motion.
 #[test]
 fn a_fittable_shortest_window_excluding_zero_still_vetoes_longer_windows() {
     let decision = select_causal_rest_suffixes(
@@ -387,13 +385,6 @@ fn cooperative_work_matches_synchronous_selection_across_multiple_polls() {
 
 #[test]
 fn cooperative_polling_yields_the_same_span_as_the_synchronous_path() {
-    // The streaming state machine must not compute a different regression span
-    // from the synchronous selection, or the same capture would classify two ways
-    // depending on which path read it.
-    //
-    // The fixture is the one the neighbouring selection test already uses: a
-    // repeating pattern whose fitted slope is zero, so it clears every stationarity
-    // gate and the span comparison is always reached.
     let samples = observations::<256>(|index| [1, 0, 1, 1, 0][index % 5]);
 
     let mut synchronous_blocker = DyadicBlocker::<LEVELS>::new();
@@ -543,9 +534,6 @@ fn cooperative_rest_work_emits_one_diagnostic_then_reconstructs_its_witness() {
     );
 }
 
-/// A suffix the accumulator never got to attempt (not enough retained
-/// history for that window) must not be reported with the same structural
-/// code as a suffix that was evaluated and structurally rejected.
 #[test]
 fn rest_diagnostic_marks_unattempted_suffixes_as_insufficient_history() {
     let samples = observations::<100>(|_| 0);
@@ -754,13 +742,6 @@ fn quantized_flat_tail_remains_stationary() {
 
 #[test]
 fn positive_and_negative_drift_are_rejected() {
-    // The rejection reason moved from ResolvedSlope to ExcessiveDrift when the
-    // moving classifier stopped gating on slope significance. The intent is
-    // unchanged and the fixture is untouched: a monotonic ramp in either
-    // direction must still be rejected. It is nowhere near the 200_000 ppm
-    // boundary either. The rate runs from 0 to 63 counts per sample about a mean
-    // of 31.5, so the drift across the span is roughly 2_000_000 ppm of the
-    // settled rate, an order of magnitude past the bound.
     for sign in [1, -1] {
         let samples = observations::<64>(|index| sign * i32::try_from(index).unwrap());
         let exclusion = analyze_stationarity(&samples, 1, 3).unwrap_err();
@@ -770,17 +751,6 @@ fn positive_and_negative_drift_are_rejected() {
 
 #[test]
 fn curvature_with_zero_average_slope_has_structured_residuals() {
-    // A parabola centered on the suffix has zero average slope but a large
-    // lag-one residual correlation, so this exercises the lag-one gate, not the
-    // drift bound. Its fitted drift ratio passes the 200_000 ppm bound, but not
-    // by a wide margin.
-    //
-    // The drift check runs before the lag-one check, so a future change to the
-    // blocking level or span selection that pushes this fixture's ratio over the
-    // bound flips the expected exclusion from StructuredResidual to
-    // ExcessiveDrift rather than failing loudly. No figure is quoted here on
-    // purpose: the ratio depends on which fit path is measured, and three
-    // separate derivations of it disagreed.
     let samples = observations::<64>(|index| {
         let centered = i32::try_from(index).unwrap() - 31;
         centered * centered / 16
@@ -873,9 +843,6 @@ fn first_nonstationary_extension_stops_without_stitching() {
 
 #[test]
 fn a_rejected_short_window_does_not_end_the_walk() {
-    // Structure confined to the newest quarter: the 64-sample window sees only
-    // that, while 128 and 256 reach back into the settled part and are
-    // stationary.
     let samples = observations::<256>(|index| {
         if index >= 192 {
             if (index / 4) % 2 == 0 { 10 } else { -10 }
@@ -896,12 +863,8 @@ fn a_rejected_short_window_does_not_end_the_walk() {
     );
 }
 
-/// A tail rejected by the slope or lag-one gate must retain the statistics that
-/// rejected it. Without this the failing observations are the only ones carrying
-/// no evidence, which is backwards for a diagnostic instrument.
 #[test]
 fn a_gate_rejected_tail_retains_the_margins_that_rejected_it() {
-    // A monotonic ramp in per-sample displacement cannot be stationary.
     let samples = observations::<256>(|index| 1 + (index as i32) / 8);
     let mut blocker = DyadicBlocker::<LEVELS>::new();
     let mut work = StationarityWork::new();
@@ -946,7 +909,6 @@ fn a_gate_rejected_tail_retains_the_margins_that_rejected_it() {
     );
 }
 
-/// Nothing was rejected, so there is no rejection to report.
 #[test]
 fn a_usable_tail_reports_no_rejection() {
     let samples = observations::<256>(|index| [1, 0, 1, 1, 0][index % 5]);
@@ -969,13 +931,6 @@ fn a_usable_tail_reports_no_rejection() {
     assert!(rejection.is_none());
 }
 
-/// Structured mode must report its rejection too.
-///
-/// Integral resets with structured diagnostics, so a rejected tail there took the
-/// structured completion path, which returned no rejection at all. The gate
-/// statistics were therefore absent from exactly the acquisition that needed
-/// them: four ResolvedSlope exclusions in the 2026-07-29 mirrored capture all
-/// carried a clear presence flag.
 #[test]
 fn a_structured_mode_rejection_still_reports_its_margins() {
     let samples = observations::<256>(|index| 1 + (index as i32) / 8);
@@ -1012,21 +967,16 @@ fn a_structured_mode_rejection_still_reports_its_margins() {
 
 #[test]
 fn drift_ratio_is_exact_integer_parts_per_million() {
-    // 10% of rate over the span: slope 1_000_000 rate units per second across a
-    // 2 second span is 2_000_000 of drift against a rate of 20_000_000.
     assert_eq!(drift_ratio_ppm(1_000_000, 4_000_000, 20_000_000), 100_000);
 
-    // Sign is irrelevant on both inputs; only magnitudes matter.
     assert_eq!(drift_ratio_ppm(-1_000_000, 4_000_000, 20_000_000), 100_000);
     assert_eq!(drift_ratio_ppm(1_000_000, 4_000_000, -20_000_000), 100_000);
 }
 
 #[test]
 fn drift_ratio_rounds_up_so_a_boundary_case_cannot_round_into_passing() {
-    // Exactly 200_000 ppm must stay 200_000 and pass.
     assert_eq!(drift_ratio_ppm(200_000, 2_000_000, 1_000_000), 200_000);
 
-    // Under floor division this would truncate to 0 and wrongly pass.
     assert_eq!(drift_ratio_ppm(1, 3, 1_000_000), 1);
 }
 
@@ -1037,7 +987,6 @@ fn drift_ratio_saturates_rather_than_wrapping() {
 
 #[test]
 fn drift_ratio_matches_a_hand_computed_case_at_capture_scale() {
-    // Pins the arithmetic at realistic capture magnitudes over a 60 ms span.
     assert_eq!(drift_ratio_ppm(-8_823_529, 2 * 60_000, 13_750_000), 38_503);
 }
 
@@ -1086,9 +1035,6 @@ fn settled(mean_rate_q: i64, half_width_rate_q: u64) -> SettledRateContext {
 
 #[test]
 fn a_moving_stroke_gates_on_drift_not_on_significance() {
-    // Steep but noisy: the significance test passes because the half-width is
-    // large, yet the rate moves far enough across the span that no single value
-    // describes it. The two gates are different predicates, not a loosening.
     let mut metrics = metrics_fixture(MetricsFixture {
         slope_q: 5_000_000,
         slope_half_width_q: 9_000_000,
@@ -1106,8 +1052,6 @@ fn a_moving_stroke_gates_on_drift_not_on_significance() {
 
 #[test]
 fn zero_target_rest_keeps_the_significance_test() {
-    // At rest the true slope really is zero, so proving it is the right question
-    // and the drift bound's denominator would collapse with the mean.
     let metrics = metrics_fixture(MetricsFixture {
         slope_q: 12_000,
         slope_half_width_q: 5_000,
@@ -1124,9 +1068,6 @@ fn zero_target_rest_keeps_the_significance_test() {
 
 #[test]
 fn an_inert_observation_bypasses_the_drift_gate() {
-    // sweep_evidence.rs evaluates StationarityExcluded before Inert, so a
-    // zero-rate observation reaches the classifier first. Rejecting it would
-    // relabel 15 P-ladder rungs from "did not move" to "excessive drift".
     let mut metrics = metrics_fixture(MetricsFixture {
         slope_q: 400,
         slope_half_width_q: 1_000_000,
@@ -1135,7 +1076,7 @@ fn an_inert_observation_bypasses_the_drift_gate() {
         lag_one_passed: true,
     });
 
-    let settled = settled(900, 1_500); // interval contains zero
+    let settled = settled(900, 1_500);
     classify_moving_metrics(&mut metrics, settled)
         .expect("inert observations must not be excluded for drift");
     assert_eq!(metrics.drift_ratio_ppm, u32::MAX);
@@ -1143,8 +1084,6 @@ fn an_inert_observation_bypasses_the_drift_gate() {
 
 #[test]
 fn a_structured_residual_rejection_still_reports_the_inert_bypass() {
-    // Same inert fixture as an_inert_observation_bypasses_the_drift_gate,
-    // but failing lag-one: the bypass must survive a rejection too.
     let mut metrics = metrics_fixture(MetricsFixture {
         slope_q: 400,
         slope_half_width_q: 1_000_000,
@@ -1152,7 +1091,7 @@ fn a_structured_residual_rejection_still_reports_the_inert_bypass() {
         mean_rate_q: 900,
         lag_one_passed: false,
     });
-    let settled = settled(900, 1_500); // interval contains zero
+    let settled = settled(900, 1_500);
 
     assert_eq!(
         classify_moving_metrics(&mut metrics, settled),
@@ -1161,11 +1100,6 @@ fn a_structured_residual_rejection_still_reports_the_inert_bypass() {
     assert_eq!(metrics.drift_ratio_ppm, u32::MAX);
 }
 
-/// A capture whose 64-sample tail is stationary and whose 128-sample tail is not.
-///
-/// The same shape `first_nonstationary_extension_stops_without_stitching` uses:
-/// a stationary recent tail preceded by a large step, so the family stops at 64
-/// after testing 128.
 fn suffix_64_passes_128_fails() -> [RawVelocityObservation; 256] {
     observations::<256>(|index| {
         if index >= 192 {
@@ -1200,7 +1134,6 @@ fn poll_to_completion(
 
 #[test]
 fn a_usable_completion_reports_the_selected_suffix_ratio_not_a_later_candidate() {
-    // Suffix 64 passes, 128 fails. The reported ratio must be 64's.
     let observations = suffix_64_passes_128_fails();
     let mut work = StationarityWork::default();
     let mut blocker = DyadicBlocker::<LEVELS>::new();

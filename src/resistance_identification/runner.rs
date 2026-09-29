@@ -1,36 +1,7 @@
 //! Shared register-sequenced resistance-identification runner.
 //!
-//! This is the only production code path that energizes the motor for
-//! resistance identification. Commissioning drives it with
-//! [`ResistanceRunMode::CommissioningManagedEnable`] (the managed-enable
-//! exception that owns `set_enable_pin`); the `FOCI_RESISTANCE_TEST` diagnostic
-//! drives it with [`ResistanceRunMode::ExternallyArmed`] over a motor that the
-//! normal lifecycle path has already armed and enabled.
-//!
-//! Safety invariants enforced here:
-//!
-//! - `PIDOUT_UQ_UD_LIMITS` is set to the profile's full sweep authority
-//!   (`profile.max_abs_ud()`) before any open-loop voltage command and before
-//!   the chopper is enabled, in both run modes, so no sweep point is silently
-//!   clamped. The pre-existing value is only a restore baseline, not an
-//!   authority cap, in [`ResistanceRunMode::CommissioningManagedEnable`]
-//!   (commissioning's ADC calibration phase leaves `PIDOUT_UQ_UD_LIMITS=1024`
-//!   behind as such a baseline). In [`ResistanceRunMode::ExternallyArmed`] the
-//!   pre-existing value is the motor's operational voltage authority, so a
-//!   pre-sweep check rejects with [`ResistanceError::OutOfBoundsParameter`]
-//!   when it cannot cover the sweep, instead of energizing past it.
-//! - `PWM_SV_CHOP=7` is written only during energized operation; the safe-state
-//!   restore sets it back to `0`.
-//! - In [`ResistanceRunMode::ExternallyArmed`] the runner never asserts the
-//!   enable pin; it rejects with [`ResistanceError::NotArmed`] when the motor is
-//!   not already armed for open-loop voltage.
-//! - Every exit path past the entry pre-checks and pre-energize validations
-//!   ([`ResistanceError::OutOfBoundsParameter`], [`ResistanceError::InvalidMotorType`],
-//!   [`ResistanceError::UnsupportedProfile`]) restores safe state through one
-//!   shared helper, so no `Err` return or `?` failure can leave the power
-//!   stage energized. The pre-energize validations themselves run before any
-//!   energizing register write, so a rejection there must not write the
-//!   restore sequence over an externally armed motor.
+//! Commissioning drives it with [`ResistanceRunMode::CommissioningManagedEnable`]; the
+//! `FOCI_RESISTANCE_TEST` diagnostic drives it with [`ResistanceRunMode::ExternallyArmed`].
 
 use super::profile::ResistanceProfile;
 use super::types::{ResistanceCurrentEvidence, ResistanceError, ResistanceRunResult};
@@ -113,10 +84,8 @@ pub trait ResistanceBackend {
 
 /// Run the shared resistance-identification sweep.
 ///
-/// Sequences power-stage setup, a fixed two-axis voltage sweep with signed
-/// anchors, the firmware-owned fixed-point fit, and an unconditional safe-state
-/// restore. The motor is energized only between the bounded-limit/chopper setup
-/// and the restore.
+/// Sequences power-stage setup, a fixed two-axis voltage sweep, the fixed-point fit,
+/// and a safe-state restore.
 ///
 /// # Terminal failures
 ///

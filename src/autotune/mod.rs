@@ -1,14 +1,4 @@
 //! Shared types and analysis helpers for the FOCI commissioning workflow.
-//!
-//! This module provides:
-//! - [`TransientBuffer`]: Fixed-size ring buffer for step-response capture
-//! - [`CommissionProfile`]: Tuning aggressiveness selection
-//! - [`OperatingMode`]: Load condition selection
-//! - [`CommissionError`]: Error variants for commissioning phase failures
-//! - [`CommissionStatus`]: Overall commissioning outcome
-//! - [`CommissionPhase`]: Identifies each commissioning phase for progress reporting
-//!
-//! All types are `no_std` compatible. No heap allocation is used.
 
 mod buffer;
 mod current;

@@ -1,12 +1,3 @@
-//! Host-side runner tests with a fake backend.
-//!
-//! The fake backend records every register write in order, returns scripted
-//! window samples, and tracks whether safe state was restored. The tests assert
-//! the safety-critical sequencing of `run_resistance_identification`: the
-//! voltage limit is bounded before the chopper is enabled, every failure path
-//! restores safe state, and the exposure-budget and peak-current gates reject
-//! before energizing.
-
 use core::cell::Cell;
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION, MotionMode,
@@ -23,7 +14,6 @@ use super::runner::{
 use super::state::acquisition_opportunities_through;
 use super::types::{ResistanceCurrentEvidence, ResistanceError, ResistanceWarningFlags};
 
-/// One register write recorded by the fake backend, in issue order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RecordedWrite {
     addr: u8,
@@ -38,91 +28,41 @@ enum BackendEvent {
     TripPowerStage,
 }
 
-/// Fake backend that records writes and returns scripted window samples.
 struct FakeResistanceBackend {
-    /// Ordered log of every register write.
     writes: heapless::Vec<RecordedWrite, 256>,
-    /// Profile returned to the runner.
     profile: ResistanceProfile,
-    /// Whether `is_armed_for_open_loop_voltage` reports true.
     armed_for_open_loop_voltage: bool,
-    /// Whether ADC offsets are ready.
     adc_offsets_ready: bool,
-    /// Motor type returned via MOTOR_TYPE_N_POLE_PAIRS.
     motor_type: MotorType,
-    /// Saved PIDOUT_UQ_UD_LIMITS value read at entry and restored on exit.
     saved_voltage_limit: u32,
-    /// PWM_MAXCNT readback.
     readback_pwm_maxcnt: u32,
-    /// PWM_BBM_H_BBM_L readback.
     readback_pwm_bbm: u32,
-    /// DSADC_MDEC_B_MDEC_A readback.
     readback_dsadc: u32,
-    /// PWM_SV_CHOP readback after the runner writes 7.
     readback_pwm_sv_chop: u32,
-    /// Encoder counts per revolution returned to the runner.
     encoder_counts_per_rev: u32,
-    /// Current resettable STATUS_FLAGS register contents.
     scripted_status_flags: u32,
-    /// Ordered STATUS_FLAGS observations that model hardware reassertion.
     scripted_status_reads: heapless::Vec<u32, 8>,
-    /// Next ordered STATUS_FLAGS observation.
     scripted_status_read_index: usize,
-    /// Physical phase-current count sampled during energized windows.
-    ///
-    /// Built proportional to the active UD so the fit produces a clean line.
     scripted_energized_current_count: i32,
-    /// Ordered energized samples used before the fixed/proportional script.
     scripted_energized_samples: heapless::Vec<i16, 128>,
-    /// Next ordered energized sample.
     scripted_energized_sample_index: usize,
-    /// Current gain used by the default UD-proportional script, in milli-counts per UD count.
     scripted_current_per_ud_milli: i32,
-    /// Encoder delta applied across each energized window.
     scripted_encoder_delta_count: u32,
-    /// Last UD written via UQ_UD_EXT, used to script current proportional to UD.
     last_ud: i16,
-    /// Last motion mode written via MODE_RAMP_MODE_MOTION.
     last_motion_mode: u32,
-    /// Completion timestamp of the latest UqUdExt mode write.
     energized_mode_write_us: Option<u64>,
-    /// Current-register reads in the active energized window.
     energized_window_current_reads: u16,
-    /// Monotonic encoder count returned by ABN_DECODER_COUNT.
     encoder_count: u32,
-    /// Whether the enable pin is asserted.
     enable_pin: bool,
-    /// Monotonic microsecond clock.
     elapsed_us: u64,
-    /// When `Some(n)`, the nth write (1-based) and beyond fail with Spi.
     fail_after_writes: Option<usize>,
-    /// Whether cleanup writes after containment fail.
     fail_writes_after_trip: bool,
-    /// Whether the containment hook has run.
     power_stage_tripped: bool,
-    /// Count of writes issued so far, for `fail_after_writes`.
     write_count: usize,
-    /// Scripted zero-window currents, consumed in capture order per axis.
-    ///
-    /// When non-empty, each zero window returns the next entry instead of `0`,
-    /// modelling an offset that drifts across the sweep. The cursor advances
-    /// once per zero window (on the MODE_RAMP_MODE_MOTION=Stopped write) and
-    /// wraps so a single axis's 11 zero windows can reuse a shorter script.
     scripted_zero_currents: heapless::Vec<i32, 32>,
-    /// Count of sampled zero windows, advanced on the first ADC read of each
-    /// Stopped window. The active zero window indexes
-    /// `scripted_zero_currents[count - 1]`. Counting on first sample (not on the
-    /// mode write) excludes the unsampled pre-sweep and restore Stopped writes.
     zero_windows_sampled: usize,
-    /// Whether the current Stopped window has already advanced the zero cursor.
-    /// Reset on every MODE_RAMP_MODE_MOTION write.
     zero_window_counted: bool,
-    /// Scripted positive signed-anchor current (UD = +signed_anchor_ud).
-    ///
-    /// When `Some`, the first and repeated positive-anchor energized windows
-    /// return this raw current instead of the UD-proportional default.
     scripted_positive_anchor_current: Option<i32>,
-    /// Scripted negative signed-anchor current (UD = -signed_anchor_ud).
     scripted_negative_anchor_current: Option<i32>,
     operations: usize,
     enable_transitions: heapless::Vec<bool, 8>,
@@ -131,12 +71,10 @@ struct FakeResistanceBackend {
     scripted_elapsed_index: Cell<usize>,
     record_events: bool,
     events: heapless::Vec<BackendEvent, 64>,
-    /// Value returned by `interlock_tripped`; tests set it to inject a fault.
     interlock_tripped: bool,
 }
 
 impl FakeResistanceBackend {
-    /// Build a standard, healthy fake backend.
     fn standard() -> Self {
         let profile = ResistanceProfile::standard();
         Self {
@@ -155,8 +93,6 @@ impl FakeResistanceBackend {
             scripted_status_flags: 0,
             scripted_status_reads: heapless::Vec::new(),
             scripted_status_read_index: 0,
-            // Scale current ~= UD so the high-current points clear the linear
-            // threshold and the fit stays well-conditioned.
             scripted_energized_current_count: 0,
             scripted_energized_samples: heapless::Vec::new(),
             scripted_energized_sample_index: 0,
@@ -222,10 +158,6 @@ impl FakeResistanceBackend {
         }
     }
 
-    /// Returns true when the recorded writes end in the safe-state restore set.
-    ///
-    /// Safe-state restore writes, in order: motion mode 0, UQ_UD_EXT 0,
-    /// PWM_SV_CHOP 0, and the saved PIDOUT_UQ_UD_LIMITS.
     fn wrote_safe_state(&self) -> bool {
         let mode = MODE_RAMP_MODE_MOTION.addr();
         let uq_ud = UQ_UD_EXT.addr();
@@ -243,27 +175,14 @@ impl FakeResistanceBackend {
         has(mode, 0) && has(uq_ud, 0) && has(chop, 0) && has(limits, self.saved_voltage_limit)
     }
 
-    /// Returns true when the backend recorded no register writes at all.
-    ///
-    /// A pre-energize validation reject (authority/motor-type/exposure) runs
-    /// before the runner has written anything -- not even the power-stage
-    /// setup writes the safe-state restore would otherwise undo -- so the
-    /// write log must be completely empty. This is a stronger assertion than
-    /// "no restore writes": it also proves the runner never reached the
-    /// energizing body.
     fn wrote_nothing(&self) -> bool {
         self.writes.is_empty()
     }
 
-    /// Current sampled for the active energized window, proportional to UD.
     fn energized_current_for_ud(&self) -> i32 {
         if self.scripted_energized_current_count != 0 {
-            // Tests that force a fixed peak current use the override directly.
             return self.scripted_energized_current_count;
         }
-        // Scripted signed-anchor currents override the UD-proportional default
-        // so a test can pin the exact raw anchor reads independently of the
-        // zero windows.
         let anchor_ud = self.profile.signed_anchor_ud;
         if self.last_ud == anchor_ud
             && let Some(current) = self.scripted_positive_anchor_current
@@ -275,16 +194,9 @@ impl FakeResistanceBackend {
         {
             return current;
         }
-        // Clean line: current count tracks UD count with a configurable gain
-        // so tests can model higher Vbus without changing the fit linearity.
         i32::from(self.last_ud) * self.scripted_current_per_ud_milli / 1000
     }
 
-    /// Current sampled for the active zero window.
-    ///
-    /// Returns `0` unless a drift script is loaded, in which case the entry at
-    /// the current cursor is returned (the cursor advances per zero window when
-    /// MODE_RAMP_MODE_MOTION is set to Stopped).
     fn zero_current_for_window(&self) -> i32 {
         if self.scripted_zero_currents.is_empty() {
             return 0;
@@ -294,10 +206,6 @@ impl FakeResistanceBackend {
         self.scripted_zero_currents[index]
     }
 
-    /// Packed ADC_IWY_IUX value for the active window.
-    ///
-    /// Both halves carry the same scripted current so either axis channel reads
-    /// the intended value.
     fn packed_phase_current(&mut self) -> u32 {
         let energized = self.last_motion_mode == 8;
         let value = if energized
@@ -366,8 +274,6 @@ impl ResistanceBackend for FakeResistanceBackend {
             if self.last_motion_mode == MotionMode::UqUdExt as u32 {
                 self.energized_window_current_reads += 1;
             }
-            // The first ADC read of a Stopped window advances the drift-script
-            // cursor, so only sampled zero windows consume a script entry.
             if self.last_motion_mode == 0 && !self.zero_window_counted {
                 self.zero_windows_sampled += 1;
                 self.zero_window_counted = true;
@@ -385,8 +291,6 @@ impl ResistanceBackend for FakeResistanceBackend {
         self.operations += 1;
         self.elapsed_us += self.io_elapsed_us;
         self.write_count += 1;
-        // Record every attempted write, including ones that fail, so that
-        // safe-state restore is observable even after a backend error.
         self.writes
             .push(RecordedWrite { addr, value })
             .expect("write log overflow");
@@ -399,8 +303,6 @@ impl ResistanceBackend for FakeResistanceBackend {
                 self.energized_mode_write_us = Some(self.elapsed_us);
                 self.energized_window_current_reads = 0;
             }
-            // A new window begins; arm the zero cursor to advance on this
-            // window's first ADC sample (if it is a Stopped window).
             self.zero_window_counted = false;
         }
         if addr == STATUS_FLAGS.addr() && value == 0 {
@@ -420,8 +322,6 @@ impl ResistanceBackend for FakeResistanceBackend {
     async fn delay_ms(&mut self, ms: u64) {
         self.elapsed_us = self.elapsed_us.saturating_add(ms.saturating_mul(1000));
         if self.last_motion_mode == 8 {
-            // Model bounded rotor motion while an energized window dwells, so the
-            // encoder-move detector sees a delta between the before/after reads.
             self.encoder_count = self
                 .encoder_count
                 .wrapping_add(self.scripted_encoder_delta_count);
@@ -476,7 +376,6 @@ impl ResistanceBackend for FakeResistanceBackend {
     }
 }
 
-/// Assert that `first_addr` is written before `second_addr` in the log.
 fn assert_write_order(writes: &[RecordedWrite], first_addr: u8, second_addr: u8) {
     let first = writes
         .iter()
@@ -1096,10 +995,6 @@ fn runner_sets_status_flags_warning_when_sampled_status_matches_mask() {
         expected_status_flags & backend.profile().status_flags_warn_mask,
         0
     );
-    // A clean baseline (read 1), then the flag first appears at the
-    // post-clear verify read (read 2) and every read after, since the
-    // script queue is exhausted and reads fall back to the last scripted
-    // value: this is genuinely sampled evidence, not an inherited baseline.
     backend.script_status_reads(&[0, expected_status_flags]);
 
     let result = block_on(run_resistance_identification(
@@ -1132,11 +1027,6 @@ fn assert_written_before_restore(writes: &[RecordedWrite], addr: u8, value: u32)
 
 #[test]
 fn commissioning_mode_uses_full_sweep_authority_despite_low_saved_baseline() {
-    // ADC calibration intentionally leaves PIDOUT_UQ_UD_LIMITS=1024 as a
-    // restore baseline (see commissioning::inner::adc::step_adc_calibrate).
-    // The runner must not clamp the sweep's PIDOUT limit to that baseline:
-    // doing so silently clamps every sweep point below the baseline,
-    // corrupting the fit while still recording the unclamped requested UD.
     let mut backend = FakeResistanceBackend::standard();
     backend.saved_voltage_limit = 1024;
     let max_abs_ud = u32::from(backend.profile().max_abs_ud().unsigned_abs());
@@ -1157,14 +1047,6 @@ fn commissioning_mode_uses_full_sweep_authority_despite_low_saved_baseline() {
 
 #[test]
 fn externally_armed_mode_rejects_when_saved_limit_is_below_sweep_authority() {
-    // For a diagnostic run over an externally-armed motor, the operational
-    // voltage limit is the authority and must not be exceeded by the sweep.
-    //
-    // This is a pre-energize validation: it runs before any power-stage
-    // setup write, so the rejection must not disturb a motor the runner
-    // never energized. Asserting `wrote_nothing` (not `wrote_safe_state`)
-    // proves the runner did not write the safe-state restore sequence over
-    // an externally armed motor it left untouched.
     let mut backend = FakeResistanceBackend::standard();
     let max_abs_ud = u32::from(backend.profile().max_abs_ud().unsigned_abs());
     backend.saved_voltage_limit = max_abs_ud - 1;
@@ -1186,10 +1068,6 @@ fn externally_armed_mode_rejects_when_saved_limit_is_below_sweep_authority() {
 
 #[test]
 fn externally_armed_mode_rejects_wrong_motor_type_without_restore() {
-    // The MOTOR_TYPE check is a pre-energize validation (a register read, no
-    // energizing write): rejecting here must not write the safe-state
-    // restore sequence over an externally armed motor the runner never
-    // energized.
     let mut backend = FakeResistanceBackend::standard();
     backend.motor_type = foci_tmc4671::registers::MotorType::ThreePhase;
 
@@ -1225,16 +1103,7 @@ fn externally_armed_mode_proceeds_when_saved_limit_meets_sweep_authority() {
 
 #[test]
 fn runner_rejects_profile_exceeding_exposure_budget() {
-    // The exposure-budget gate is a pre-energize validation: it runs before
-    // any power-stage setup write, so the rejection must not write the
-    // safe-state restore sequence -- there is nothing to restore, and a
-    // restore write would disturb a motor (in `ExternallyArmed` mode) the
-    // runner never energized. Use `ExternallyArmed` here specifically so the
-    // assertion proves the externally-armed motor is left untouched, not
-    // merely that commissioning's enable pin was never asserted.
     let mut backend = FakeResistanceBackend::standard();
-    // Drop the total-exposure budget below the fixed per-axis exposure so the
-    // static budget gate must reject before any energizing.
     backend.profile.max_total_exposure = backend.profile.exposure_per_axis() - 1;
 
     let err = block_on(run_resistance_identification(
@@ -1254,26 +1123,9 @@ fn runner_rejects_profile_exceeding_exposure_budget() {
 
 #[test]
 fn sweep_point_is_bracketed_against_adjacent_zero_windows_not_initial_zero() {
-    // Regression for the drift-compensation bug: every sweep point was
-    // zero-subtracted against `(initial_zero + own trailing)/2`, biasing late
-    // points against a stale start-of-sweep zero. The fix brackets each point
-    // against its ADJACENT zeros: the prior point's trailing zero and its own
-    // trailing zero.
-    //
-    // The script drifts only the trailing zero of the point preceding the
-    // ud=800 sweep point (index 2). Energized currents track UD one-to-one, so
-    // point 2 reads 800. Its adjacent zeros are (120 + 0)/2 = 60, giving a
-    // delta of 740 -- just below the 750 linear threshold, so the point is
-    // EXCLUDED. Under the old initial-zero bracket the zero would be
-    // (0 + 0)/2 = 0, giving a delta of 800 and SELECTING the point. The
-    // selected-point mask therefore pins which bracketing math ran.
     let mut backend = FakeResistanceBackend::standard();
-    // Sampled zero windows per axis, in capture order with the 95% headroom stop:
-    //   [initial, trailing(p0..p6) x7, repeated_zero, negative_zero] = 10.
-    // Only the trailing zero of point 1 (index 2) carries drift, on each axis.
     backend.scripted_zero_currents = heapless::Vec::from_slice(&[
-        0, 0, 120, 0, 0, 0, 0, 0, 0, 0, // axis 0
-        0, 0, 120, 0, 0, 0, 0, 0, 0, 0, // axis 1
+        0, 0, 120, 0, 0, 0, 0, 0, 0, 0, 0, 0, 120, 0, 0, 0, 0, 0, 0, 0,
     ])
     .unwrap();
 
@@ -1284,16 +1136,12 @@ fn sweep_point_is_bracketed_against_adjacent_zero_windows_not_initial_zero() {
     .result()
     .expect("adjacent-bracket sweep should fit");
 
-    // ud=800 is sweep index 2. Adjacent bracket excludes it (delta 740 < 750).
     assert_eq!(
         result.axis0.selected_mask & (1 << 2),
         0,
         "ud=800 point must be excluded under adjacent-zero bracketing (delta 740), got mask {:#010b}",
         result.axis0.selected_mask
     );
-    // The old initial-zero bracket would have selected it (delta 800 >= 750);
-    // assert the remaining measured high-current points are still selected so
-    // the fit is well-formed and the exclusion is specifically point 2.
     assert_eq!(
         result.axis0.selected_mask, 0b0111_1000,
         "only the measured high-current points clear the threshold under adjacent bracketing"
@@ -1302,14 +1150,7 @@ fn sweep_point_is_bracketed_against_adjacent_zero_windows_not_initial_zero() {
 
 #[test]
 fn signed_anchor_positive_current_is_zero_subtracted_like_the_negative_anchor() {
-    // Regression for the signed-anchor consistency bug: the first positive
-    // anchor was stored RAW while the negative and repeated anchors were
-    // zero-subtracted, so `build_signed_anchor` mixed raw and zero-subtracted
-    // currents and corrupted slope, asymmetry, and drift. With a constant
-    // nonzero zero offset of 100, the positive anchor (raw 960) must be reported
-    // as the zero-subtracted 860 -- consistent with the negative anchor.
     let mut backend = FakeResistanceBackend::standard();
-    // Every zero window reads 100, so each anchor's bracket zero is also 100.
     backend.scripted_zero_currents = heapless::Vec::from_slice(&[100; 11]).unwrap();
 
     let result = block_on(run_resistance_identification(
@@ -1324,15 +1165,11 @@ fn signed_anchor_positive_current_is_zero_subtracted_like_the_negative_anchor() 
         .signed_anchor
         .expect("axis must report signed-anchor evidence");
 
-    // Positive anchor: raw energized 960 minus zero 100 = 860, NOT the raw 960.
     assert_eq!(
         anchor.positive_current_count, 860,
         "first positive anchor must be zero-subtracted (960 - 100), not raw 960"
     );
-    // Repeated positive anchor: same zero-subtraction.
     assert_eq!(anchor.repeated_positive_current_count, 860);
-    // Negative anchor: raw -960 minus zero 100 = -1060 (already zero-subtracted
-    // before the fix; asserted here to pin the consistent treatment).
     assert_eq!(anchor.negative_current_count, -1060);
 }
 
@@ -1713,8 +1550,6 @@ fn setup_refuses_to_enable_when_the_interlock_trips_after_the_status_clear() {
     );
     assert!(!backend.enable_pin);
 
-    // The fault latches in the window the clear just opened: firmware holds it,
-    // but the chip's own copy was erased, so the re-read below comes back clean.
     backend.interlock_tripped = true;
 
     assert_eq!(
@@ -1746,8 +1581,6 @@ fn warning_only_status_is_retained_without_terminating_sample() {
     )
     .unwrap();
     let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
-    // Raised only after the pre-excitation baseline read and clear, so this
-    // is genuinely observed during the run rather than inherited.
     backend.scripted_status_flags = 1 << 28;
 
     assert!(matches!(

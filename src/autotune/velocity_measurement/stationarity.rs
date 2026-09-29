@@ -6,18 +6,10 @@ use super::{
     estimate_confidence,
 };
 
-/// Reported drift ratio when no regression produced one.
-///
-/// Defaulting to the sentinel rather than to zero matters: a zero reads as
-/// "measured, and tiny", which is the opposite of the truth on a path that
-/// measured nothing. Defaulting this way also means a completion path added later
-/// cannot silently report no drift.
 const NO_REPORTABLE_DRIFT_RATIO_PPM: u32 = u32::MAX;
 
 const MICROS_PER_SECOND: f32 = 1_000_000.0;
 const LAG_ONE_Q_SCALE: f32 = 1_000_000.0;
-// Reconstruction starts only after the bounded rest decision is complete, so
-// doubling this zero-target quantum keeps the total inside the 236-poll budget.
 const REST_WITNESS_OBSERVATIONS_PER_STEP: usize = 16;
 
 /// Reason a captured tail cannot support a stationary settled estimate.
@@ -33,13 +25,7 @@ pub enum StationarityExclusion {
     StructuredResidual,
     /// Checked arithmetic or a numeric conversion failed.
     Arithmetic,
-    /// The rate moved too far across the regression span to be described by a
-    /// single settled value.
-    ///
-    /// Distinct from [`Self::ResolvedSlope`], which asks whether a slope is
-    /// statistically distinguishable from zero and is retained for zero-target
-    /// rest. This asks whether the magnitude of the drift is tolerable, which is
-    /// the meaningful question on a moving stroke.
+    /// The rate drifted too far across the regression span to be described by one value.
     ExcessiveDrift,
 }
 
@@ -72,10 +58,6 @@ pub struct StationarySuffix {
     /// Doubled midpoint-to-midpoint regression span in microseconds.
     pub span_x2_us: u64,
     /// Drift across the regression span, parts per million of settled rate.
-    ///
-    /// Carried on the suffix rather than only on the completion envelope because
-    /// the state machine keeps testing longer suffixes after storing a winner. A
-    /// ratio held only on the envelope would be a later failing candidate's.
     /// [`u32::MAX`] means no finite reportable ratio.
     pub drift_ratio_ppm: u32,
     /// Number of nested suffix candidates examined.
@@ -106,10 +88,6 @@ pub struct SuffixDiagnostic {
     /// Positive clearance or negative rejection beyond the lag-one interval.
     pub lag_one_rejection_margin_q: i32,
     /// Fitted rate slope in fixed-point rate units per second.
-    ///
-    /// Carried alongside the margins because a margin is `half_width - |slope|`
-    /// and cannot recover either term, so a rejection could report how far it
-    /// missed but not how fast the tail was actually drifting.
     pub slope_q: i64,
     /// Outward-rounded family-wise slope half-width in the same units.
     pub slope_half_width_q: u64,
@@ -148,16 +126,11 @@ struct StationarityMetrics {
     lag_one_passed: bool,
     slope_rejection_margin_q: i64,
     lag_one_rejection_margin_q: i32,
-    /// Doubled midpoint-to-midpoint regression span in microseconds.
     span_x2_us: u64,
-    /// Drift across the span as parts per million of the settled rate.
     drift_ratio_ppm: u32,
 }
 
 /// Maximum raw observations consumed by one cooperative stationarity step.
-///
-/// Eight keeps one F407 work quantum below the outer-safety observation-gap
-/// guard while leaving complete analysis inside the settle-derived budget.
 pub const STATIONARITY_WORK_OBSERVATIONS_PER_STEP: usize = 8;
 
 /// Result of one bounded cooperative stationarity-analysis step.
@@ -167,9 +140,7 @@ pub enum StationarityWorkPoll {
     Pending,
     /// The declared suffix family has been classified.
     ///
-    /// `rejection` carries the gate statistics of the suffix that rejected the
-    /// tail. It is `None` for a usable tail and for exclusions decided before the
-    /// gates, such as a missing blocking plateau, which produce no statistics.
+    /// `rejection` is `None` for a usable tail and for exclusions decided before the gates.
     Complete {
         /// Binding stationarity decision.
         result: StationarityResult,
@@ -177,9 +148,7 @@ pub enum StationarityWorkPoll {
         rejection: Option<SuffixDiagnostic>,
         /// Drift across the regression span, parts per million of settled rate.
         ///
-        /// Present on every completion, not only rejections, because the field is
-        /// reported on every observation. [`u32::MAX`] means no finite reportable
-        /// ratio, which is what the paths that never reached a regression report.
+        /// [`u32::MAX`] means no finite reportable ratio.
         drift_ratio_ppm: u32,
     },
     /// Every scored-rest suffix has been classified for causal reporting.
@@ -263,26 +232,20 @@ enum StationarityWorkStage {
 #[derive(Debug, Clone, Copy)]
 struct StructuredStationarityAccumulator {
     binding_exclusion: StationarityExclusion,
-    /// Compact inputs needed to reconstruct the binding post-fit diagnostic.
     binding: RetainedPostFitDiagnostic,
     passing_suffix_mask: u8,
     common_interval_valid: bool,
     common_rate_interval_q: [i64; 2],
     binding_slope_margin_q: i64,
     binding_lag_one_margin_q: i32,
-    /// Drift ratio evaluated for the binding suffix, or [`u32::MAX`] if none was.
     binding_drift_ratio_ppm: u32,
-    /// Longest suffix that cleared both gates, if any did after the binding one failed.
     selected: Option<StationarySuffix>,
 }
 
-/// Why one suffix was refused, and the evidence behind that refusal.
 #[derive(Debug, Clone, Copy)]
 struct SuffixRefusal {
     exclusion: StationarityExclusion,
     rejection: Option<SuffixDiagnostic>,
-    /// Ratio evaluated for the rejected candidate, or
-    /// [`NO_REPORTABLE_DRIFT_RATIO_PPM`] when it never reached a regression.
     drift_ratio_ppm: u32,
 }
 
@@ -482,10 +445,6 @@ impl StationarityWork {
     }
 
     /// Advance analysis by one bounded raw-observation quantum.
-    ///
-    /// Moving and diagnostic work visit at most
-    /// `STATIONARITY_WORK_OBSERVATIONS_PER_STEP` observations. Rest-witness
-    /// reconstruction visits at most 16 after the diagnostic is complete.
     pub fn poll<const LEVELS: usize, S>(
         &mut self,
         observations: &S,
@@ -631,7 +590,6 @@ impl StationarityWork {
                     },
                 );
             }
-            // Returns before any regression is attempted, so there is no ratio.
             return self.finish_on_exclusion(
                 observations,
                 blocker,
@@ -664,7 +622,6 @@ impl StationarityWork {
                     },
                 );
             }
-            // Returns before slope_q or span_x2_us exist, so there is no ratio.
             return self.finish_on_exclusion(
                 observations,
                 blocker,
@@ -1034,20 +991,17 @@ impl StationarityWork {
                     Err(_) if matches!(self.output, StationarityWorkOutput::Structured(_)) => {
                         self.advance_structured(observations, blocker, suffix_index, None, None)
                     }
-                    Err(exclusion) => {
-                        // A post-fit rejection evaluated a ratio, so it reports it.
-                        self.finish_on_exclusion(
-                            observations,
-                            blocker,
-                            suffix_index,
-                            SuffixRefusal {
-                                exclusion,
-                                rejection: Some(diagnostic),
-                                drift_ratio_ppm: metrics.drift_ratio_ppm,
-                            },
-                            mode,
-                        )
-                    }
+                    Err(exclusion) => self.finish_on_exclusion(
+                        observations,
+                        blocker,
+                        suffix_index,
+                        SuffixRefusal {
+                            exclusion,
+                            rejection: Some(diagnostic),
+                            drift_ratio_ppm: metrics.drift_ratio_ppm,
+                        },
+                        mode,
+                    ),
                 }
             }
             Err(_) if matches!(self.output, StationarityWorkOutput::Structured(_)) => {
@@ -1062,7 +1016,6 @@ impl StationarityWork {
             {
                 Err(VelocityMeasurementError::ArithmeticOverflow)
             }
-            // The metrics themselves failed, so slope_q and span_x2_us never existed.
             Err(exclusion) => self.finish_on_exclusion(
                 observations,
                 blocker,
@@ -1077,17 +1030,6 @@ impl StationarityWork {
         }
     }
 
-    /// Complete on a rejected candidate, keeping any suffix already selected.
-    ///
-    /// `drift_ratio_ppm` is the ratio evaluated for the *rejected* candidate, or
-    /// [`NO_REPORTABLE_DRIFT_RATIO_PPM`] when the candidate never reached a
-    /// regression. It is used only when nothing was selected: an already-selected
-    /// suffix reports its own ratio, because a later failing candidate must not
-    /// overwrite the ratio of the suffix that actually won.
-    ///
-    /// A rejection with nothing selected advances to the next declared suffix
-    /// rather than ending the walk: the shortest window is the noisiest, and a
-    /// longer one is often stationary. Only an exhausted walk excludes.
     fn finish_on_exclusion<const LEVELS: usize, S>(
         &mut self,
         observations: &S,
@@ -1176,7 +1118,6 @@ impl StationarityWork {
         if let Some(diagnostic) = diagnostic {
             accumulator.observe(suffix_index, diagnostic);
         }
-        // Visited shortest first, so a later pass supersedes an earlier one.
         if passing.is_some() {
             accumulator.selected = passing;
         }
@@ -1195,8 +1136,6 @@ impl StationarityWork {
             return Ok(StationarityWorkPoll::Pending);
         }
         self.stage = StationarityWorkStage::Done;
-        // The accumulator stays in `output`, so the rejected window is still
-        // reported as structured evidence alongside a usable verdict.
         if let Some(mut selected) = accumulator.selected {
             selected.tested_suffixes = next_index;
             return Ok(StationarityWorkPoll::Complete {
@@ -1356,17 +1295,6 @@ fn work_observations_per_step(mode: StationarityWorkMode) -> usize {
     }
 }
 
-/// Exclusion reasons reachable while gating a zero-target rest capture.
-///
-/// `ExcessiveDrift` is deliberately absent. Rest gates on slope significance, so
-/// the drift bound cannot reject here, and encoding that in the type keeps
-/// `rest_structural_code` total without a wire variant that never occurs.
-///
-/// `Arithmetic` is deliberately absent too. A rest-path arithmetic failure is
-/// intercepted at the poll boundary and surfaces as
-/// [`VelocityMeasurementError::ArithmeticOverflow`] before it can reach
-/// `rest_structural_code`, so a structural code for it would never be produced.
-/// Do not re-add it without a producer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum RestExclusion {
     NoBlockingPlateau,
@@ -1556,10 +1484,7 @@ fn suffix_diagnostic_from_metrics(
 
 /// Re-evaluate the lag-one residual gate for a declared confidence family.
 ///
-/// This uses the same point estimate, selected block population, null, and
-/// family-scaled half-width as the binding stationarity classifier. It permits a
-/// caller with a predeclared family larger than the stationarity diagnostic's
-/// family of three to reproduce the gate without reusing that narrower verdict.
+/// Uses the binding classifier's estimate, population, null and scaled half-width.
 pub fn lag_one_passes_family(
     lag_one_q: i32,
     block_count: u32,
@@ -1589,7 +1514,6 @@ where
 {
     let mut selected: Option<StationarySuffix> = None;
     let mut tested_suffixes = 0u8;
-    // Reported when the walk runs out of windows without selecting one.
     let mut last_exclusion = StationarityExclusion::TooFewDecorrelatedBlocks;
 
     for suffix_len in VELOCITY_SUFFIX_LENGTHS {
@@ -1807,7 +1731,6 @@ fn calculate_stationarity_metrics_from_source(
     )
 }
 
-/// Settled-rate quantities the drift bound needs but the regression does not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SettledRateContext {
     /// Exact settled mean rate in fixed-point rate units.
@@ -1816,19 +1739,6 @@ pub(crate) struct SettledRateContext {
     pub half_width_rate_q: u64,
 }
 
-/// Drift across the regression span as parts per million of the settled rate.
-///
-/// The parts-per-million factor cancels exactly: `slope_q` is in rate units per
-/// second and `mean_rate_q` in rate units, so `slope_q * span_seconds * 1e6 /
-/// mean_rate_q` reduces to `slope_q * span_us / mean_rate_q`.
-///
-/// The span is passed doubled so its halves stay integral, and the single
-/// `div_ceil` therefore applies to the exact rational. Rounding up biases toward
-/// rejection, the conservative direction for a guard against a stroke that no
-/// single rate describes.
-///
-/// Returns [`u32::MAX`] when the quotient does not fit, which the caller treats
-/// as "no finite reportable ratio" rather than as a magnitude.
 pub(crate) fn drift_ratio_ppm(slope_q: i64, span_x2_us: u64, mean_rate_q: i64) -> u32 {
     let denominator = u128::from(mean_rate_q.unsigned_abs()).saturating_mul(2);
     if denominator == 0 {
@@ -1907,28 +1817,12 @@ fn calculate_stationarity_metrics(
     })
 }
 
-/// Parts-per-million of settled rate a moving stroke may drift across its span.
 pub(crate) const MAX_MOVING_DRIFT_PPM: u32 = 200_000;
 
-/// Apply the moving-stroke stationarity gates.
-///
-/// A moving stroke is bounded on how far the rate moves, not on whether the
-/// fitted slope is statistically distinguishable from zero. The significance test
-/// tightens as data accumulates, because the half-width falls while the fitted
-/// slope does not, so a longer and better measurement of a real machine rejects
-/// where a shorter one passed. The drift bound asks the question that matters
-/// instead: whether one settled value can describe the whole span.
 fn classify_moving_metrics(
     metrics: &mut StationarityMetrics,
     settled: SettledRateContext,
 ) -> Result<(), StationarityExclusion> {
-    // The settled interval containing zero is exactly the Inert condition.
-    // sweep_evidence classifies StationarityExcluded before Inert, so gating here
-    // would replace a correct "did not move" verdict with a wrong one on every
-    // rung below breakaway.
-    //
-    // Mutates in place so the bypass survives every return path, including a
-    // rejection below.
     let interval_contains_zero = settled.mean_rate_q.unsigned_abs() <= settled.half_width_rate_q;
     if interval_contains_zero {
         metrics.drift_ratio_ppm = NO_REPORTABLE_DRIFT_RATIO_PPM;
@@ -1941,10 +1835,6 @@ fn classify_moving_metrics(
     Ok(())
 }
 
-/// Apply the zero-target rest stationarity gates.
-///
-/// Returns [`RestExclusion`], which cannot represent `ExcessiveDrift`, so the rest
-/// wire taxonomy stays total without a variant that never occurs.
 fn classify_rest_metrics(
     metrics: StationarityMetrics,
 ) -> Result<StationarityMetrics, RestExclusion> {
@@ -1964,13 +1854,6 @@ fn analyze_stationarity_with_blocking_variance(
     family_size: u16,
     blocking_variance_of_mean_q2: u128,
 ) -> Result<StationarityMetrics, StationarityExclusion> {
-    // These callers supply a synthetic blocking variance rather than a real
-    // dyadic-blocker selection, so there is no confidence half-width to report.
-    // The mean rate is still exact, taken over the whole capture, because the
-    // moving classifier gates on it: a placeholder zero would make every caller
-    // take the inert bypass and stop exercising the drift bound entirely. A zero
-    // half-width makes the interval a point, so a fixture whose mean rate is
-    // exactly zero is inert here and any other fixture is moving.
     let settled = SettledRateContext {
         mean_rate_q: rate_block_at(observations, 0, 0, observations.len())?
             .rate_q()

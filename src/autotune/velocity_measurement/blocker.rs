@@ -152,7 +152,6 @@ impl<const LEVELS: usize> DyadicBlocker<LEVELS> {
         selected
     }
 
-    /// Return whether any two consecutive plateau-like doublings exist.
     pub(crate) fn has_two_doubling_plateau(&self) -> bool {
         if LEVELS < 3 {
             return false;

@@ -5,11 +5,6 @@ pub const STANDARD_UD_POINTS: [i16; 8] = [512, 640, 800, 960, 1120, 1280, 1440, 
 
 /// Diagnostic-current policy for the resistance sweep, as a permille fraction
 /// of the configured run-current limit.
-///
-/// The fit only selects points at or above `linear_current_threshold_count`,
-/// so this phase needs a high working range. 600 keeps the sweep below the
-/// configured run current while preserving existing behavior, which needs at
-/// least 569 permille.
 pub const RESISTANCE_DIAGNOSTIC_CURRENT_FRACTION: crate::autotune::Permille =
     crate::autotune::Permille::new(600);
 
@@ -18,20 +13,10 @@ const _: () = assert!(
         && RESISTANCE_DIAGNOSTIC_CURRENT_FRACTION.raw() <= 1000
 );
 
-// STATUS_FLAGS bit 31 is reserved in the TMC4671 status layout. It may
-// appear in sampled flags, but it is not an actionable resistance-run
-// fault. See `autotune::current::current_loop_actionable_status_mask`'s
-// identical exclusion of this bit.
 const RESISTANCE_RUN_RESERVED_STATUS_MASK: u32 = 1 << 31;
 
-/// Documented actionable mask for resistance-run `STATUS_FLAGS` warnings.
-///
-/// Deliberately broader than `autotune::current::current_loop_actionable_status_mask`,
-/// which also excludes several bits that are specifically not meaningful for
-/// closed-loop current validation (PID output clipping, inactive-encoder
-/// bits). Those distinctions do not apply to the resistance run's open-loop
-/// excitation, so only the one bit documented as hardware-reserved is
-/// excluded here.
+/// Actionable mask for resistance-run `STATUS_FLAGS` warnings: every bit except the
+/// hardware-reserved bit 31.
 pub const fn resistance_run_actionable_status_mask() -> u32 {
     !RESISTANCE_RUN_RESERVED_STATUS_MASK
 }
@@ -161,12 +146,6 @@ mod tests {
     fn standard_profile_status_flags_warn_mask_excludes_only_the_reserved_bit() {
         let profile = ResistanceProfile::standard();
 
-        // STATUS_FLAGS bit 31 is reserved in the TMC4671 status layout (see
-        // `autotune::current::current_loop_actionable_status_mask`'s
-        // identical exclusion) and must never itself trigger a warning.
-        // Every other bit remains actionable for the resistance-run warning
-        // classification, unlike the hard-fail current-loop mask which also
-        // excludes several current-loop-specific bits not relevant here.
         assert_eq!(profile.status_flags_warn_mask, !(1u32 << 31));
     }
 }

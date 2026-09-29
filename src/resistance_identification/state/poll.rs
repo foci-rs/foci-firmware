@@ -106,9 +106,6 @@ impl ResistanceRunner {
             }
             8 => match backend.read_register(STATUS_FLAGS.addr()).await {
                 Ok(flags) => {
-                    // Baseline only; never mixed into status_flags_or or
-                    // warning_flags, which report evidence observed after
-                    // the clear below.
                     self.baseline_status_flags = flags;
                     Ok(())
                 }
@@ -139,9 +136,6 @@ impl ResistanceRunner {
         if operation < 10 {
             self.state = ResistanceState::Setup(operation + 1);
         } else {
-            // Step 9 erased the chip's copy of STATUS_FLAGS, so step 10's
-            // re-read cannot see a fault latched since. Re-check the firmware
-            // interlock, with no await before the pin write.
             if backend.interlock_tripped() {
                 return self.fail(backend, ResistanceError::CriticalStatus);
             }

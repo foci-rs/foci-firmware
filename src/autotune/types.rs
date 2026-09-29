@@ -3,10 +3,7 @@ use super::HoldGateAccumulator;
 /// Tuning aggressiveness profile for commissioning gain synthesis.
 ///
 /// The profile selects the current-loop bandwidth
-/// ([`Self::current_loop_bandwidth_hz`]); the outer-loop floor is derived
-/// from a fixed reference bandwidth and does not change with it. A more
-/// aggressive profile yields faster current response but leaves less
-/// stability margin against the loop delay.
+/// ([`Self::current_loop_bandwidth_hz`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CommissionProfile {
     /// Slow, very robust, minimal audible noise.
@@ -57,17 +54,13 @@ impl CommissionProfile {
 
 /// Load condition present during mechanical identification.
 ///
-/// Adjusts velocity-loop lambda after SIMC synthesis to account for the
-/// expected operating environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum OperatingMode {
-    /// Motor running without a significant load (e.g., belt axis with no
-    /// toolhead). `lambda_vel *= 1.5` — reduces standstill buzz.
+    /// Motor running without a significant load.
     Unloaded,
     /// Typical printing load; no lambda adjustment applied.
     Nominal,
-    /// Heavy toolhead or high-inertia carriage. `lambda_vel *= 0.8` — tighter
-    /// tuning; natural damping from the load helps stability.
+    /// Heavy toolhead or high-inertia carriage.
     HighInertia,
 }
 
@@ -101,12 +94,8 @@ impl OperatingMode {
 
 /// Error variants for commissioning phase failures.
 ///
-/// Each variant maps to a unique non-zero `status_code()` used in the
-/// `foci_commission_phase` Klipper message. The Python module converts
-/// the code back to a human-readable string for display.
-///
-/// Codes are stable across firmware versions. Adding new variants must
-/// use new codes; existing codes must not be renumbered.
+/// Each variant maps to a unique non-zero `status_code()` sent in the
+/// `foci_commission_phase` Klipper message. Codes are stable and never renumbered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CommissionError {
     /// Motor was already enabled when commissioning was requested. Code 1.
@@ -133,14 +122,6 @@ pub enum CommissionError {
     /// Velocity-loop step-response validation failed after retry. Code 11.
     VelocityValidationFailed,
     /// PositionTune's two-bound sweep could not accept a position P. Code 12.
-    ///
-    /// Covers every outcome `PositionTuneOutcome`
-    /// (`commissioning::outer::position_tune`) can report: the config-derived
-    /// tracking bound or start rung was unrepresentable, the sweep reached
-    /// `PidPGain::MAX` with no rung meeting the bound, a capture produced no
-    /// samples, the overshoot-ratio or dither ceiling guard tripped, the
-    /// step-queue stimulus refused admission or an enqueue, or the
-    /// post-stroke feedforward restoration did not complete in time.
     PositionTuneFailed,
     /// Encoder alignment was not confirmed before outer commissioning. Code 13.
     EncoderNotAligned,
@@ -237,13 +218,8 @@ pub enum CommissionError {
     EvidenceBufferFull,
     /// A rung index addressed a slot beyond the frozen plan's rung count. Code 56.
     RungIndexOutOfRange,
-    /// A frozen plan input changed after the plan was admitted: encoder counts
-    /// per revolution or the configured current limit no longer match what the
-    /// campaign froze. Code 57.
-    ///
-    /// Distinct from the other internal faults because it reports external
-    /// mutation of a safety-relevant input mid-campaign, not a firmware
-    /// invariant violation.
+    /// A frozen plan input (encoder counts per revolution or current limit) changed
+    /// after the plan was admitted. Code 57.
     PlanContractChanged,
     /// Rung-origin recovery could not be planned. Code 58.
     RecoveryPlanFailed,
@@ -268,32 +244,19 @@ pub enum CommissionError {
     SchedulePeriodZero,
     /// A grid deadline was advanced before its previous deadline was due, so
     /// the elapsed-time subtraction had no defined result. Code 68.
-    ///
-    /// Distinct from an arithmetic overflow: this means the caller polled
-    /// early, which is a sequencing error rather than an unrepresentable value.
     ScheduleEarlyInvocation,
     /// Advancing a grid deadline overflowed. Code 69.
     ScheduleDeadlineOverflow,
     /// A safety primitive was opened while one was already open. Code 70.
-    ///
-    /// A sequencing fault: some path reached the next stroke without closing
-    /// the previous primitive's window.
     PrimitiveAlreadyOpen,
     /// Origin recovery found the axis away from the offset it recorded before
     /// the stroke. Code 72.
     RecoveryOriginMismatch,
     /// The outer safety check found the active primitive's start timestamp
     /// ahead of the current time. Code 71.
-    ///
-    /// Raised outside the campaign, on the per-tick safety check, so it is
-    /// stamped with whatever phase happened to be active rather than with the
-    /// phase that caused it.
     PrimitiveStartInFuture,
     /// Discovery finished without a selected in-band ladder, so a path
     /// requiring a nominated band had nothing to act on. Code 66.
-    ///
-    /// The accompanying `BreakawayTerminalCause` carries the specific reason
-    /// discovery did not select; this code says only that none was selected.
     DiscoveryBandNotSelected,
     /// Resistance identification's fitted or signed-anchor slope was zero or
     /// negative -- a physically impossible reading indicating reversed
@@ -323,92 +286,41 @@ pub enum CommissionError {
     MissingRateTableEntry,
     /// A direction, gain, or interval was inconsistent across an integral
     /// rung's four observations. Code 82.
-    ///
-    /// Not reachable via analyze_rung, this variant's only production
-    /// caller, as of this writing -- allocated because the underlying check
-    /// is a real code path, triggerable directly against
-    /// analyze_integral_direction, not because current production input
-    /// construction can reach it.
     MismatchedObservation,
     /// A narrowing conversion on an elapsed-time delta during recovery
     /// capture could not be represented. Code 83.
-    ///
-    /// Not reachable via `check_outer_safety`, whose own
-    /// `MAX_SAFETY_OBSERVATION_GAP_US` (20,000) gate rejects any observation
-    /// before it stores an elapsed time this conversion could reject --
-    /// allocated because the underlying `u16` conversion is a real code path,
-    /// not because current production input can reach it.
     ElapsedTimeConversionInvalid,
     /// The outer velocity envelope's effective ceiling was configured as
     /// zero. Code 84.
-    ///
-    /// Distinct from `SafetyEnvelopeViolation`: this is a configuration-time
-    /// rejection during phase setup, not a runtime hard-disable trip during
-    /// motion.
     VelocityEnvelopeCeilingZero,
     /// The velocity envelope derived from the commissioning amplitude
     /// exceeded the outer safety envelope's effective ceiling -- a planning
     /// fault, not a runtime trip. Code 85.
     VelocityEnvelopeExceedsCeiling,
-    /// A realized encoder-read gap exceeded what a 32-bit microsecond count
-    /// can represent (~71.6 minutes). Code 86.
+    /// A realized encoder-read gap exceeded a 32-bit microsecond count. Code 86.
     SafetyTimingGapInvalid,
     /// The accumulated net displacement over one zero-target settle-capture
     /// window exceeded what an `i32` can represent. Code 87.
-    ///
-    /// Distinct from the per-sample quarter-turn-fault safety check: that
-    /// check rejects a single out-of-range sample before it ever reaches
-    /// this accumulator; this variant reports the accumulator itself
-    /// overflowing across many accepted samples.
     NetDisplacementOverflow,
-    /// A capture's sample-slot selection saw time move backwards, or violated
-    /// poll ordering. From `capture_timing::TimingReject::NonMonotonicTime`,
-    /// shared across the resistance, inductance, and delay captures. Code 88.
+    /// A capture's sample-slot selection saw time move backwards or violated poll ordering. Code 88.
     TimingNonMonotonic,
-    /// A capture's checked deadline, interval, or derived-angle arithmetic
-    /// overflowed. Covers `capture_timing::TimingReject::ArithmeticOverflow`
-    /// and equivalent checked-arithmetic failures in the capture-math
-    /// helpers (e.g. `electrical_capture::estimate::expected_phi_delta_counts`),
-    /// shared across the resistance, inductance, and delay captures. Code 89.
+    /// A capture's checked deadline, interval, or derived-angle arithmetic overflowed. Code 89.
     TimingArithmeticOverflow,
-    /// A capture's sample-start lateness exceeded one quarter of its
-    /// requested period. From
-    /// `capture_timing::TimingReject::ExcessiveLateness`, shared across the
-    /// resistance, inductance, and delay captures. Code 90.
+    /// A capture's sample-start lateness exceeded one quarter of its requested period. Code 90.
     TimingExcessiveLateness,
-    /// A capture's complete sample service took longer than one requested
-    /// period. From `capture_timing::TimingReject::ServiceOverrun`, shared
-    /// across the resistance, inductance, and delay captures. Code 91.
+    /// A capture's sample service took longer than one requested period. Code 91.
     TimingServiceOverrun,
-    /// A capture missed more sample slots than its method permits. From
-    /// `capture_timing::TimingReject::MissedSamples`, shared across the
-    /// resistance, inductance, and delay captures. Code 92.
+    /// A capture missed more sample slots than its method permits. Code 92.
     TimingMissedSamples,
-    /// A capture's observation gap skipped more consecutive logical sample
-    /// slots than permitted. From
-    /// `capture_timing::TimingReject::ConsecutiveMisses`, shared across the
-    /// resistance, inductance, and delay captures. Code 93.
+    /// A capture's observation gap skipped too many consecutive sample slots. Code 93.
     TimingConsecutiveMisses,
-    /// A capture's time attributed to SPI exceeded its complete poll wall
-    /// time. From `capture_timing::TimingReject::SpiWallExceedsPoll`, shared
-    /// across the resistance, inductance, and delay captures. Code 94.
+    /// A capture's time attributed to SPI exceeded its poll wall time. Code 94.
     TimingSpiWallExceedsPoll,
-    /// A capture's telemetry counter or duration saturated its storage type.
-    /// From `capture_timing::TimingReject::TelemetryOverflow`, shared across
-    /// the resistance, inductance, and delay captures. Code 95.
+    /// A capture's telemetry counter or duration saturated its storage type. Code 95.
     TimingTelemetryOverflow,
-    /// A capture timestamp offset could not be represented by its capture
-    /// container. From `capture_timing::TimingReject::TimestampRange`,
-    /// shared across the resistance, inductance, and delay captures. Code 96.
+    /// A capture timestamp offset could not be represented by its container. Code 96.
     TimingTimestampRange,
-    /// A capture's two parallel evidence buffers diverged in length -- an
-    /// internal invariant violation. Code 97.
-    ///
-    /// Not reachable via the electrical-delay capture, its only production
-    /// caller as of this writing: both buffers are pushed to in lockstep
-    /// within the same poll iteration -- allocated because the underlying
-    /// check is a real code path, not because current production input can
-    /// reach it.
+    /// A capture's two parallel evidence buffers diverged in length. Code 97.
     CaptureBufferDesync,
     /// A velocity-observation confidence estimate could not be computed.
     /// Code 98.
@@ -445,33 +357,19 @@ pub enum CommissionError {
     VelocityInvalidEvidence,
     /// A breakaway-to-integral plan could not be constructed. Code 109.
     VelocityIntegralPlanInvalid,
-    /// `accel_per_count` position-domain quadratic fit: fewer than 20
-    /// samples, peak-to-peak position excitation below the 20-count
-    /// anti-degeneracy floor, or residual exceeds `residual_fail_permille =
-    /// 75`; or one of the three steps' displacement-to-impulse ratios sits
-    /// further from the pooled ratio than
-    /// `PLANT_GAIN_STEP_DEVIATION_FAIL_PERMILLE`. Code 110.
+    /// The gain-floor `accel_per_count` quadratic fit failed its sample-count,
+    /// excitation, residual, or step-consistency gates. Code 110.
     GainFloorInsufficientLinearPoints,
-    /// `accel_per_count` quadratic fit: fitted `accel_raw` is zero, negative,
-    /// or disagrees in sign with the commanded torque step direction; or one
-    /// of the three steps did not move, the highest did not move further than
-    /// the lowest, or their current impulses do not strictly increase with
-    /// amplitude. Code 111.
+    /// The gain-floor fit produced an implausible `accel_raw` sign or step ordering. Code 111.
     GainFloorNonPositiveSlope,
-    /// Reserved. Formerly "no usable current-loop bandwidth for the gain
-    /// floor"; the floor no longer reads that value, so current firmware never
-    /// produces this code. Kept so the wire vocabulary stays stable. Code 112.
+    /// Reserved; never produced. Code 112.
     GainFloorCurrentFitRejected,
     /// A per-slot sample deadline was missed during the gain-floor capture
     /// (immediate trip, not deferred to end-of-capture). Code 113.
     GainFloorInsufficientCoverage,
-    /// Actual-current containment tripped: `abs(pid_torque_actual)` or
-    /// `abs(pid_flux_actual)` exceeded `resistance_current_ceiling_count`
-    /// during the gain-floor measurement torque step. Code 114.
+    /// Actual current exceeded the containment ceiling during the gain-floor torque step. Code 114.
     GainFloorPeakCurrentExceeded,
-    /// Motion abort bound tripped during the gain-floor measurement torque
-    /// step: uncontrolled displacement exceeded 32760 raw position counts.
-    /// Code 115.
+    /// Displacement exceeded the motion abort bound during the gain-floor torque step. Code 115.
     GainFloorMotionEnvelopeExceeded,
     /// Computed `velocity_p_raw` rounds to `PidPGain::ZERO` or exceeds
     /// `PidPGain::MAX`. Code 116.
@@ -479,25 +377,16 @@ pub enum CommissionError {
     /// Computed `position_p_raw` rounds to `PidPGain::ZERO` or exceeds
     /// `PidPGain::MAX`. Code 117.
     GainFloorPositionGainUnrepresentable,
-    /// A gain-floor torque step overshot its target by more than the current
-    /// loop is allowed to ring: the profile's current-loop bandwidth is too
-    /// high for this motor and PWM rate. Code 118.
+    /// A gain-floor torque step overshot its target beyond the allowed ringing. Code 118.
     GainFloorStepOvershoot,
 }
 
 /// Specific outcome behind a `CommissionError::PositionTuneFailed`.
 ///
-/// Reported alongside the error code so the operator learns *why* the
-/// sweep failed, not just *that* it did -- the same split
-/// `StationarityExclusion` and `VelocityObservationClass` already use
-/// elsewhere in this crate. `to_wire_code` values are stable once shipped,
-/// same convention as `CommissionError::code()` — never renumber an
-/// existing variant, only append new ones.
+/// `to_wire_code` values are stable; never renumber, only append.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum PositionTuneOutcome {
-    /// The config-derived tracking bound or the closed-form start rung was
-    /// unrepresentable (a zero or overflowing input to the prediction, or the
-    /// ceiling's `k` constant was non-positive).
+    /// The config-derived tracking bound or start rung was unrepresentable.
     ConfigurationInvalid,
     /// The ladder reached `PidPGain::MAX` with no rung meeting the tracking
     /// bound.
@@ -507,9 +396,7 @@ pub enum PositionTuneOutcome {
     /// A rung met the tracking bound but tripped the overshoot-ratio,
     /// overshoot-over-bound, or dither ceiling guard.
     Conflict,
-    /// The step-queue stimulus refused admission (trigger-blocked, refused
-    /// clock reset, insufficient queue capacity for the planned profile) or
-    /// refused an enqueue or arm mid-stroke.
+    /// The step-queue stimulus refused admission, an enqueue, or an arm.
     StimulusRejected,
     /// The post-stroke feedforward restoration did not complete within the
     /// allotted wait.
@@ -517,12 +404,7 @@ pub enum PositionTuneOutcome {
 }
 
 impl PositionTuneOutcome {
-    /// Stable wire code, `0` reserved to mean "not applicable" (the phase
-    /// succeeded, or did not run) on the host-visible
-    /// `position_tune_outcome_code` field.
-    ///
-    /// Codes 1, 2, 3 and 5 are retired (the floor/ceiling-conflict sweep this
-    /// phase replaced) and reserved: never reused.
+    /// Stable wire code; `0` means not applicable. Codes 1, 2, 3 and 5 are retired and never reused.
     pub const fn to_wire_code(self) -> u8 {
         match self {
             Self::ConfigurationInvalid => 4,
@@ -553,10 +435,7 @@ impl From<crate::commissioning::capture_timing::TimingReject> for CommissionErro
 }
 
 impl CommissionError {
-    /// Non-zero status code for the Klipper protocol message.
-    ///
-    /// Codes are stable across firmware versions. Adding new variants must
-    /// use new codes; existing codes must not be renumbered.
+    /// Non-zero status code for the Klipper protocol message; stable across versions.
     pub fn status_code(self) -> u8 {
         match self {
             Self::MotorEnabled => 1,
@@ -682,9 +561,7 @@ impl CommissionError {
 
 /// Overall outcome of a commissioning run.
 ///
-/// Reported in the `foci_commission_result` or `foci_tune_result`
-/// message. The Python module uses this to
-/// decide whether to persist the resulting gains.
+/// Reported in the `foci_commission_result` or `foci_tune_result` message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CommissionStatus {
     /// All phases passed; gains are reliable.
@@ -715,9 +592,7 @@ pub use crate::commissioning::vocabulary_generated::CommissionPhase;
 
 /// Complete gain set for closed-loop entry on re-enable.
 ///
-/// Preloaded into firmware atomics by the Python host before `foci_calibrate`.
-/// Contains current-loop gains (from commissioning) and outer gains
-/// (from commissioning fallbacks or prior tuning).
+/// Preloaded by the host before `foci_calibrate`.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub struct SavedGains {
     /// Current-loop flux P gain (Q8.8).
@@ -749,10 +624,6 @@ pub struct SavedGains {
 }
 
 /// Sub-states for the `ClosedLoopActivation` engine phase.
-///
-/// Writes PID gains, velocity limit, voltage limits, position selection,
-/// step width, motion mode, and biquad filters, then verifies position
-/// hold stability.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub enum ClosedLoopActivationState {
     /// Write current-loop and outer PID gains.
@@ -826,8 +697,6 @@ pub const CLOSED_LOOP_ACTIVATION_STATUS_FAIL_DRIFT: u8 = 3;
 pub const CLOSED_LOOP_ACTIVATION_STATUS_WARN_DRIFT: u8 = 4;
 
 /// Controls which phases run and in what order for the inner engine.
-///
-/// Replaces the old `stop_after: CommissionPhase` mechanism.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum InnerSequence {
     /// Re-enable path: ADC cal -> encoder align -> closed-loop entry (saved gains).
@@ -1101,8 +970,6 @@ mod tests {
         assert_eq!(CommissionError::GainFloorStepOvershoot.status_code(), 118);
     }
 
-    /// Inner codes 1-8, 16, 17 are unchanged by the velocity-vocabulary
-    /// renumber; code 9 (formerly `MechanicalId`) stays permanently reserved.
     #[test]
     fn inner_phase_wire_codes_unchanged() {
         assert_eq!(CommissionPhase::AdcCalibrate.to_u8(), 1);
@@ -1117,10 +984,6 @@ mod tests {
         assert_eq!(CommissionPhase::ClosedLoopActivation.to_u8(), 17);
     }
 
-    /// The outer block is a contiguous sequence: the four velocity workflow
-    /// codes in workflow order, then the retained non-velocity outer codes,
-    /// placed after `EncoderAlign`/`ClosedLoopActivation` since those two pinned
-    /// codes (16, 17) leave no 8-wide contiguous gap below them.
     #[test]
     fn outer_block_is_contiguous_in_workflow_order() {
         assert_eq!(

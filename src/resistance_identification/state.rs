@@ -187,7 +187,6 @@ enum ResistanceState {
     Complete,
 }
 
-/// Register writes the safe-state restore issues at the end of every run.
 pub(super) const RESTORE_WRITE_COUNT: u8 = 4;
 
 /// Resumable shared resistance-identification runner.
@@ -264,9 +263,7 @@ impl ResistanceRunner {
         timing
     }
 
-    /// Return the raw `STATUS_FLAGS` value read once before excitation,
-    /// prior to the pre-excitation clear. Never contributes to
-    /// `status_flags_or` or `warning_flags`.
+    /// Return the raw `STATUS_FLAGS` value read once before excitation.
     #[cfg(test)]
     #[must_use]
     pub const fn baseline_status_flags(&self) -> u32 {

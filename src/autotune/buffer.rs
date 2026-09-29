@@ -1,7 +1,4 @@
 /// Number of samples in the step-response transient capture buffer.
-///
-/// Sized to fit one complete transient capture (256 × 4 bytes = 1,024 bytes).
-/// Only one capture is active at a time; the buffer is reused across phases.
 pub const TRANSIENT_LEN: usize = 256;
 
 /// Actual observation offsets for one electrical-delay transient capture.
@@ -78,18 +75,10 @@ impl DelayTimestampOffsets {
 }
 
 /// Fixed-size ring buffer for raw step-response capture.
-///
-/// Statically allocated and reused across commissioning phases. After each
-/// capture phase completes, scalar metrics are extracted and the buffer is
-/// reset for the next phase. Raw transient streaming is deferred to Phase 6.
-///
-/// Memory: 1,024 bytes for samples, plus 4 bytes of metadata.
 #[derive(Clone, defmt::Format)]
 pub struct TransientBuffer {
     samples: [u32; TRANSIENT_LEN],
-    /// Number of samples captured so far (always <= `TRANSIENT_LEN`).
     len: u16,
-    /// Microseconds between consecutive samples.
     sample_period_us: u16,
 }
 
@@ -101,9 +90,6 @@ impl Default for TransientBuffer {
 
 impl TransientBuffer {
     /// Create an empty buffer.
-    ///
-    /// Sample period defaults to 0. Call [`reset`](Self::reset) before
-    /// each capture to set the period for that measurement.
     pub const fn new() -> Self {
         Self {
             samples: [0u32; TRANSIENT_LEN],
@@ -164,11 +150,6 @@ impl TransientBuffer {
         &self.samples[..self.len as usize]
     }
 
-    /// Write one engine-owned workspace word outside a transient capture.
-    ///
-    /// Commissioning phases that do not use the transient samples may reuse
-    /// this fixed allocation instead of growing the engine's largest enum
-    /// variant. The logical capture length is intentionally unchanged.
     pub(crate) fn write_workspace_word(&mut self, index: usize, value: u32) -> bool {
         let Some(destination) = self.samples.get_mut(index) else {
             return false;
@@ -177,7 +158,6 @@ impl TransientBuffer {
         true
     }
 
-    /// Read one engine-owned workspace word outside a transient capture.
     pub(crate) fn workspace_word(&self, index: usize) -> Option<u32> {
         self.samples.get(index).copied()
     }
@@ -203,11 +183,8 @@ pub enum CaptureDirection {
 
 /// Normalize a raw torque-actual reading by capture direction.
 ///
-/// Forward captures keep the sign as-is; reverse captures negate so that a
-/// correctly responding motor produces a positive value in both directions.
-/// Negative normalized values (wrong-sign current) are clamped to zero — the
-/// tail-level metric will be near-zero and the target-attainment check will
-/// flag the failure.
+///
+/// Reverse captures are negated; negative normalized values are clamped to zero.
 pub fn normalize_capture_sample(torque_actual: i16, direction: CaptureDirection) -> u32 {
     let normalized = match direction {
         CaptureDirection::Forward => torque_actual as i32,
@@ -248,9 +225,7 @@ mod tests {
         assert!(buf.is_full());
         assert_eq!(buf.len() as usize, TRANSIENT_LEN);
 
-        // One more push must be rejected.
         assert!(!buf.push(9999), "push to full buffer must return false");
-        // Length must not change.
         assert_eq!(buf.len() as usize, TRANSIENT_LEN);
     }
 
@@ -312,7 +287,6 @@ mod tests {
 
     #[test]
     fn normalize_forward_positive_current() {
-        // Forward capture, positive torque_actual → stored as-is.
         assert_eq!(
             normalize_capture_sample(367, CaptureDirection::Forward),
             367
@@ -321,9 +295,6 @@ mod tests {
 
     #[test]
     fn normalize_reverse_negative_current() {
-        // Reverse capture, negative torque_actual → negated to positive.
-        // A correctly responding motor produces negative current for a
-        // negative torque step.
         assert_eq!(
             normalize_capture_sample(-367, CaptureDirection::Reverse),
             367
@@ -332,14 +303,11 @@ mod tests {
 
     #[test]
     fn normalize_reverse_wrong_sign_clamps_to_zero() {
-        // Reverse capture but torque_actual is positive (wrong sign).
-        // Normalized = -(+367) = -367 → clamped to 0.
         assert_eq!(normalize_capture_sample(367, CaptureDirection::Reverse), 0);
     }
 
     #[test]
     fn normalize_forward_wrong_sign_clamps_to_zero() {
-        // Forward capture but torque_actual is negative (wrong sign).
         assert_eq!(normalize_capture_sample(-367, CaptureDirection::Forward), 0);
     }
 }

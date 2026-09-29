@@ -51,12 +51,8 @@ pub enum PhaseDelayRejection {
 
 /// Effective in-loop delay from the lag of the mean rotating-frame current past the RL phase.
 ///
-/// `theta_e_us` is the delay the on-chip control loop adds beyond the motor's own RL phase lag:
-/// PWM zero-order hold plus DSADC decimation, both evaluated at the excitation frequency, and
-/// excluding SPI register-read latency. Any lag measured beyond `delta_rl` can only be that
-/// in-loop delay, because with the excitation on the d axis a passive RL circuit never produces a
-/// negative in-phase current, so a positive excess is unambiguously delay rather than a sign
-/// artifact of the measurement.
+/// `theta_e_us` is the delay the on-chip control loop adds beyond the motor's own RL phase lag
+/// (PWM zero-order hold plus DSADC decimation, excluding SPI read latency).
 pub fn estimate_phase_delay(
     input: &PhaseDelayInput,
 ) -> Result<PhaseDelayEstimate, PhaseDelayRejection> {
@@ -129,10 +125,6 @@ mod tests {
         }
     }
 
-    // (id_mean, iq_mean, id_rms, iq_rms, r_count_milli, theta_us, sigma_us): seven
-    // recorded runs, four at 50 kHz PWM then three at 25 kHz. theta_us is the offline
-    // fractional value from the spec's equations, to two decimals; the nearest integer
-    // is the uniquely correct rounding of it.
     const RECORDED_RUNS: [(i32, i32, u32, u32, u32, f32, u32); 7] = [
         (-3540, -52671, 21588, 19848, 997, 21.60, 7),
         (-4071, -54311, 10105, 12198, 951, 22.65, 3),
@@ -199,7 +191,6 @@ mod tests {
 
     #[test]
     fn no_lag_beyond_the_rl_phase_is_rejected() {
-        // In-phase component large and positive: the current sits well inside the RL phase.
         assert_eq!(
             estimate_phase_delay(&run(40_000, -30_000, 1_000, 1_000, 997)),
             Err(PhaseDelayRejection::NoExcess)
@@ -208,7 +199,6 @@ mod tests {
 
     #[test]
     fn a_resistive_drop_above_the_drive_is_rejected() {
-        // R = 20 V/I counts, |I| = 52.8: R*|I| = 1056 > 768.
         assert_eq!(
             estimate_phase_delay(&run(-3540, -52671, 21588, 19848, 20_000)),
             Err(PhaseDelayRejection::ResistiveDropExceedsDrive)
@@ -251,7 +241,6 @@ mod tests {
         let s0 = estimate_phase_delay(&base).unwrap().sigma_us;
         let s1 = estimate_phase_delay(&doubled_id_rms).unwrap().sigma_us;
         let s2 = estimate_phase_delay(&quadrupled_n).unwrap().sigma_us;
-        // psi is near -101 degrees, so id_rms dominates: doubling it nearly doubles sigma.
         assert!(s1 >= 2 * s0 - 1 && s1 <= 2 * s0 + 1, "s0 {s0} s1 {s1}");
         assert_eq!(s2, s0.div_ceil(2), "s0 {s0} s2 {s2}");
     }

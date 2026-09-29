@@ -3,9 +3,8 @@ use foci_tmc4671::pid::{PidIGain, PidPGain};
 
 /// First-order-plus-dead-time current plant model in TMC count space.
 ///
-/// Plant model: `G(s) = K / (tau_e * s + 1) * e^(-theta_e * s)`, where the
-/// resistance and inductance values map voltage-output counts to current-ADC
-/// counts. They are not physical ohms or henries.
+/// `G(s) = K / (tau_e * s + 1) * e^(-theta_e * s)`; resistance and inductance are
+/// count-space proxies, not ohms or henries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ElectricalModel {
     /// Voltage-output/current-ADC count slope, scaled by 1000.
@@ -16,11 +15,7 @@ pub struct ElectricalModel {
     pub tau_e_us: u32,
     /// Effective transport delay in microseconds (from transient onset).
     pub theta_e_us: u32,
-    /// Source of `theta_e_us`: 0 = high-rate measurement, 1 =
-    /// board-configured fallback. Wire-shaped directly (not
-    /// `electrical_identification::ThetaSource`, which is `pub(crate)` and
-    /// not visible to board crates) so it survives unchanged through every
-    /// later copy of this struct.
+    /// Source of `theta_e_us`: 0 = high-rate measurement, 1 = board-configured fallback.
     pub theta_source: u8,
 }
 
@@ -29,9 +24,7 @@ pub const ELECTRICAL_MODEL_RESISTANCE_SCALE: u32 = 1000;
 
 /// Computed PI gains for the TMC4671 current (flux/torque) loops.
 ///
-/// Produced by the production physical-P synthesis path or by the retained
-/// SIMC helper functions. Includes the effective bandwidth and the inner-loop
-/// time scale used for diagnostics and downstream bandwidth constraints.
+/// Includes the effective bandwidth and the inner-loop time scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct CurrentGains {
     /// Flux P gain — TMC4671 Q8.8 register value.
@@ -45,9 +38,6 @@ pub struct CurrentGains {
     /// Effective closed-loop bandwidth in Hz.
     pub effective_bandwidth_hz: u32,
     /// Inner-loop time scale in microseconds.
-    ///
-    /// Physical-P synthesis reports `1 / (2*pi*bandwidth)`. The retained SIMC
-    /// helper functions report their SIMC lambda in the same field.
     pub lambda_us: u32,
 }
 
@@ -74,9 +64,6 @@ pub struct CurrentGainSynthesisInput {
     /// Identified symmetric resistance/inductance model.
     pub model: ElectricalModel,
     /// Tuning profile retained for validation and retry policy.
-    ///
-    /// Production physical-P synthesis uses the configured bandwidth instead
-    /// of deriving P from this profile.
     pub profile: CommissionProfile,
     /// Measured axis split ratio, permille where 1000 = 1.000x.
     pub measured_axis_split_permille: u16,
@@ -100,9 +87,6 @@ pub struct CurrentGainSynthesis {
     /// Torque-axis electrical time constant used for synthesis.
     pub torque_tau_us: u32,
 }
-
-// Stable persisted/report numeric codes. Do not renumber existing values;
-// append new codes instead.
 
 /// Gain synthesis failed.
 pub const CURRENT_GAINS_SOURCE_FAILED: u8 = 0;
@@ -262,10 +246,7 @@ impl CurrentLoopEvidence {
 
 /// Computed PI gains for the TMC4671 velocity loop.
 ///
-/// The velocity limit is derived from the peak velocity observed during
-/// commissioning and is represented in encoder counts/ms during
-/// commissioning validation. The validation phase converts it to TMC
-/// velocity-register units at the SPI write boundary.
+/// The velocity limit is in encoder counts/ms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityGains {
     /// Velocity P gain — TMC4671 Q8.8 register value.
@@ -280,7 +261,7 @@ pub struct VelocityGains {
     pub lambda_vel_ms: u32,
 }
 
-/// Computed position-loop gains from Phase 11 P ramp-up.
+/// Computed position-loop gains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PositionGains {
     /// Position P gain — TMC4671 Q8.8 register value.
@@ -289,12 +270,9 @@ pub struct PositionGains {
     pub position_i: PidIGain,
 }
 
-/// Filter cutoff recommendations from Phase 12.
+/// Filter cutoff recommendations.
 ///
-/// Each field is `None` when no filtering is needed, or `Some(cutoff_hz)`
-/// when the corresponding validation stage detected noise/chatter.
-/// The firmware uses these with [`crate::biquad::butterworth_lowpass`]
-/// to compute register coefficients.
+/// Each field is `None` when no filtering is needed, or `Some(cutoff_hz)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct FilterConfig {
     /// Velocity biquad low-pass cutoff Hz. Enabled if zero-speed chatter detected.

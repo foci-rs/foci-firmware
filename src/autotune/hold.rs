@@ -536,8 +536,6 @@ mod tests {
 
         let metrics = acc.finish(3_000, false);
 
-        // Exact demeaned crossings would require the final mean during sampling.
-        // The accumulator keeps no sample storage, so it reports raw zero crossings only.
         assert_eq!(metrics.torque_mean_count, 150);
         assert_eq!(metrics.torque_rms_count, 50);
         assert_eq!(metrics.torque_peak_to_peak_count, 100);

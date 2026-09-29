@@ -6,9 +6,6 @@ use super::observation::{
 /// Largest Bonferroni confidence family covered by the audited lookup table.
 pub const MAX_CONFIDENCE_FAMILY_SIZE: u16 = 128;
 
-// Two-sided 95% family-wise Bonferroni Student-t critical values at df=15.
-// Entry k-1 is t(1 - 0.05 / (2*k), 15), rounded to six decimal places.
-// Entry zero preserves the established 2.131 single-interval behavior.
 const CONFIDENCE_MULTIPLIERS_95_DF15: [f32; MAX_CONFIDENCE_FAMILY_SIZE as usize] = [
     2.131, 2.489_88, 2.693739, 2.836627, 2.946713, 3.036283, 3.111806, 3.177104, 3.234628,
     3.286039, 3.332518, 3.374933, 3.413943, 3.450056, 3.483677, 3.515129, 3.544677, 3.572_54,

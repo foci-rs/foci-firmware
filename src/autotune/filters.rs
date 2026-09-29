@@ -1,24 +1,12 @@
 use super::FilterConfig;
 
-// ---------------------------------------------------------------------------
-// Filter recommendation (Phase 12)
-// ---------------------------------------------------------------------------
-
 /// Recommend the installed-tuning filter configuration.
 ///
-/// Velocity chatter and early position oscillation remain inputs so those observations are not
-/// discarded. Installed tuning does not currently select velocity or position filters.
-///
-/// Current ringing retains the existing interim torque/flux policy: both target filters use twice
-/// the current-loop bandwidth through the shared legacy 10–1000 Hz clamp.
+/// Current ringing enables torque/flux target filters at twice the current-loop bandwidth,
+/// clamped to 10-1000 Hz. The velocity and position inputs are currently unused.
 ///
 /// # Parameters
-/// - `_velocity_chatter`: retained velocity observation; not consumed by the interim policy
-/// - `_velocity_bandwidth_hz`: retained velocity bandwidth; not consumed by the interim policy
-/// - `_position_oscillation_early`: retained position observation; not consumed by the interim
-///   policy
-/// - `_position_bandwidth_hz`: retained position bandwidth; not consumed by the interim policy
-/// - `current_ringing`: true if current validation detected ringing (count > 1)
+/// - `current_ringing`: true if current validation detected ringing
 /// - `current_bandwidth_hz`: current-loop effective bandwidth
 pub fn recommend_filters(
     _velocity_chatter: bool,
@@ -43,10 +31,6 @@ pub fn recommend_filters(
     }
 }
 
-/// Clamp a filter cutoff to the valid biquad range (10-1000 Hz).
-///
-/// Returns `None` if the cutoff is below the minimum (filter too low
-/// to be useful). Clamps to 1000 Hz if above the maximum.
 fn clamp_filter_cutoff(cutoff_hz: u32) -> Option<u32> {
     const MIN_HZ: u32 = 10;
     const MAX_HZ: u32 = 1000;
@@ -62,8 +46,6 @@ fn clamp_filter_cutoff(cutoff_hz: u32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- Filter recommendations ---
 
     #[test]
     fn filter_no_issues_no_filters() {
@@ -97,7 +79,7 @@ mod tests {
         let config = recommend_filters(false, 100, false, 25, true, 500);
         assert_eq!(config.velocity_filter_hz, None);
         assert_eq!(config.position_filter_hz, None);
-        assert_eq!(config.flux_filter_hz, Some(1000)); // 500 * 2
+        assert_eq!(config.flux_filter_hz, Some(1000));
         assert_eq!(config.torque_filter_hz, Some(1000));
     }
 
