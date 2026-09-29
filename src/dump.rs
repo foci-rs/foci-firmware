@@ -1,11 +1,40 @@
 //! TMC4671 register dump list.
 
-use foci_tmc4671::registers::SubRegister;
+use foci_tmc4671::registers::{self, SubRegister};
 
 /// Registers dumped in address order; must cover every register in the host's `DUMP_GROUPS`.
 pub const DUMP_REGISTERS: &[u8] = &[
-    0x08, 0x09, 0x0A, 0x19, 0x1A, 0x1B, 0x25, 0x26, 0x27, 0x29, 0x2A, 0x50, 0x51, 0x52, 0x54, 0x56,
-    0x58, 0x5A, 0x5D, 0x5E, 0x60, 0x63, 0x64, 0x65, 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x75, 0x7C,
+    registers::ADC_I1_SCALE_OFFSET.addr(),
+    registers::ADC_I0_SCALE_OFFSET.addr(),
+    registers::ADC_I_SELECT.addr(),
+    registers::PWM_BBM_H_BBM_L.addr(),
+    registers::PWM_SV_CHOP.addr(),
+    registers::MOTOR_TYPE_N_POLE_PAIRS.addr(),
+    registers::ABN_DECODER_MODE.addr(),
+    registers::ABN_DECODER_PPR.addr(),
+    registers::ABN_DECODER_COUNT.addr(),
+    registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr(),
+    registers::ABN_DECODER_PHI_E_PHI_M.addr(),
+    registers::VELOCITY_SELECTION.addr(),
+    registers::POSITION_SELECTION.addr(),
+    registers::PHI_E_SELECTION.addr(),
+    registers::PID_FLUX_P_FLUX_I.addr(),
+    registers::PID_TORQUE_P_TORQUE_I.addr(),
+    registers::PID_VELOCITY_P_VELOCITY_I.addr(),
+    registers::PID_POSITION_P_POSITION_I.addr(),
+    registers::PIDOUT_UQ_UD_LIMITS.addr(),
+    registers::PID_TORQUE_FLUX_LIMITS.addr(),
+    registers::PID_VELOCITY_LIMIT.addr(),
+    registers::MODE_RAMP_MODE_MOTION.addr(),
+    registers::PID_TORQUE_FLUX_TARGET.addr(),
+    registers::PID_TORQUE_FLUX_OFFSET.addr(),
+    registers::PID_VELOCITY_OFFSET.addr(),
+    registers::PID_POSITION_TARGET.addr(),
+    registers::PID_TORQUE_FLUX_ACTUAL.addr(),
+    registers::PID_VELOCITY_ACTUAL.addr(),
+    registers::PID_POSITION_ACTUAL.addr(),
+    registers::ADC_VM_LIMITS.addr(),
+    registers::STATUS_FLAGS.addr(),
 ];
 
 /// `(synthetic_addr, sub_register)` pairs dumped after the regular registers. Synthetic
