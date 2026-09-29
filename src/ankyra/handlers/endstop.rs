@@ -67,13 +67,15 @@ pub fn endstop_home(
 ) {
     let result = ctx.endstop_start_homing(
         oid,
-        clock,
-        sample_ticks,
-        sample_count,
-        rest_ticks,
-        pin_value != 0,
-        trsync_oid,
-        trigger_reason,
+        crate::context::trsync::HomingRequest {
+            clock,
+            sample_ticks,
+            sample_count,
+            rest_ticks,
+            pin_value_expected: pin_value != 0,
+            trsync_oid,
+            trigger_reason,
+        },
     );
     if result.is_err() {
         defmt::error!("endstop_home: oid={}", oid);
@@ -196,17 +198,10 @@ mod tests {
         fn register_endstop(&mut self, _oid: u8) -> Result<usize, ()> {
             Ok(0)
         }
-        #[allow(clippy::too_many_arguments)]
         fn endstop_start_homing(
             &mut self,
             _oid: u8,
-            _clock: u32,
-            _sample_ticks: u32,
-            _sample_count: u8,
-            _rest_ticks: u32,
-            _pin_value_expected: bool,
-            _trsync_oid: u8,
-            _trigger_reason: u8,
+            _request: crate::context::trsync::HomingRequest,
         ) -> Result<(), ()> {
             panic!("endstop_start_homing not used in this test")
         }

@@ -434,17 +434,10 @@ mod tests {
             panic!("register_endstop not used in this test")
         }
 
-        #[allow(clippy::too_many_arguments)]
         fn endstop_start_homing(
             &mut self,
             _oid: u8,
-            _clock: u32,
-            _sample_ticks: u32,
-            _sample_count: u8,
-            _rest_ticks: u32,
-            _pin_value_expected: bool,
-            _trsync_oid: u8,
-            _trigger_reason: u8,
+            _request: crate::context::trsync::HomingRequest,
         ) -> Result<(), ()> {
             panic!("endstop_start_homing not used in this test")
         }

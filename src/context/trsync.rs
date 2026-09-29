@@ -42,19 +42,8 @@ pub trait TrsyncHost: crate::context::StateAccess {
 
     /// Configure an endstop runtime for homing and schedule its first sample.
     ///
-    /// `sample_count == 0` acts as a disarm.
-    #[allow(clippy::too_many_arguments)]
-    fn endstop_start_homing(
-        &mut self,
-        oid: u8,
-        clock: u32,
-        sample_ticks: u32,
-        sample_count: u8,
-        rest_ticks: u32,
-        pin_value_expected: bool,
-        trsync_oid: u8,
-        trigger_reason: u8,
-    ) -> Result<(), ()>;
+    /// `request.sample_count == 0` acts as a disarm.
+    fn endstop_start_homing(&mut self, oid: u8, request: HomingRequest) -> Result<(), ()>;
 
     /// Read the endstop runtime state tuple `(is_homing, next_clock, pin_id)`.
     fn endstop_query(&mut self, oid: u8) -> Result<(bool, u32, u8), ()>;
@@ -396,20 +385,41 @@ pub fn trsync_trigger<B: TrsyncBoard + ?Sized>(
     Ok(trigger_reason)
 }
 
+/// Arguments of Klipper's `endstop_home` command, in wire order after the OID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HomingRequest {
+    /// Clock of the first sample.
+    pub clock: u32,
+    /// Interval between oversampling reads.
+    pub sample_ticks: u32,
+    /// Consecutive matching reads required to trigger; 0 disarms.
+    pub sample_count: u8,
+    /// Interval between scan reads.
+    pub rest_ticks: u32,
+    /// Pin level that counts as triggered.
+    pub pin_value_expected: bool,
+    /// Trsync signalled on trigger.
+    pub trsync_oid: u8,
+    /// Reason code reported to the trsync.
+    pub trigger_reason: u8,
+}
+
 /// Configure an endstop runtime for homing.
-#[allow(clippy::too_many_arguments)]
 pub fn endstop_start_homing<B: TrsyncBoard + ?Sized>(
     state: &mut TriggerDomainState,
     board: &mut B,
     oid: u8,
-    clock: u32,
-    sample_ticks: u32,
-    sample_count: u8,
-    rest_ticks: u32,
-    pin_value_expected: bool,
-    trsync_oid: u8,
-    trigger_reason: u8,
+    request: HomingRequest,
 ) -> Result<(), TrsyncPolicyError> {
+    let HomingRequest {
+        clock,
+        sample_ticks,
+        sample_count,
+        rest_ticks,
+        pin_value_expected,
+        trsync_oid,
+        trigger_reason,
+    } = request;
     let idx = endstop_idx(state, oid)?;
     if sample_count != 0 && !state.trsync_by_oid.contains_key(&trsync_oid) {
         return Err(TrsyncPolicyError::MissingTrsyncForHoming);
@@ -692,7 +702,20 @@ mod tests {
         let mut state = fresh_state();
         let mut board = MockBoard::new();
         assert_eq!(
-            endstop_start_homing(&mut state, &mut board, 12, 100, 10, 1, 30, true, 1, 8),
+            endstop_start_homing(
+                &mut state,
+                &mut board,
+                12,
+                HomingRequest {
+                    clock: 100,
+                    sample_ticks: 10,
+                    sample_count: 1,
+                    rest_ticks: 30,
+                    pin_value_expected: true,
+                    trsync_oid: 1,
+                    trigger_reason: 8
+                },
+            ),
             Err(TrsyncPolicyError::UnknownEndstopOid)
         );
         assert_eq!(
@@ -707,7 +730,20 @@ mod tests {
         let mut board = MockBoard::new();
         assert_eq!(register_endstop(&mut state, 3), Ok(0));
         assert_eq!(
-            endstop_start_homing(&mut state, &mut board, 3, 100, 10, 0, 30, true, 99, 8),
+            endstop_start_homing(
+                &mut state,
+                &mut board,
+                3,
+                HomingRequest {
+                    clock: 100,
+                    sample_ticks: 10,
+                    sample_count: 0,
+                    rest_ticks: 30,
+                    pin_value_expected: true,
+                    trsync_oid: 99,
+                    trigger_reason: 8
+                },
+            ),
             Ok(())
         );
     }
@@ -718,7 +754,20 @@ mod tests {
         let mut board = MockBoard::new();
         assert_eq!(register_endstop(&mut state, 3), Ok(0));
         assert_eq!(
-            endstop_start_homing(&mut state, &mut board, 3, 100, 10, 1, 30, true, 99, 8),
+            endstop_start_homing(
+                &mut state,
+                &mut board,
+                3,
+                HomingRequest {
+                    clock: 100,
+                    sample_ticks: 10,
+                    sample_count: 1,
+                    rest_ticks: 30,
+                    pin_value_expected: true,
+                    trsync_oid: 99,
+                    trigger_reason: 8
+                },
+            ),
             Err(TrsyncPolicyError::MissingTrsyncForHoming)
         );
     }
@@ -876,7 +925,21 @@ mod tests {
         board.pin_ids[0] = 0x31;
         register_trsync(&mut state, 2).unwrap();
         assert_eq!(register_endstop(&mut state, 4), Ok(0));
-        endstop_start_homing(&mut state, &mut board, 4, 100, 10, 2, 30, true, 2, 8).unwrap();
+        endstop_start_homing(
+            &mut state,
+            &mut board,
+            4,
+            HomingRequest {
+                clock: 100,
+                sample_ticks: 10,
+                sample_count: 2,
+                rest_ticks: 30,
+                pin_value_expected: true,
+                trsync_oid: 2,
+                trigger_reason: 8,
+            },
+        )
+        .unwrap();
 
         assert_eq!(endstop_query(&state, &board, 4), Ok((true, 100, 0x31)));
     }
@@ -924,7 +987,21 @@ mod tests {
         assert_eq!(register_endstop(&mut state, 4), Ok(0));
         trsync_arm(&mut state, &mut board, 2, 100, 5, 7).unwrap();
         trsync_set_timeout(&mut state, &mut board, 2, 200).unwrap();
-        endstop_start_homing(&mut state, &mut board, 4, 300, 10, 2, 30, true, 2, 8).unwrap();
+        endstop_start_homing(
+            &mut state,
+            &mut board,
+            4,
+            HomingRequest {
+                clock: 300,
+                sample_ticks: 10,
+                sample_count: 2,
+                rest_ticks: 30,
+                pin_value_expected: true,
+                trsync_oid: 2,
+                trigger_reason: 8,
+            },
+        )
+        .unwrap();
         link_stepper_stop(&mut state, &board, 0, 2).unwrap();
 
         let trsync_idx = state.trsync_by_oid.get(&2).copied().unwrap();
