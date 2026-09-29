@@ -830,7 +830,8 @@ fn product_leq(factors: &[u64], limit: u128) -> bool {
 /// Acceleration feedforward torque offset for the torque field of `PID_TORQUE_FLUX_OFFSET`.
 /// `interval_add` is Klipper's `queue_step add`: interval change in TIM5 ticks per step, negative
 /// while velocity is increasing. `gain_permille` 1000 applies the raw estimate, `0` disables it.
-/// The result is clamped to `torque_limit`.
+/// The result is clamped to `torque_limit`, which callers set to the torque-offset headroom of the
+/// committed current limit.
 pub fn compute_planner_accel_torque_offset(
     scale: crate::motion_scale::PlannerVelocityScale,
     clock_freq: u32,
@@ -1374,7 +1375,7 @@ mod tests {
     }
 
     #[test]
-    fn acceleration_feedforward_clamps_to_current_limit() {
+    fn acceleration_feedforward_clamps_to_the_supplied_offset_cap() {
         let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(53_760, 1);
         let offset =
             compute_planner_accel_torque_offset(scale, 84_000_000, 2800, -90, false, 1000, 1200);

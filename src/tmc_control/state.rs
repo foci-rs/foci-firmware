@@ -955,7 +955,9 @@ impl TmcControlRuntime {
         if accel_ff_active {
             let accel_gain_permille = refs.tmc.accel_feedforward_accel_gain_permille.load(Relaxed);
             let decel_gain_permille = refs.tmc.accel_feedforward_decel_gain_permille.load(Relaxed);
-            let torque_limit = refs.tmc.load_current_limit(Relaxed).register_value();
+            let torque_limit = u32::from(crate::tmc_control::current_limit::offset_headroom(
+                refs.tmc.load_current_limit(Relaxed),
+            ));
             let interval = refs.stepper.interval.load(Relaxed);
             let interval_add = refs
                 .stepper

@@ -4092,3 +4092,60 @@ fn a_torn_down_restore_cancel_keeps_the_slots_and_latch_and_stays_resumable() {
         &mut slot,
     ));
 }
+
+async fn last_accel_offset_written(limit_raw: u32, interval_add: i32) -> Option<i16> {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_motor_enabled_for_test(true);
+    runtime.set_planner_velocity_scale_for_test(84_000_000);
+    let tmc_state = crate::state::tmc::TmcChannelState::new();
+    let stepper_state = crate::state::stepper::StepperChannelState::new();
+    let config = commissioning_runtime_config();
+    tmc_state.accel_feedforward.store(true, Relaxed);
+    tmc_state
+        .accel_feedforward_accel_gain_permille
+        .store(1_000, Relaxed);
+    tmc_state
+        .accel_feedforward_decel_gain_permille
+        .store(1_000, Relaxed);
+    tmc_state.store_current_limit(current_limit(limit_raw), Relaxed);
+    stepper_state.interval.store(2_800, Relaxed);
+    stepper_state.interval_add.store(interval_add, Relaxed);
+    let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+    runtime
+        .apply_feedforward_tick(
+            &mut tmc,
+            TmcControlStateRefs::new(&tmc_state, &stepper_state),
+            &config,
+            false,
+            false,
+            true,
+        )
+        .await
+        .unwrap();
+
+    tmc.into_inner()
+        .writes
+        .iter()
+        .rev()
+        .find(|(addr, _)| *addr == PID_TORQUE_FLUX_OFFSET.addr())
+        .map(|(_, value)| (value >> 16) as u16 as i16)
+}
+
+#[test]
+fn accel_offset_is_capped_at_half_the_current_limit() {
+    pollster::block_on(async {
+        let offset = last_accel_offset_written(2557, -90).await;
+
+        assert_eq!(offset.map(i16::unsigned_abs), Some(1278));
+    });
+}
+
+#[test]
+fn accel_offset_is_zero_when_headroom_is_zero() {
+    pollster::block_on(async {
+        let offset = last_accel_offset_written(1, -90).await;
+
+        assert_eq!(offset.unwrap_or(0), 0);
+    });
+}
