@@ -506,8 +506,7 @@ pub(super) fn fixed_gain_amplitude_report(
         })
         .map_err(|error| match error {
             FixedGainAmplitudeEvidenceError::InvalidInterval => CommissionError::MalformedInterval,
-            FixedGainAmplitudeEvidenceError::Arithmetic
-            | FixedGainAmplitudeEvidenceError::InvalidMasks => CommissionError::InvalidSchedule,
+            FixedGainAmplitudeEvidenceError::InvalidMasks => CommissionError::InvalidSchedule,
         })
     });
     let directions = [directions[0]?, directions[1]?];
@@ -696,12 +695,12 @@ pub(super) fn opening_recovery_lower_rate_q(
         target_numerator
             .checked_sub(i128::from(deficit.high_q) * 60)
             .ok_or(CommissionError::TargetRateInvalid)?,
-    )?;
+    );
     let settled_high = super::sweep_analysis::ceil_div_60(
         target_numerator
             .checked_sub(i128::from(deficit.low_q) * 60)
             .ok_or(CommissionError::TargetRateInvalid)?,
-    )?;
+    );
     match direction {
         0 if settled_low > 0 => u64::try_from(settled_low)
             .map(Some)

@@ -277,33 +277,29 @@ pub(super) fn deficit_interval_q(
     let high_numerator = target_numerator
         .checked_sub(i128::from(settled_rate_low_q) * 60)
         .ok_or(CommissionError::TargetRateInvalid)?;
-    let low = floor_div_60(low_numerator)?;
-    let high = ceil_div_60(high_numerator)?;
+    let low = floor_div_60(low_numerator);
+    let high = ceil_div_60(high_numerator);
     Ok((
         i64::try_from(low).map_err(|_| CommissionError::TargetRateInvalid)?,
         i64::try_from(high).map_err(|_| CommissionError::TargetRateInvalid)?,
     ))
 }
 
-pub(super) fn floor_div_60(numerator: i128) -> Result<i128, CommissionError> {
+pub(super) fn floor_div_60(numerator: i128) -> i128 {
     let quotient = numerator / 60;
     if numerator < 0 && numerator % 60 != 0 {
-        quotient
-            .checked_sub(1)
-            .ok_or(CommissionError::InvalidSchedule)
+        quotient - 1
     } else {
-        Ok(quotient)
+        quotient
     }
 }
 
-pub(super) fn ceil_div_60(numerator: i128) -> Result<i128, CommissionError> {
+pub(super) fn ceil_div_60(numerator: i128) -> i128 {
     let quotient = numerator / 60;
     if numerator > 0 && numerator % 60 != 0 {
-        quotient
-            .checked_add(1)
-            .ok_or(CommissionError::InvalidSchedule)
+        quotient + 1
     } else {
-        Ok(quotient)
+        quotient
     }
 }
 

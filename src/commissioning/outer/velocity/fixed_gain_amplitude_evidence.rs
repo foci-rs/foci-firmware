@@ -99,8 +99,6 @@ pub struct FixedGainAmplitudeRunMasks {
 pub enum FixedGainAmplitudeEvidenceError {
     /// A supplied closed interval was inverted.
     InvalidInterval,
-    /// Checked integer arithmetic exceeded its representation.
-    Arithmetic,
     /// Five-bit masks contradicted schedule ownership.
     InvalidMasks,
 }
@@ -108,7 +106,7 @@ pub enum FixedGainAmplitudeEvidenceError {
 /// Compute the robust location of three or four intrinsically usable means.
 pub fn robust_rate_location(
     means_q: [Option<i32>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-) -> Result<Option<i32>, FixedGainAmplitudeEvidenceError> {
+) -> Option<i32> {
     let mut values = [0_i32; CONSENSUS_OBSERVATIONS_PER_DIRECTION];
     let mut count = 0;
     for value in means_q.into_iter().flatten() {
@@ -123,15 +121,13 @@ pub fn robust_rate_location(
         }
     }
     match count {
-        3 => Ok(Some(values[1])),
+        3 => Some(values[1]),
         4 => {
             let difference = i64::from(values[2]) - i64::from(values[1]);
             let midpoint = i64::from(values[1]) + difference / 2;
-            i32::try_from(midpoint)
-                .map(Some)
-                .map_err(|_| FixedGainAmplitudeEvidenceError::Arithmetic)
+            Some(i32::try_from(midpoint).expect("midpoint of two i32 values fits in i32"))
         }
-        _ => Ok(None),
+        _ => None,
     }
 }
 
@@ -196,7 +192,7 @@ pub fn classify_fixed_gain_amplitude(
         consensus,
         signed_target_rate_q: input.signed_target_rate_q,
         response_interval_q,
-        robust_location_q: robust_rate_location(input.means_q)?,
+        robust_location_q: robust_rate_location(input.means_q),
         deficit_interval_q,
         excluded_mask: consensus.eligible_mask & !consensus.included_mask,
         blocking_levels: input.blocking_levels,

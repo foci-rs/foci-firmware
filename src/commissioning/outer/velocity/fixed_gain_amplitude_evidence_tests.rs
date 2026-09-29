@@ -90,20 +90,17 @@ fn unusable_observations_and_signed_overshoot_remain_evidence() {
 fn robust_location_is_exact_for_three_and_four_signed_means() {
     assert_eq!(
         robust_rate_location([Some(9), Some(1), Some(5), None]),
-        Ok(Some(5))
+        Some(5)
     );
     assert_eq!(
         robust_rate_location([Some(4), Some(1), Some(8), Some(3)]),
-        Ok(Some(3))
+        Some(3)
     );
     assert_eq!(
         robust_rate_location([Some(-1), Some(-4), Some(-8), Some(3)]),
-        Ok(Some(-3))
+        Some(-3)
     );
-    assert_eq!(
-        robust_rate_location([Some(1), Some(2), None, None]),
-        Ok(None)
-    );
+    assert_eq!(robust_rate_location([Some(1), Some(2), None, None]), None);
 }
 
 #[test]
