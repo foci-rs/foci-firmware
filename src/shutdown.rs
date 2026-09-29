@@ -486,6 +486,8 @@ macro_rules! foci_ankyra_config {
                 "trsync_trigger failed",
                 "Invalid TMC channel",
                 "foci_config_homing rejected",
+                "tmc_set_current exceeds board limit",
+                "foci_config_homing current exceeds board limit",
                 "tmc_set_motion_scale lost (queue full)",
                 "TMC diagnostic lost (queue full)",
                 "TMC4671 chip ID mismatch",
