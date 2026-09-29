@@ -370,30 +370,69 @@ pub fn tmc_commission(channel: u8, oid: u8, profile: u8) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::Commission { oid, profile })
 }
 
+/// Parameters of a `Tune` request beyond its channel, OID and acquisition action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct TuneParameters {
+    /// Tuning profile: 0=Conservative, 1=Balanced, 2=Stiff.
+    pub profile: u8,
+    /// Plant mode: 0=Unloaded, 1=Nominal, 2=HighInertia.
+    pub mode: u8,
+    /// Inner-loop lambda from inner commissioning, in microseconds.
+    pub inner_lambda_us: u32,
+    /// Electrical-model `theta_e` from inner commissioning, in microseconds.
+    pub theta_e_us: u32,
+    /// Current-loop effective bandwidth Hz from inner commissioning.
+    pub current_bandwidth_hz: u32,
+    /// Warning flags from inner commissioning.
+    pub inner_warning_flags: u8,
+    /// Requested mechanical velocity amplitude in milli-revolutions/s.
+    pub requested_velocity_mrev_s: u32,
+    /// Kinematics-derived absolute machine velocity ceiling.
+    pub machine_velocity_ceiling_mrev_s: u32,
+    /// Whether the requested velocity was explicit or defaulted by the host.
+    pub requested_velocity_source:
+        crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource,
+    /// Full local displacement window spanning moving and settle.
+    pub max_stroke_travel_mrev: u32,
+    /// Host planning reserve for braking and settle drift.
+    pub settle_travel_reserve_mrev: u32,
+    /// Negative absolute-position headroom from installed-tuning entry.
+    pub negative_position_headroom_mrev: u32,
+    /// Positive absolute-position headroom from installed-tuning entry.
+    pub positive_position_headroom_mrev: u32,
+    /// Host-computed max primitive duration in milliseconds.
+    pub max_duration_ms: u16,
+    /// Axis homing speed, mrev/s; the homing bound's speed.
+    pub homing_speed_mrev_s: u32,
+    /// Machine acceleration, mrev/s^2; the stroke ramp rate.
+    pub max_accel_mrev_s2: u32,
+}
+
 /// Build a `Tune` request with an explicit firmware-owned acquisition action.
-#[allow(clippy::too_many_arguments)]
 pub fn tmc_tune_with_action(
     channel: u8,
     oid: u8,
     action: AutotuneAction,
-    profile: u8,
-    mode: u8,
-    inner_lambda_us: u32,
-    theta_e_us: u32,
-    current_bandwidth_hz: u32,
-    inner_warning_flags: u8,
-    requested_velocity_mrev_s: u32,
-    machine_velocity_ceiling_mrev_s: u32,
-    requested_velocity_source:
-        crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource,
-    max_stroke_travel_mrev: u32,
-    settle_travel_reserve_mrev: u32,
-    negative_position_headroom_mrev: u32,
-    positive_position_headroom_mrev: u32,
-    max_duration_ms: u16,
-    homing_speed_mrev_s: u32,
-    max_accel_mrev_s2: u32,
+    parameters: TuneParameters,
 ) -> TmcRequest {
+    let TuneParameters {
+        profile,
+        mode,
+        inner_lambda_us,
+        theta_e_us,
+        current_bandwidth_hz,
+        inner_warning_flags,
+        requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s,
+        requested_velocity_source,
+        max_stroke_travel_mrev,
+        settle_travel_reserve_mrev,
+        negative_position_headroom_mrev,
+        positive_position_headroom_mrev,
+        max_duration_ms,
+        homing_speed_mrev_s,
+        max_accel_mrev_s2,
+    } = parameters;
     TmcRequest::new_with_autotune_action(
         channel,
         action,
