@@ -393,7 +393,7 @@ macro_rules! dispatch_shutdown {
 ///     context = &'ctx mut crate::firmware_ctx::FirmwareCtx<'ctx>,
 ///     providers = [crate::ankyra::provider::BOARD_PROVIDER],
 ///     board_static_strings = [],
-///     app = "foci",
+///     app = "FOCI",
 ///     version = env!("CARGO_PKG_VERSION"),
 ///     build_versions = "",
 ///     license = "MIT OR Apache-2.0",
