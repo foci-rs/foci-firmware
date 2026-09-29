@@ -1,6 +1,7 @@
 //! Checked conversion into the TMC4671 torque/flux current-limit domain.
 
 use crate::autotune::Permille;
+use crate::state::tmc::TmcChannelState;
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 
 /// Failure to convert an RMS current request into the chip register domain.
@@ -54,10 +55,42 @@ pub fn diagnostic_current_envelope(current_limit: PidTorqueFluxLimit, fraction: 
     (product / 1000) as u16
 }
 
+/// Torque-offset headroom for a committed limit: `floor(limit / 2)`.
+///
+/// The applied torque/flux limit plus the magnitude of any applied torque offset never exceeds
+/// the committed limit while the offset stays within this headroom.
+#[must_use]
+pub fn offset_headroom(limit: PidTorqueFluxLimit) -> u16 {
+    limit.raw() / 2
+}
+
+/// Torque/flux limit left after reserving [`offset_headroom`] from `limit`.
+#[must_use]
+pub fn reserved_limit(limit: PidTorqueFluxLimit) -> PidTorqueFluxLimit {
+    PidTorqueFluxLimit::new(u32::from(limit.raw() - offset_headroom(limit)))
+        .expect("a reduced validated limit stays in the limit domain")
+}
+
+/// Register value for the torque/flux limit the chip should run with on this channel.
+///
+/// Returns the reserved limit while the offset-headroom reservation is set, and the full
+/// committed limit otherwise.
+#[must_use]
+pub fn operational_limit_register(state: &TmcChannelState) -> u32 {
+    use core::sync::atomic::Ordering::Relaxed;
+    let limit = state.load_current_limit(Relaxed);
+    if state.offset_headroom_reserved(Relaxed) {
+        reserved_limit(limit).register_value()
+    } else {
+        limit.register_value()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::autotune::Permille;
+    use crate::state::tmc::TmcChannelState;
 
     #[test]
     fn conversion_truncates_before_domain_validation() {
@@ -112,5 +145,31 @@ mod tests {
     fn diagnostic_envelope_saturates_within_u16() {
         let envelope = diagnostic_current_envelope(PidTorqueFluxLimit::MAX, Permille::new(1000));
         assert_eq!(envelope, 0x7fff);
+    }
+
+    #[test]
+    fn reserved_limit_and_headroom_partition_the_limit() {
+        for raw in [0u32, 1, 2, 3, 2557, 0x7fff] {
+            let limit = PidTorqueFluxLimit::new(raw).unwrap();
+
+            assert_eq!(u32::from(offset_headroom(limit)), raw / 2);
+            assert_eq!(
+                u32::from(reserved_limit(limit).raw()) + u32::from(offset_headroom(limit)),
+                raw
+            );
+        }
+    }
+
+    #[test]
+    fn operational_limit_register_follows_the_reservation_flag() {
+        use core::sync::atomic::Ordering::Relaxed;
+        let state = TmcChannelState::new();
+        state.store_current_limit(PidTorqueFluxLimit::new(2557).unwrap(), Relaxed);
+
+        assert_eq!(operational_limit_register(&state), 2557);
+        state.set_offset_headroom_reserved(true, Relaxed);
+        assert_eq!(operational_limit_register(&state), 2557 - 1278);
+        state.set_offset_headroom_reserved(false, Relaxed);
+        assert_eq!(operational_limit_register(&state), 2557);
     }
 }

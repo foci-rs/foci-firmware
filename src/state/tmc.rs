@@ -118,9 +118,14 @@ impl AtomicOptionalInvert {
     }
 }
 
+/// Sentinel above the `0..=0x7fff` limit domain meaning no run limit is pending.
+const NO_PENDING_RUN_LIMIT: u16 = u16::MAX;
+
 /// Runtime state for one board-local TMC4671 channel.
 pub struct TmcChannelState {
     current_limit_value: AtomicU16,
+    offset_headroom_reserved: AtomicBool,
+    pending_run_limit: AtomicU16,
     pub motor_armed: AtomicBool,
     /// Mirrors the physical enable-pin GPIO level; written only by
     /// `SharedCommissioningBackend::set_commission_enable_pin`.
@@ -258,6 +263,8 @@ impl TmcChannelState {
     pub const fn new() -> Self {
         Self {
             current_limit_value: AtomicU16::new(PidTorqueFluxLimit::ZERO.raw()),
+            offset_headroom_reserved: AtomicBool::new(false),
+            pending_run_limit: AtomicU16::new(NO_PENDING_RUN_LIMIT),
             motor_armed: AtomicBool::new(false),
             enable_pin_asserted: AtomicBool::new(false),
             motor_sentinel: AtomicU32::new(0),
@@ -344,6 +351,8 @@ impl TmcChannelState {
 
         self.motion_scale_configured.store(false, Ordering::Release);
         self.store_current_limit(PidTorqueFluxLimit::ZERO, Relaxed);
+        self.offset_headroom_reserved.store(false, Relaxed);
+        self.pending_run_limit.store(NO_PENDING_RUN_LIMIT, Relaxed);
         self.motor_armed.store(false, Relaxed);
         self.motor_sentinel.store(0, Relaxed);
         self.safe_state_incomplete.store(false, Relaxed);
@@ -422,6 +431,35 @@ impl TmcChannelState {
     /// Publish a validated torque/flux current limit.
     pub fn store_current_limit(&self, limit: PidTorqueFluxLimit, ordering: Ordering) {
         self.current_limit_value.store(limit.raw(), ordering);
+    }
+
+    /// Return whether the offset-headroom reservation is applied to the operational limit.
+    pub fn offset_headroom_reserved(&self, ordering: Ordering) -> bool {
+        self.offset_headroom_reserved.load(ordering)
+    }
+
+    /// Set or clear the offset-headroom reservation.
+    pub fn set_offset_headroom_reserved(&self, reserved: bool, ordering: Ordering) {
+        self.offset_headroom_reserved.store(reserved, ordering);
+    }
+
+    /// Record a run limit to be applied at the next opportunity, replacing any earlier one.
+    pub fn store_pending_run_limit(&self, limit: PidTorqueFluxLimit) {
+        self.pending_run_limit.store(limit.raw(), Ordering::Release);
+    }
+
+    /// Take the pending run limit, leaving none pending.
+    pub fn take_pending_run_limit(&self) -> Option<PidTorqueFluxLimit> {
+        let raw = self
+            .pending_run_limit
+            .swap(NO_PENDING_RUN_LIMIT, Ordering::AcqRel);
+        if raw == NO_PENDING_RUN_LIMIT {
+            return None;
+        }
+        Some(
+            PidTorqueFluxLimit::new(u32::from(raw))
+                .expect("pending run limit storage accepts only validated values"),
+        )
     }
 
     /// Return whether startup established the fixed PI representation.
@@ -791,7 +829,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 148);
+        assert_eq!(size_of::<TmcChannelState>(), 152);
     }
 
     #[test]
@@ -869,6 +907,37 @@ mod tests {
 
         channel0.store_current_limit(PidTorqueFluxLimit::ZERO, Relaxed);
         channel1.store_current_limit(PidTorqueFluxLimit::ZERO, Relaxed);
+    }
+
+    #[test]
+    fn pending_run_limit_is_taken_once() {
+        let state = TmcChannelState::new();
+
+        assert_eq!(state.take_pending_run_limit(), None);
+        state.store_pending_run_limit(PidTorqueFluxLimit::new(600).unwrap());
+        assert_eq!(
+            state.take_pending_run_limit(),
+            Some(PidTorqueFluxLimit::new(600).unwrap())
+        );
+        assert_eq!(state.take_pending_run_limit(), None);
+
+        state.store_pending_run_limit(PidTorqueFluxLimit::ZERO);
+        assert_eq!(
+            state.take_pending_run_limit(),
+            Some(PidTorqueFluxLimit::ZERO)
+        );
+    }
+
+    #[test]
+    fn reset_clears_reservation_and_pending_limit() {
+        let state = TmcChannelState::new();
+        state.set_offset_headroom_reserved(true, Relaxed);
+        state.store_pending_run_limit(PidTorqueFluxLimit::new(600).unwrap());
+
+        state.reset();
+
+        assert!(!state.offset_headroom_reserved(Relaxed));
+        assert_eq!(state.take_pending_run_limit(), None);
     }
 
     #[test]
