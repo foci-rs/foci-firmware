@@ -88,13 +88,27 @@ pub struct CurrentGainSynthesis {
     pub torque_tau_us: u32,
 }
 
+/// Source of a current-loop gain set, as persisted and reported on the wire.
+///
+/// Discriminants are append-only: never renumber or reuse one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum CurrentGainsSource {
+    /// Gain synthesis failed.
+    Failed = 0,
+    /// Gains were synthesized from measured commissioning data.
+    Measured = 1,
+    /// Reserved, historical-only: default gains applied after validation fallback.
+    /// No live path produces it.
+    Default = 2,
+}
+
 /// Gain synthesis failed.
-pub const CURRENT_GAINS_SOURCE_FAILED: u8 = 0;
+pub const CURRENT_GAINS_SOURCE_FAILED: u8 = CurrentGainsSource::Failed as u8;
 /// Gains were synthesized from measured commissioning data.
-pub const CURRENT_GAINS_SOURCE_MEASURED: u8 = 1;
+pub const CURRENT_GAINS_SOURCE_MEASURED: u8 = CurrentGainsSource::Measured as u8;
 /// Reserved, historical-only: default gains applied after validation fallback.
-/// No live path produces it; never reassign.
-pub const CURRENT_GAINS_SOURCE_DEFAULT: u8 = 2;
+pub const CURRENT_GAINS_SOURCE_DEFAULT: u8 = CurrentGainsSource::Default as u8;
 
 /// No independent axis split source was used.
 pub const AXIS_SPLIT_SOURCE_NONE: u8 = 0;
@@ -302,5 +316,12 @@ mod tests {
         assert_eq!(model.l_count_micro, 256);
         assert_eq!(model.tau_e_us, 50);
         assert_eq!(model.theta_e_us, 10);
+    }
+
+    #[test]
+    fn current_gains_source_codes_match_the_persisted_and_host_decoded_values() {
+        assert_eq!(CURRENT_GAINS_SOURCE_FAILED, 0);
+        assert_eq!(CURRENT_GAINS_SOURCE_MEASURED, 1);
+        assert_eq!(CURRENT_GAINS_SOURCE_DEFAULT, 2);
     }
 }
