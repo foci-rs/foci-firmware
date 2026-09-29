@@ -2,6 +2,7 @@
 
 use core::sync::atomic::Ordering;
 
+use foci_klipper::endstop::HomingConfig;
 use foci_klipper::scheduler::{
     ScheduleResult, SchedulerEvent, SchedulerEventKind, TriggerScheduler,
 };
@@ -417,16 +418,16 @@ pub fn endstop_start_homing<B: TrsyncBoard + ?Sized>(
     state
         .scheduler
         .cancel(|kind| matches!(kind, SchedulerEventKind::EndstopSample(i) if *i == idx));
-    state.endstops[idx].start_homing(
+    state.endstops[idx].start_homing(HomingConfig {
         clock,
         sample_ticks,
         sample_count,
         rest_ticks,
-        pin_value_expected,
+        pin_value: pin_value_expected,
         trsync_oid,
         trigger_reason,
         pin_id,
-    );
+    });
     if sample_count > 0 {
         let result = state.scheduler.try_schedule(SchedulerEvent {
             wake_clock: clock,
@@ -933,7 +934,7 @@ mod tests {
         assert_eq!(state.trsync[trsync_idx].report_ticks(), 5);
         assert!(state.trsync[trsync_idx].set_liveness_report(2, 150));
         assert!(state.trsync[trsync_idx].report_pending());
-        assert!(state.endstops[endstop_idx].is_homing());
+        assert!(state.endstops[endstop_idx].is_armed());
 
         state.stepper_stop[0].timer_active = true;
         state.stepper_stop[0].blocked_by_trigger = true;
