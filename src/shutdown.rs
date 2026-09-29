@@ -64,6 +64,7 @@ pub enum ShutdownReason {
     TrsyncTriggerFailed,
     InvalidTmcChannel,
     FociHomingConfigInvalid,
+    TmcSetCurrentExceedsBoardLimit,
     TmcSetMotionScaleLostQueueFull,
     TmcDiagnosticLostQueueFull,
     Tmc4671ChipIdMismatch,
@@ -119,6 +120,7 @@ impl ShutdownReason {
             Self::TrsyncTriggerFailed => "trsync_trigger failed",
             Self::InvalidTmcChannel => "Invalid TMC channel",
             Self::FociHomingConfigInvalid => "foci_config_homing rejected",
+            Self::TmcSetCurrentExceedsBoardLimit => "tmc_set_current exceeds board limit",
             Self::TmcSetMotionScaleLostQueueFull => "tmc_set_motion_scale lost (queue full)",
             Self::TmcDiagnosticLostQueueFull => "TMC diagnostic lost (queue full)",
             Self::Tmc4671ChipIdMismatch => "TMC4671 chip ID mismatch",
@@ -279,6 +281,13 @@ macro_rules! dispatch_shutdown {
             }
             $crate::shutdown::ShutdownReason::FociHomingConfigInvalid => {
                 ::ankyra::klipper_shutdown_from!($sender, "foci_config_homing rejected", $clock);
+            }
+            $crate::shutdown::ShutdownReason::TmcSetCurrentExceedsBoardLimit => {
+                ::ankyra::klipper_shutdown_from!(
+                    $sender,
+                    "tmc_set_current exceeds board limit",
+                    $clock
+                );
             }
             $crate::shutdown::ShutdownReason::TmcSetMotionScaleLostQueueFull => {
                 ::ankyra::klipper_shutdown_from!(

@@ -86,11 +86,28 @@ pub fn tmc_read_register(ctx: &mut dyn TmcWriteHost, oid: u8, addr: u8) {
 /// Recorded in channel state and applied by the TMC task on its control
 /// tick. See [`TmcChannelState::config_apply_pending`] for why this does
 /// not enqueue.
+///
+/// A request above the board's run current cap enters shutdown and stores
+/// nothing.
 #[klipper_command]
 pub fn tmc_set_current(ctx: &mut dyn TmcWriteHost, oid: u8, run_ma: u32) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
+    let cap_ma = ctx.max_run_current_ma();
+    if run_ma > cap_ma {
+        defmt::error!(
+            "tmc_set_current: oid={} run_ma={} exceeds board cap {}",
+            oid,
+            run_ma,
+            cap_ma
+        );
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::TmcSetCurrentExceedsBoardLimit, clock);
+        }
+        return;
+    }
     state.run_current_ma_cfg.store(run_ma, Ordering::Relaxed);
     state
         .config_apply_pending
@@ -867,6 +884,49 @@ mod tests {
         );
         assert!(ctx.last_request.borrow().is_none());
         assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_current_accepts_exactly_the_board_cap() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.run_current_ma_cfg.store(0, Relaxed);
+        tmc_state.config_apply_pending.store(0, Relaxed);
+
+        tmc_set_current(&mut ctx, &mut sender, 10, 10_000);
+
+        assert_eq!(tmc_state.run_current_ma_cfg.load(Relaxed), 10_000);
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_CURRENT,
+            0
+        );
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_current_over_cap_shuts_down_and_stores_nothing() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.run_current_ma_cfg.store(800, Relaxed);
+        tmc_state.config_apply_pending.store(0, Relaxed);
+
+        tmc_set_current(&mut ctx, &mut sender, 10, 10_001);
+
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(ShutdownReason::TmcSetCurrentExceedsBoardLimit)
+        );
+        assert_eq!(tmc_state.run_current_ma_cfg.load(Relaxed), 800);
+        assert_eq!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_CURRENT,
+            0
+        );
     }
 
     #[test]
