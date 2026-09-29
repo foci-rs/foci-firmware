@@ -187,7 +187,7 @@ const fn confirmation_failure_cause(cause: BandConfirmationFailureCause) -> Brea
         BandConfirmationFailureCause::ExcessiveUncertainty => {
             BreakawayTerminalCause::ConfirmationExcessiveUncertainty
         }
-        BandConfirmationFailureCause::LossOfConsensus => {
+        BandConfirmationFailureCause::IncompleteObservations => {
             BreakawayTerminalCause::ConfirmationLossOfConsensus
         }
         BandConfirmationFailureCause::CurrentAuthority => {

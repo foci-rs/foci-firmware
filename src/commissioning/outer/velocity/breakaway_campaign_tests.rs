@@ -2108,7 +2108,7 @@ fn current_headroom_across_the_block_reports_inconclusive_current_authority() {
 }
 
 #[test]
-fn one_inert_stroke_without_headroom_reports_inconclusive_loss_of_consensus() {
+fn one_inert_stroke_without_headroom_reports_incomplete_observations() {
     let (outcome, _backend, write_gain_count, _directions) = run_confirmation(
         AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(724)),
         2_448,
@@ -2119,7 +2119,7 @@ fn one_inert_stroke_without_headroom_reports_inconclusive_loss_of_consensus() {
 
     assert_eq!(
         outcome_cause(&outcome),
-        Some(BandConfirmationFailureCause::LossOfConsensus)
+        Some(BandConfirmationFailureCause::IncompleteObservations)
     );
     assert_eq!(write_gain_count, 8);
 }

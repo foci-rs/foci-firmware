@@ -455,7 +455,7 @@ fn confirmation_requires_complete_masks_in_both_directions() {
     assert_eq!(
         result,
         Err(TargetBandConfirmationInconclusive(
-            BandConfirmationFailureCause::LossOfConsensus
+            BandConfirmationFailureCause::IncompleteObservations
         ))
     );
 }
@@ -488,7 +488,7 @@ fn current_headroom_exclusion_is_reported_as_current_authority() {
 }
 
 #[test]
-fn other_exclusion_reasons_are_reported_as_loss_of_consensus() {
+fn other_exclusion_reasons_are_reported_as_incomplete_observations() {
     let mut forward = confirmation_input(
         VelocityDirection::Forward,
         RUNG18_MEAN,
@@ -509,7 +509,7 @@ fn other_exclusion_reasons_are_reported_as_loss_of_consensus() {
     assert_eq!(
         result,
         Err(TargetBandConfirmationInconclusive(
-            BandConfirmationFailureCause::LossOfConsensus
+            BandConfirmationFailureCause::IncompleteObservations
         ))
     );
 }

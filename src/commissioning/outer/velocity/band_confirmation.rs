@@ -502,7 +502,7 @@ pub enum BandConfirmationFailureCause {
     ExcessiveUncertainty,
     /// Either direction failed to report complete `collected_mask == eligible_mask == 0b1111`, or an
     /// expected observation atom was absent, for a reason other than current-headroom exclusion.
-    LossOfConsensus,
+    IncompleteObservations,
     /// Either direction's incomplete mask traces to at least one observation
     /// classified [`VelocityObservationClass::CurrentHeadroom`].
     CurrentAuthority,
@@ -558,7 +558,7 @@ pub fn evaluate_band_confirmation(
         let cause = if any_current_headroom {
             BandConfirmationFailureCause::CurrentAuthority
         } else {
-            BandConfirmationFailureCause::LossOfConsensus
+            BandConfirmationFailureCause::IncompleteObservations
         };
         return Err(TargetBandConfirmationInconclusive(cause));
     }
@@ -576,7 +576,7 @@ pub fn evaluate_band_confirmation(
         for atom in directional.observations.iter() {
             let Some(atom) = atom else {
                 return Err(TargetBandConfirmationInconclusive(
-                    BandConfirmationFailureCause::LossOfConsensus,
+                    BandConfirmationFailureCause::IncompleteObservations,
                 ));
             };
             let statistic = match observation_statistic(*atom) {

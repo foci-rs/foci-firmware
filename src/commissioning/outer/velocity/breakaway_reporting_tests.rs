@@ -875,7 +875,7 @@ fn confirmation_zero_stroke_cause_maps_every_zero_stroke_variant() {
             BreakawayTerminalCause::ConfirmationExcessiveUncertainty,
         ),
         (
-            BandConfirmationFailureCause::LossOfConsensus,
+            BandConfirmationFailureCause::IncompleteObservations,
             BreakawayTerminalCause::ConfirmationLossOfConsensus,
         ),
         (
