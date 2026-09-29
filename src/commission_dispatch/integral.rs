@@ -177,7 +177,8 @@ fn preflight_retained_breakaway(
     integral_candidate: &IntegralRetentionSlot,
 ) -> Result<Option<IntegralPreflight>, IntegralPreflightRejection> {
     use crate::commissioning::outer::velocity::integral_plan::{
-        AcquisitionContext, plan_retained_breakaway_velocity_integral_response,
+        AcquisitionContext, BreakawayIntegralEvidence, IntegralPlanPhysics,
+        plan_retained_breakaway_velocity_integral_response,
     };
 
     let context = AcquisitionContext {
@@ -194,12 +195,16 @@ fn preflight_retained_breakaway(
         token,
         authority.fixed_p,
         context,
-        authority.directional_pooled_intervals,
-        authority.confidence_q,
-        authority.band_position_q,
-        motion_budget,
-        config.pwm_hz,
-        config.encoder_counts_per_rev,
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: authority.directional_pooled_intervals,
+            confidence_q: authority.confidence_q,
+            band_position_q: authority.band_position_q,
+        },
+        IntegralPlanPhysics {
+            motion_budget,
+            pwm_hz: config.pwm_hz,
+            encoder_counts_per_rev: config.encoder_counts_per_rev,
+        },
     ) {
         Ok(plan) => plan,
         Err(VelocityIntegralPlanError::NoTransitionCapableOperatingPoint(failure)) => {

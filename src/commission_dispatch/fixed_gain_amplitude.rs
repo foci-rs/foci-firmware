@@ -10,8 +10,8 @@ use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::{
     plan_fixed_gain_amplitude,
 };
 use crate::commissioning::outer::velocity::integral_plan::{
-    AcquisitionContext, VelocityIntegralPlan, VelocityIntegralPlanError,
-    plan_retained_breakaway_velocity_integral_response,
+    AcquisitionContext, BreakawayIntegralEvidence, IntegralPlanPhysics, VelocityIntegralPlan,
+    VelocityIntegralPlanError, plan_retained_breakaway_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptancePoint, FixedGainAmplitudeProgress, IntegralRetentionSlot,
@@ -118,12 +118,16 @@ pub fn reconstruct_breakaway_plan(
         token,
         point.selected_p,
         context,
-        point.selected_response_intervals_q,
-        point.confidence_q,
-        point.band_position_q,
-        motion_budget,
-        pwm_hz,
-        encoder_counts_per_rev,
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: point.selected_response_intervals_q,
+            confidence_q: point.confidence_q,
+            band_position_q: point.band_position_q,
+        },
+        IntegralPlanPhysics {
+            motion_budget,
+            pwm_hz,
+            encoder_counts_per_rev,
+        },
     )
     .map_err(|error| match error {
         VelocityIntegralPlanError::Arithmetic
@@ -393,12 +397,16 @@ pub(crate) fn test_acceptance_point(
         token,
         confirmation_plan.nominated_p.raw(),
         context,
-        held_out_response_intervals_q,
-        acceptance.confidence_q,
-        acceptance.band_position_q,
-        motion_budget,
-        PWM_HZ,
-        ENCODER_COUNTS_PER_REV,
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q,
+            confidence_q: acceptance.confidence_q,
+            band_position_q: acceptance.band_position_q,
+        },
+        IntegralPlanPhysics {
+            motion_budget,
+            pwm_hz: PWM_HZ,
+            encoder_counts_per_rev: ENCODER_COUNTS_PER_REV,
+        },
     )
     .unwrap();
 

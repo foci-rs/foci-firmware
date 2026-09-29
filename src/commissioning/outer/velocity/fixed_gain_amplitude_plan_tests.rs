@@ -8,9 +8,9 @@ use super::fixed_gain_amplitude_plan::{
     schedule_order_code,
 };
 use super::integral_plan::{
-    AcceptanceSource, AcquisitionContext, ConfirmedAcquisitionDigest, IntegralSlotOrder,
-    VelocityIntegralAcquisitionKind, bind_breakaway_integral_authority,
-    plan_retained_breakaway_velocity_integral_response,
+    AcceptanceSource, AcquisitionContext, BreakawayIntegralEvidence, ConfirmedAcquisitionDigest,
+    IntegralPlanPhysics, IntegralSlotOrder, VelocityIntegralAcquisitionKind,
+    bind_breakaway_integral_authority, plan_retained_breakaway_velocity_integral_response,
 };
 use super::integral_reporting::plan_recovery_flags;
 use super::integral_reproduction::{
@@ -142,12 +142,16 @@ fn breakaway_plan() -> super::integral_plan::VelocityIntegralPlan {
         token,
         confirmation_plan.nominated_p.raw(),
         context,
-        breakaway_intervals_for(confirmation_plan),
-        0,
-        0,
-        breakaway_motion_budget(),
-        PWM_HZ,
-        COUNTS_PER_REV,
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
+            confidence_q: 0,
+            band_position_q: 0,
+        },
+        IntegralPlanPhysics {
+            motion_budget: breakaway_motion_budget(),
+            pwm_hz: PWM_HZ,
+            encoder_counts_per_rev: COUNTS_PER_REV,
+        },
     )
     .expect("the campaign's own Integral plan")
 }

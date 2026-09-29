@@ -14,8 +14,9 @@ use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_INTEGRAL_SCH
 use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder;
 use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
 use crate::commissioning::outer::velocity::integral_plan::{
-    AcquisitionContext, ConfirmedAcquisitionDigest, VelocityIntegralPlan,
-    bind_breakaway_integral_authority, plan_breakaway_velocity_integral_response,
+    AcquisitionContext, BreakawayIntegralEvidence, ConfirmedAcquisitionDigest, IntegralPlanPhysics,
+    VelocityIntegralPlan, bind_breakaway_integral_authority,
+    plan_breakaway_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptancePoint, FixedGainAmplitudeProgress, IntegralPlanIdentity, IntegralRetentionSlot,
@@ -163,12 +164,16 @@ fn breakaway_plan_and_token() -> (VelocityIntegralPlan, ConfirmedAcquisitionDige
         token,
         confirmation_plan,
         context,
-        breakaway_intervals_for(confirmation_plan),
-        0,
-        0,
-        motion_budget,
-        PWM_HZ,
-        COUNTS_PER_REV,
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
+            confidence_q: 0,
+            band_position_q: 0,
+        },
+        IntegralPlanPhysics {
+            motion_budget,
+            pwm_hz: PWM_HZ,
+            encoder_counts_per_rev: COUNTS_PER_REV,
+        },
     )
     .expect("the campaign's own Integral plan");
     (plan, token)

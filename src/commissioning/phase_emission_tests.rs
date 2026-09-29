@@ -96,7 +96,8 @@ fn response_ladder_plan() -> VelocityIntegralPlan {
     use crate::commissioning::outer::OuterMotionBudget;
     use crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
     use crate::commissioning::outer::velocity::integral_plan::{
-        AcquisitionContext, plan_retained_breakaway_velocity_integral_response,
+        AcquisitionContext, BreakawayIntegralEvidence, IntegralPlanPhysics,
+        plan_retained_breakaway_velocity_integral_response,
     };
     use crate::commissioning::outer::velocity::sweep_plan::plan_proportional_velocity_sweep;
 
@@ -118,23 +119,27 @@ fn response_ladder_plan() -> VelocityIntegralPlan {
         confirmation.token,
         confirmation.confirmation_plan.nominated_p.raw(),
         context,
-        confirmation.held_out_response_intervals_q,
-        confirmation.confidence_q,
-        confirmation.band_position_q,
-        OuterMotionBudget {
-            requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-            machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
-            requested_velocity_source: request.requested_velocity_source,
-            max_stroke_travel_mrev: request.max_stroke_travel_mrev,
-            settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
-            negative_position_headroom_mrev: request.negative_position_headroom_mrev,
-            positive_position_headroom_mrev: request.positive_position_headroom_mrev,
-            max_duration_ms: request.max_duration_ms,
-            homing_speed_mrev_s: 0,
-            max_accel_mrev_s2: 0,
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: confirmation.held_out_response_intervals_q,
+            confidence_q: confirmation.confidence_q,
+            band_position_q: confirmation.band_position_q,
         },
-        PWM_HZ,
-        COUNTS_PER_REV,
+        IntegralPlanPhysics {
+            motion_budget: OuterMotionBudget {
+                requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+                machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+                requested_velocity_source: request.requested_velocity_source,
+                max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+                settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+                negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+                positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+                max_duration_ms: request.max_duration_ms,
+                homing_speed_mrev_s: 0,
+                max_accel_mrev_s2: 0,
+            },
+            pwm_hz: PWM_HZ,
+            encoder_counts_per_rev: COUNTS_PER_REV,
+        },
     )
     .expect("a valid retained breakaway Integral plan")
 }

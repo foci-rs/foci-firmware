@@ -886,18 +886,39 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Held-out breakaway acceptance evidence behind an integral plan.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BreakawayIntegralEvidence {
+    pub(crate) held_out_response_intervals_q: [[i32; 2]; 2],
+    pub(crate) confidence_q: u16,
+    pub(crate) band_position_q: u16,
+}
+
+/// Motion budget and plan-time physical context for an integral plan.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IntegralPlanPhysics {
+    pub(crate) motion_budget: OuterMotionBudget,
+    pub(crate) pwm_hz: u32,
+    pub(crate) encoder_counts_per_rev: u32,
+}
+
 pub(crate) fn plan_breakaway_velocity_integral_response(
     token: ConfirmedAcquisitionDigest,
     confirmation_plan: BandConfirmationPlan,
     context: AcquisitionContext,
-    held_out_response_intervals_q: [[i32; 2]; 2],
-    confidence_q: u16,
-    band_position_q: u16,
-    motion_budget: OuterMotionBudget,
-    pwm_hz: u32,
-    encoder_counts_per_rev: u32,
+    evidence: BreakawayIntegralEvidence,
+    physics: IntegralPlanPhysics,
 ) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
+    let BreakawayIntegralEvidence {
+        held_out_response_intervals_q,
+        confidence_q,
+        band_position_q,
+    } = evidence;
+    let IntegralPlanPhysics {
+        motion_budget,
+        pwm_hz,
+        encoder_counts_per_rev,
+    } = physics;
     validate_fixed_contract(&confirmation_plan)
         .map_err(|_| VelocityIntegralPlanError::InvalidConfirmationPlan)?;
     if confirmation_plan.plan_digest != token.get() {
@@ -944,18 +965,23 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_retained_breakaway_velocity_integral_response(
     token: ConfirmedAcquisitionDigest,
     fixed_p: u16,
     context: AcquisitionContext,
-    held_out_response_intervals_q: [[i32; 2]; 2],
-    confidence_q: u16,
-    band_position_q: u16,
-    motion_budget: OuterMotionBudget,
-    pwm_hz: u32,
-    encoder_counts_per_rev: u32,
+    evidence: BreakawayIntegralEvidence,
+    physics: IntegralPlanPhysics,
 ) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
+    let BreakawayIntegralEvidence {
+        held_out_response_intervals_q,
+        confidence_q,
+        band_position_q,
+    } = evidence;
+    let IntegralPlanPhysics {
+        motion_budget,
+        pwm_hz,
+        encoder_counts_per_rev,
+    } = physics;
     if context.plan_time_pwm_hz != pwm_hz
         || context.plan_time_encoder_counts_per_rev != encoder_counts_per_rev
     {

@@ -179,7 +179,8 @@ fn breakaway_integral_plan(
     limit_evidence_capability: VelocityLimitEvidenceCapability,
 ) -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
     use crate::commissioning::outer::velocity::integral_plan::{
-        AcquisitionContext, plan_breakaway_velocity_integral_response,
+        AcquisitionContext, BreakawayIntegralEvidence, IntegralPlanPhysics,
+        plan_breakaway_velocity_integral_response,
     };
 
     let confirmation = breakaway_confirmation_for_test();
@@ -198,23 +199,27 @@ fn breakaway_integral_plan(
         confirmation.token,
         confirmation.confirmation_plan,
         context,
-        confirmation.held_out_response_intervals_q,
-        confirmation.confidence_q,
-        confirmation.band_position_q,
-        OuterMotionBudget {
-            requested_velocity_mrev_s: 6_666,
-            machine_velocity_ceiling_mrev_s: 10_000,
-            requested_velocity_source: RequestedVelocitySource::Defaulted,
-            max_stroke_travel_mrev: 2_500,
-            settle_travel_reserve_mrev: 250,
-            negative_position_headroom_mrev: 7_025,
-            positive_position_headroom_mrev: 7_025,
-            max_duration_ms: 3_000,
-            homing_speed_mrev_s: 4_375,
-            max_accel_mrev_s2: 200_000,
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: confirmation.held_out_response_intervals_q,
+            confidence_q: confirmation.confidence_q,
+            band_position_q: confirmation.band_position_q,
         },
-        25_000,
-        4_000,
+        IntegralPlanPhysics {
+            motion_budget: OuterMotionBudget {
+                requested_velocity_mrev_s: 6_666,
+                machine_velocity_ceiling_mrev_s: 10_000,
+                requested_velocity_source: RequestedVelocitySource::Defaulted,
+                max_stroke_travel_mrev: 2_500,
+                settle_travel_reserve_mrev: 250,
+                negative_position_headroom_mrev: 7_025,
+                positive_position_headroom_mrev: 7_025,
+                max_duration_ms: 3_000,
+                homing_speed_mrev_s: 4_375,
+                max_accel_mrev_s2: 200_000,
+            },
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+        },
     )
     .unwrap()
 }

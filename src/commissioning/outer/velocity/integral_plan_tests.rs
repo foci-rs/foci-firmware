@@ -11,10 +11,10 @@ use super::breakaway_plan::{
 use super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION;
 use super::integral_plan::{
     AcceptanceSource, AcquisitionContext, BreakawayAuthorityBindingError,
-    ConfirmedAcquisitionDigest, INTEGRAL_EVIDENCE_SCHEMA_REVISION, INTEGRAL_MAX_POSITIVE_RUNGS,
-    INTEGRAL_MIN_POSITIVE_I, INTEGRAL_OBSERVATIONS_PER_RUNG, IntegralAcquisitionAuthority,
-    IntegralSlotOrder, VelocityIntegralPlan, VelocityIntegralPlanError,
-    bind_breakaway_integral_authority, breakaway_confirmation_slots_us,
+    BreakawayIntegralEvidence, ConfirmedAcquisitionDigest, INTEGRAL_EVIDENCE_SCHEMA_REVISION,
+    INTEGRAL_MAX_POSITIVE_RUNGS, INTEGRAL_MIN_POSITIVE_I, INTEGRAL_OBSERVATIONS_PER_RUNG,
+    IntegralAcquisitionAuthority, IntegralPlanPhysics, IntegralSlotOrder, VelocityIntegralPlan,
+    VelocityIntegralPlanError, bind_breakaway_integral_authority, breakaway_confirmation_slots_us,
     breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
     breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
     integral_gain_at, integral_top_gap_candidate, max_transition_capable_p, native_rung_count,
@@ -335,12 +335,16 @@ fn build_test_breakaway_plan() -> VelocityIntegralPlan {
         breakaway_token_for(confirmation_plan),
         confirmation_plan,
         breakaway_acquisition_context(),
-        breakaway_intervals_for(confirmation_plan),
-        0,
-        0,
-        motion_budget(),
-        25_000,
-        4_000,
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
+            confidence_q: 0,
+            band_position_q: 0,
+        },
+        IntegralPlanPhysics {
+            motion_budget: motion_budget(),
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+        },
     )
     .expect("the campaign's own Integral plan")
 }
@@ -894,12 +898,16 @@ fn retained_breakaway_authority_regenerates_its_exact_plan() {
         breakaway_token_for(confirmation_plan),
         confirmation_plan,
         breakaway_acquisition_context(),
-        breakaway_intervals_for(confirmation_plan),
-        0,
-        0,
-        motion_budget(),
-        25_000,
-        4_000,
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
+            confidence_q: 0,
+            band_position_q: 0,
+        },
+        IntegralPlanPhysics {
+            motion_budget: motion_budget(),
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+        },
     )
     .expect("the campaign's own Integral plan");
     let mut slot = IntegralRetentionSlot::new();
@@ -942,12 +950,16 @@ fn a_resume_under_changed_physical_context_is_refused() {
         breakaway_token_for(confirmation_plan),
         confirmation_plan,
         breakaway_acquisition_context(),
-        breakaway_intervals_for(confirmation_plan),
-        0,
-        0,
-        motion_budget(),
-        25_000,
-        4_000,
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
+            confidence_q: 0,
+            band_position_q: 0,
+        },
+        IntegralPlanPhysics {
+            motion_budget: motion_budget(),
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+        },
     )
     .expect("the campaign's own Integral plan");
     let mut slot = IntegralRetentionSlot::new();
@@ -987,12 +999,16 @@ fn a_changed_request_still_cannot_resume_retained_breakaway_authority() {
         breakaway_token_for(confirmation_plan),
         confirmation_plan,
         breakaway_acquisition_context(),
-        breakaway_intervals_for(confirmation_plan),
-        0,
-        0,
-        motion_budget(),
-        25_000,
-        4_000,
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
+            confidence_q: 0,
+            band_position_q: 0,
+        },
+        IntegralPlanPhysics {
+            motion_budget: motion_budget(),
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+        },
     )
     .expect("the campaign's own Integral plan");
     let mut slot = IntegralRetentionSlot::new();
@@ -1032,12 +1048,16 @@ fn breakaway_integral_admits_the_confirmed_p_unchanged() {
         token,
         confirmation_plan,
         context,
-        breakaway_intervals_for(confirmation_plan),
-        0,
-        0,
-        motion_budget(),
-        25_000,
-        4_000,
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
+            confidence_q: 0,
+            band_position_q: 0,
+        },
+        IntegralPlanPhysics {
+            motion_budget: motion_budget(),
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+        },
     )
     .expect("the exact confirmed P passes every plan-time safety check");
 
@@ -1065,12 +1085,16 @@ fn execution_plan_reports_acceptance_source_from_authority() {
         token,
         confirmation_plan,
         breakaway_acquisition_context(),
-        breakaway_intervals_for(confirmation_plan),
-        0,
-        0,
-        motion_budget(),
-        25_000,
-        4_000,
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
+            confidence_q: 0,
+            band_position_q: 0,
+        },
+        IntegralPlanPhysics {
+            motion_budget: motion_budget(),
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+        },
     )
     .expect("the campaign's own Integral plan")
     .execution_plan();
@@ -1091,12 +1115,16 @@ fn breakaway_integral_refuses_without_motion_when_the_confirmed_p_fails_current_
             token,
             confirmation_plan,
             context,
-            breakaway_intervals_for(confirmation_plan),
-            0,
-            0,
-            motion_budget(),
-            25_000,
-            4_000,
+            BreakawayIntegralEvidence {
+                held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
+                confidence_q: 0,
+                band_position_q: 0
+            },
+            IntegralPlanPhysics {
+                motion_budget: motion_budget(),
+                pwm_hz: 25_000,
+                encoder_counts_per_rev: 4_000
+            }
         ),
         Err(
             VelocityIntegralPlanError::ConfirmedGainNotTransitionCapable(
@@ -1183,12 +1211,16 @@ fn breakaway_integral_refuses_without_motion_when_the_fixed_schedule_exceeds_the
             token,
             confirmation_plan,
             context,
-            breakaway_intervals_for(confirmation_plan),
-            0,
-            0,
-            motion_budget(),
-            25_000,
-            4_000,
+            BreakawayIntegralEvidence {
+                held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
+                confidence_q: 0,
+                band_position_q: 0
+            },
+            IntegralPlanPhysics {
+                motion_budget: motion_budget(),
+                pwm_hz: 25_000,
+                encoder_counts_per_rev: 4_000
+            }
         ),
         Err(VelocityIntegralPlanError::InvalidRequest)
     );
@@ -1208,12 +1240,16 @@ fn breakaway_integral_rejects_a_confirmation_plan_whose_contract_does_not_valida
             token,
             tampered_digest,
             context,
-            breakaway_intervals_for(confirmation_plan),
-            0,
-            0,
-            motion_budget(),
-            25_000,
-            4_000,
+            BreakawayIntegralEvidence {
+                held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
+                confidence_q: 0,
+                band_position_q: 0
+            },
+            IntegralPlanPhysics {
+                motion_budget: motion_budget(),
+                pwm_hz: 25_000,
+                encoder_counts_per_rev: 4_000
+            }
         ),
         Err(VelocityIntegralPlanError::InvalidConfirmationPlan)
     );
@@ -1226,12 +1262,16 @@ fn breakaway_integral_rejects_a_confirmation_plan_whose_contract_does_not_valida
             token,
             tampered_family,
             context,
-            breakaway_intervals_for(confirmation_plan),
-            0,
-            0,
-            motion_budget(),
-            25_000,
-            4_000,
+            BreakawayIntegralEvidence {
+                held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
+                confidence_q: 0,
+                band_position_q: 0
+            },
+            IntegralPlanPhysics {
+                motion_budget: motion_budget(),
+                pwm_hz: 25_000,
+                encoder_counts_per_rev: 4_000
+            }
         ),
         Err(VelocityIntegralPlanError::InvalidConfirmationPlan)
     );
@@ -1250,12 +1290,16 @@ fn breakaway_integral_rejects_a_token_minted_for_a_different_confirmation_plan()
             token_a,
             confirmation_plan_b,
             context,
-            breakaway_intervals_for(confirmation_plan_a),
-            0,
-            0,
-            motion_budget(),
-            25_000,
-            4_000,
+            BreakawayIntegralEvidence {
+                held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan_a),
+                confidence_q: 0,
+                band_position_q: 0
+            },
+            IntegralPlanPhysics {
+                motion_budget: motion_budget(),
+                pwm_hz: 25_000,
+                encoder_counts_per_rev: 4_000
+            }
         ),
         Err(VelocityIntegralPlanError::MismatchedAuthority)
     );
@@ -1278,12 +1322,16 @@ fn breakaway_integral_requires_a_token_matching_the_confirmation_plan() {
             genuine_token,
             forged_plan,
             breakaway_acquisition_context(),
-            breakaway_intervals_for(genuine_plan),
-            0,
-            0,
-            motion_budget(),
-            25_000,
-            4_000,
+            BreakawayIntegralEvidence {
+                held_out_response_intervals_q: breakaway_intervals_for(genuine_plan),
+                confidence_q: 0,
+                band_position_q: 0
+            },
+            IntegralPlanPhysics {
+                motion_budget: motion_budget(),
+                pwm_hz: 25_000,
+                encoder_counts_per_rev: 4_000
+            }
         ),
         Err(VelocityIntegralPlanError::MismatchedAuthority)
     );
@@ -1302,12 +1350,16 @@ fn breakaway_integral_refuses_when_plan_time_physical_context_differs_from_live(
             token,
             confirmation_plan,
             context,
-            intervals,
-            0,
-            0,
-            motion_budget(),
-            50_000,
-            4_000,
+            BreakawayIntegralEvidence {
+                held_out_response_intervals_q: intervals,
+                confidence_q: 0,
+                band_position_q: 0
+            },
+            IntegralPlanPhysics {
+                motion_budget: motion_budget(),
+                pwm_hz: 50_000,
+                encoder_counts_per_rev: 4_000
+            }
         ),
         Err(VelocityIntegralPlanError::PhysicalContextMismatch)
     );
@@ -1317,12 +1369,16 @@ fn breakaway_integral_refuses_when_plan_time_physical_context_differs_from_live(
             token,
             confirmation_plan,
             context,
-            intervals,
-            0,
-            0,
-            motion_budget(),
-            25_000,
-            8_000,
+            BreakawayIntegralEvidence {
+                held_out_response_intervals_q: intervals,
+                confidence_q: 0,
+                band_position_q: 0
+            },
+            IntegralPlanPhysics {
+                motion_budget: motion_budget(),
+                pwm_hz: 25_000,
+                encoder_counts_per_rev: 8_000
+            }
         ),
         Err(VelocityIntegralPlanError::PhysicalContextMismatch)
     );

@@ -56,8 +56,8 @@ use super::breakaway_search::{
 };
 use super::combined_plan::integral_continuation_geometry;
 use super::integral_plan::{
-    AcquisitionContext, VelocityIntegralPlan, bind_breakaway_integral_authority,
-    breakaway_workflow_envelope_ms, max_transition_capable_p,
+    AcquisitionContext, BreakawayIntegralEvidence, IntegralPlanPhysics, VelocityIntegralPlan,
+    bind_breakaway_integral_authority, breakaway_workflow_envelope_ms, max_transition_capable_p,
     plan_breakaway_velocity_integral_response,
 };
 use super::recovery::{
@@ -3596,12 +3596,16 @@ fn route_confirmed_accept<B: CommissioningBackend>(
         token,
         plan,
         context,
-        acceptance.held_out_response_intervals_q,
-        acceptance.confidence_q,
-        acceptance.band_position_q,
-        safety.budget,
-        backend.tmc_config().pwm_freq_hz(),
-        safety.counts_per_rev(),
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: acceptance.held_out_response_intervals_q,
+            confidence_q: acceptance.confidence_q,
+            band_position_q: acceptance.band_position_q,
+        },
+        IntegralPlanPhysics {
+            motion_budget: safety.budget,
+            pwm_hz: backend.tmc_config().pwm_freq_hz(),
+            encoder_counts_per_rev: safety.counts_per_rev(),
+        },
     ) {
         Ok(integral_plan) => BreakawayCampaignOutcome::IntegralPlanReady(integral_plan),
         Err(_) => BreakawayCampaignOutcome::Terminal {
