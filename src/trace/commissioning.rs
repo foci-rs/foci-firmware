@@ -1,8 +1,4 @@
-//! Pure commissioning trace sampling phase helpers.
-//!
-//! This module owns only board-agnostic commissioning phase selection. It does
-//! not own USB queues, timestamps, source identity, SPI reads, trace counters,
-//! or sample budget policy.
+//! Commissioning trace sampling phase selection.
 
 use crate::autotune::CommissionPhase;
 use crate::commissioning::types::EngineKind;

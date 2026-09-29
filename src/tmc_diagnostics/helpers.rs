@@ -2,18 +2,10 @@ use foci_tmc4671::spi::Tmc4671Spi;
 
 use super::DiagnosticDelay;
 
-/// Maximum permitted detection latency for the host-liveness check: no
-/// checked delay may go longer than this between liveness checks while
-/// waiting. Fixed by design, not a per-call-site choice -- 50x margin under
-/// the 5 s host-liveness lease.
 pub(crate) const HOST_LIVENESS_POLL_SLICE_MS: u64 = 100;
 
-/// Delay `ms` milliseconds, sliced into `HOST_LIVENESS_POLL_SLICE_MS`-sized
-/// sub-waits, checking `host_liveness_expired` before the first slice and
-/// after every slice including the last. Returns `Err(())` the moment the
-/// check reports expired, having delayed only the slices already completed
-/// -- never the full remaining `ms`. `None` means "no check installed":
-/// behaves exactly like an unconditional `delay.delay_ms(ms)`.
+/// Delay `ms` milliseconds in sliced sub-waits, checking `host_liveness_expired` between
+/// slices. Returns `Err(())` as soon as the check reports expired.
 pub(crate) async fn checked_delay_ms<D: DiagnosticDelay>(
     delay: &mut D,
     mut host_liveness_expired: Option<&mut dyn FnMut() -> bool>,
@@ -40,14 +32,6 @@ pub(crate) async fn checked_delay_ms<D: DiagnosticDelay>(
     Ok(())
 }
 
-/// Why a runner's inner `Result`-returning block failed. `Other` covers
-/// everything that block already collapsed to `CURRENT_STEP_STATUS_SPI`
-/// before this change -- a genuine SPI transaction failure, but also an
-/// `EncoderDomain::new`/`delta` rejection -- so renaming this variant to
-/// `Spi` would be misleading; it deliberately does not distinguish those
-/// (today's behavior already doesn't, and this change does not widen that).
-/// `HostLiveness` is the one genuinely new case: a checked delay reported
-/// the host-liveness lease expired.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunnerFailure {
     Other,
@@ -136,11 +120,6 @@ mod tests {
         pollster::block_on(async {
             let mut delay = RecordingDelay::default();
             let mut calls = 0u32;
-            // Checks fire: pre-loop (1), after slice 1/100ms (2), after slice
-            // 2/50ms -- the final slice of a 150ms delay -- (3). Expiring on
-            // the 3rd check means both slices were delayed before detection,
-            // proving the loop checks after the LAST slice too, not just
-            // before each one.
             let mut expire_after_final_slice = || {
                 calls += 1;
                 calls >= 3

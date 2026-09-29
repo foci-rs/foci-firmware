@@ -16,7 +16,7 @@ use crate::tmc_control::config::{TmcControlConfig, TmcControlStateRefs};
 use crate::tmc_control::scheduler::{ChannelMode, Unit, UnitClass};
 use crate::tmc_control::state::{HomingClockWindow, HomingMaintenanceResult, TmcControlRuntime};
 
-/// Startup steps, one per `Bootstrap` unit, in OpenFFBoard order.
+/// Startup steps, one per `Bootstrap` unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum BootstrapStep {
     /// Read and verify `CHIPINFO_SI_TYPE`.
@@ -171,8 +171,6 @@ pub const PID_LIMIT_MASK: u32 = 0x0000_FFFF;
 /// `STATUS_FLAGS` PWM saturation bits.
 pub const PWM_LIMIT_MASK: u32 = (1 << 24) | (1 << 25);
 
-/// Consecutive restore drives a stimulus's feedforward surfaces may stay
-/// unrestored before the terminal degrades to safe-state-incomplete.
 pub(crate) const STIMULUS_RESTORE_ATTEMPT_LIMIT: u8 = 8;
 
 impl ChannelDriver {
@@ -241,10 +239,6 @@ impl ChannelDriver {
             (_, DriverPhase::Parked(_)) => UnitOutcome::Idle,
             (UnitClass::Fast, DriverPhase::Ready) => self.drive_fast(backend, &ctx).await,
             (UnitClass::Maintenance, DriverPhase::Ready) => {
-                // A maintenance group snapshots which channels are Ready when
-                // it opens and is not cancelled by a later mode change, so its
-                // unit can arrive after commissioning or a restore has taken
-                // the channel. `phase` cannot see that; `mode` can.
                 if self.mode() == ChannelMode::Ready {
                     self.drive_maintenance(backend, &ctx).await
                 } else {
@@ -338,7 +332,6 @@ impl ChannelDriver {
         TmcControlStateRefs::new(tmc_state, stepper)
     }
 
-    /// Consume the shared reset latch for one arm and hand it to the other.
     fn take_reset(&mut self, tmc_state: &TmcChannelState, fast: bool) -> bool {
         let latched = tmc_state.feedforward_reset.swap(false, Relaxed);
         if latched {
@@ -660,9 +653,7 @@ impl ChannelDriver {
     }
 }
 
-/// Map a nonterminal or terminal tick action plus the poll driver's decision
-/// to a driver outcome. Returns the outcome and whether the event was a phase
-/// change (the board needs that for trace phase tracking).
+/// Map a tick action and poll decision to a driver outcome, plus whether it was a phase change.
 #[must_use]
 pub fn commission_outcome(
     action: ScheduledCommissionTickAction,
@@ -796,10 +787,6 @@ mod tests {
         }
     }
 
-    /// `CHIPINFO_SI_TYPE` selects sub-register 0 of ADDR register 0x01; the
-    /// value is read back from DATA register 0x00 (`SubRegister::new` takes
-    /// `(data_addr, addr_addr, sub_addr)`, so `CHIPINFO_SI_TYPE.data.addr()`
-    /// is 0x00 -- that's the address `read_sub_register` actually reads).
     const CHIPINFO_DATA_ADDR: u8 = 0x00;
 
     #[fixture_test]
@@ -814,8 +801,6 @@ mod tests {
 
     #[fixture_test]
     async fn bootstrap_advances_one_step_per_drive_in_openffboard_order() {
-        // Reads: chip id, then whatever PI bootstrap, ADC_VM capture and the
-        // safety bootstrap read back. Zeros satisfy every verified write.
         let spi = RuntimeMockSpi::default().echo_writes().with_read(CHIP_ID);
         let mut rig = Rig::new(spi);
 
@@ -1082,9 +1067,6 @@ mod tests {
 
     #[fixture_test]
     async fn a_maintenance_unit_left_over_from_ready_is_idle_once_commissioning_owns_the_channel() {
-        // A maintenance group opens while the channel is Ready and is not
-        // cancelled by a later mode change, so its per-channel unit can still
-        // be handed out after a commissioning request has taken the channel.
         let mut rig = ready_rig(RuntimeMockSpi::default().echo_writes());
         rig.driver.runtime.set_commission_engine(
             crate::commission_dispatch::test_support::breakaway_campaign_engine(),
@@ -1136,8 +1118,6 @@ mod tests {
             0,
             "all pending config bits should be cleared after successful apply"
         );
-        // drain_pending_config's first write is the voltage limit; it must
-        // precede any feedforward write in the log.
         let writes = &rig.spi().writes;
         assert!(
             writes
@@ -1219,7 +1199,6 @@ mod tests {
     #[fixture_test]
     async fn maintenance_uses_the_frozen_homing_snapshot_not_the_live_flag() {
         let mut rig = ready_rig(RuntimeMockSpi::default().echo_writes());
-        // Live flag says homing, snapshot says not: maintenance must follow the snapshot.
         let outcome = rig.drive_with_homing(UnitClass::Maintenance, true, 0).await;
         assert!(matches!(outcome, UnitOutcome::Maintenance { .. }));
         assert!(!rig.driver.last_maintenance_homing_active);
@@ -1356,12 +1335,6 @@ mod tests {
         ));
     }
 
-    /// A nonterminal action reaches the driver as one of four continuations.
-    /// `Terminal` and `PollNow` deliberately converge here, so this level
-    /// cannot witness the stale-terminal collapse in `nonterminal_continuation`
-    /// — `promoted_phase_change_reclassifies_terminal_as_immediate_repoll`
-    /// guards that, and the board's own direct call is where it decides
-    /// whether the polling loop ends.
     #[test]
     fn commission_outcome_merges_terminal_and_poll_now_but_keeps_yield_and_wait() {
         for driver_action in [PollDriverAction::Terminal, PollDriverAction::PollNow] {

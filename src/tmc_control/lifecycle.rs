@@ -6,10 +6,6 @@ use crate::tmc_register_values::MOTION_POSITION_ADVANCED_PI;
 
 /// A motor lifecycle flag transitioned by [`arm_motor_electrical`],
 /// [`arm_motor_for_steps`], or [`disarm_motor`].
-///
-/// Recorded through `CommissionMotorControl::record_lifecycle` at the exact
-/// mutation site so a test backend can observe these transitions
-/// interleaved with SPI/GPIO ordering, not just their final values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum LifecycleFlag {
     /// `DispatchState::motor_enabled` (electrical arm/disarm).
@@ -33,50 +29,13 @@ pub(crate) async fn settle_closed_loop_hold_before_enable<B: CommissioningBacken
 
 /// Mark the motor electrically energized after verified calibration.
 ///
-/// Asserts `state.calibrated`; clears any stale homing latch/clamp flags;
-/// drains any recorded-but-unwritten configuration; verifies the calibration
-/// sentinel register; rewrites `PID_TORQUE_FLUX_LIMITS` from the stored
-/// run-current limit; sets the enable pin high; updates
-/// `state.motor_enabled`. Does NOT touch channel motor arming — stepper
-/// arming is a separate concern (see [`arm_motor_for_steps`]).
+/// Drains pending configuration, verifies the calibration sentinel, rewrites
+/// `PID_TORQUE_FLUX_LIMITS` from the stored run-current limit, then raises the enable pin and
+/// sets `state.motor_enabled`. Does not arm stepping; see [`arm_motor_for_steps`].
 ///
-/// The drain runs before anything else touches the chip because config-time
-/// setters only record their values; a host that changes the run current and
-/// enables in the same breath would otherwise energize against a
-/// `PID_TORQUE_FLUX_LIMITS` the chip never received. The sentinel does not
-/// cover this — it detects chip resets, not stale configuration.
+/// # Panics
 ///
-/// The drain covers what the host had already sent when this arm began, but
-/// the handlers run at a higher priority than this path and can record more
-/// configuration during any of the awaiting steps that follow. A recorded
-/// value is not necessarily reflected in what this function energizes
-/// against -- `tmc_set_current` updates only the pending run current, leaving
-/// the torque-flux rewrite below to use the limit the host has just replaced
-/// -- so a final `config_apply_pending` check immediately before the enable
-/// pin refuses the arm instead. It returns an error rather than asserting:
-/// this interleaving is ordinary traffic, and the next control tick drains
-/// the bit so the host's retry arms against the value it sent.
-///
-/// That check and the enable pin share one critical section. Split apart
-/// they are a check-then-act pair on state a higher-priority task owns, and
-/// a handler landing in between would leave the arm energizing against the
-/// very configuration it had just established was absent. Masking is what
-/// makes the check binding rather than advisory. The section holds an
-/// atomic load and a GPIO write and nothing else -- the refusal is logged
-/// after it, so an RTT write never runs masked.
-///
-/// The torque-flux rewrite makes this path truthful even when a homing
-/// clamp narrowed the register on a prior arm: a shutdown or disable
-/// landing mid-homing could otherwise leave the clamped value in the chip,
-/// and a plain re-arm would run at it. Clearing `stall_latched` and
-/// `homing_clamp_active` here is safe precisely because this rewrite
-/// always restores the full run-current limit before the motor is
-/// energized.
-///
-/// `assert!`, not `debug_assert!`: this is a hard motor-safety
-/// contract and must enforce in release builds. Costs one branch
-/// per arming (not on the hot path). On failure: panic -> RTIC fault
-/// handler -> safe-state via the GPIO Drop and `PIDOUT_UQ_UD_LIMITS` cap.
+/// Panics if `state.calibrated` is false.
 ///
 /// # Errors
 ///
@@ -122,16 +81,8 @@ pub fn arm_motor_for_steps(state: &mut DispatchState<'_>) {
 
 /// De-energize the motor and clear all armed/enabled state.
 ///
-/// Clears the channel motor-armed flag first so the step-timer ISR stops
-/// accepting step events before async SPI cleanup begins, then routes the
-/// safe-state register sequence through
-/// [`crate::tmc_safe_state::restore_safe_state_via_backend`] and clears the
-/// latched velocity feedforward clamp, `state.calibrated`, and
-/// `state.motor_enabled`.
-///
-/// Idempotent: safe to call when the motor is already disarmed.
-/// Does not touch the stepper queue or invoke `stepper_stop_from_p1` —
-/// those remain board-side responsibilities.
+/// Runs the safe-state restore, then clears the motor-armed, calibrated, and enabled state and
+/// the velocity feedforward clamp. Idempotent. Stopping the stepper queue stays board-side.
 pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut DispatchState<'_>) {
     state
         .tmc
@@ -147,38 +98,15 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
 
 /// Apply the shared shutdown safe-state policy for one TMC channel.
 ///
-/// Drops any runtime-owned homing state (stall detector, clamp retry
-/// budget) and clears the channel's homing latch/clamp flags, then
-/// de-energizes the motor through [`disarm_motor`], then stops any active
-/// commissioning engine. A retained breakaway campaign is completed only
-/// after the disarm.
-///
-/// Both boards' shutdown loops funnel through this shared helper, so a
-/// shutdown landing mid-homing clears the detector synchronously on either
-/// board; the homing tick's state-0 self-heal remains the backstop for a
-/// config reset.
+/// Clears runtime-owned homing state, de-energizes via [`disarm_motor`], then stops any active
+/// commissioning engine; a retained breakaway campaign completes after the disarm.
 pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
     runtime: &mut crate::tmc_control::TmcControlRuntime,
     backend: &mut B,
     tmc: &'static crate::state::tmc::TmcChannelState,
     stepper: &'static crate::state::stepper::StepperChannelState,
 ) {
-    // Halt the step-queue stimulus first, before anything below clears
-    // `motor_armed` or writes a safe-state register. Clearing `motor_armed`
-    // stops the step-timer ISR from emitting further steps, but does not
-    // itself drain the queue, cancel the scheduler's stepper entry, or close
-    // the stimulus's motor-armed capture session (see
-    // `TmcChannelState::stimulus_restore_motor_armed`) -- left open, that
-    // session corrupts the `motor_armed` restore of whatever stimulus runs
-    // next. Unconditional, matching the engine-level shutdown abort in
-    // `CommissioningEngine::step`: `stimulus_stop`/
-    // `set_stimulus_feedforward(false)` are documented idempotent, a safe
-    // no-op when no stimulus session is open, and this helper is called
-    // repeatedly while shutdown remains active.
     crate::commissioning::outer::position_tune::abort_stimulus(backend);
-    // A terminal restore caught mid-sequence is driven to safe state here,
-    // before the disarm and engine take below clear the state it depends on.
-    // Both boards funnel their shutdown path through this helper.
     if runtime.is_restore_pending() {
         runtime.request_restore_cancel();
     }
@@ -301,27 +229,9 @@ impl ClosedLoopHoldSettleStep {
     }
 }
 
-/// The [`arm_motor_electrical`] sequence, advanced one backend operation (or
-/// one `drain_pending_config` call, kept atomic — see the module-level
-/// Scope Note) per `advance()` tick. `arm_motor_electrical` drives it to
-/// completion in one call; the terminal restore polls it once per tick.
-///
-/// The final tick (`FinalizeEnable`) performs the `config_apply_pending`
-/// recheck and the enable-pin assertion inside one `critical_section::with`
-/// closure -- splitting them would reopen the fail-closed race
-/// `arm_motor_electrical`'s doc comment describes (config recorded by a
-/// preempting handler between the recheck and the enable-pin write).
 #[derive(Clone, Copy)]
 pub(crate) enum ArmMotorElectricalStep {
     Drain,
-    /// FOCI's re-arm gate after a chip reset. A reset restores
-    /// `MOTOR_TYPE_N_POLE_PAIRS` to its power-on value (`0x0000_0001`,
-    /// TMC4671-LA datasheet Rev 1 02/2024, register 0x1B), which differs from
-    /// the commissioned
-    /// [`crate::state::tmc::TmcChannelState::motor_sentinel`], so the readback
-    /// fails until commissioning re-establishes it. The TMC4671 has no reset
-    /// indicator like Klipper's `CS_ACTUAL`, so this readback and the
-    /// PI-representation check that follows stand in for one.
     VerifySentinelReadback,
     VerifyPiRepresentation(crate::tmc_control::pi_representation::PiRepresentationVerifyStep),
     WriteCurrentLimit,
@@ -394,9 +304,6 @@ impl ArmMotorElectricalStep {
             Self::VerifyPiRepresentation(step) => match step.advance(backend, state.tmc).await {
                 None => None,
                 Some(Ok(())) => {
-                    // The compound "safe-state pass AND fresh sentinel pass"
-                    // latch clears only here, once both halves have actually
-                    // succeeded -- matching `arm_motor_electrical` exactly.
                     state.tmc.safe_state_incomplete.store(false, Relaxed);
                     *self = Self::WriteCurrentLimit;
                     None
@@ -597,10 +504,6 @@ mod tests {
                 0x0002_0032,
             )
             .await;
-        // The config handlers run in the P2 USB dispatch task and preempt this
-        // P1 arming path, so a bit can appear after the drain has already
-        // observed the mask it will clear. That interleaving is ordinary
-        // traffic, not a fault: the arm is refused, not panicked out of.
         backend.pending_config_set_during_drain = crate::state::tmc::PENDING_FILTERS;
 
         let result = arm_motor_electrical(&mut backend, &mut state).await;
@@ -639,10 +542,6 @@ mod tests {
                 0x0002_0032,
             )
             .await;
-        // A `tmc_set_current` landing this late records only the pending run
-        // current, so the torque-flux limit this arm already wrote is the old
-        // one -- energizing now runs the motor at a limit the host has just
-        // replaced, possibly with a lower one.
         backend.pending_config_set_at_interlock_check = crate::state::tmc::PENDING_CURRENT;
 
         let result = arm_motor_electrical(&mut backend, &mut state).await;
@@ -757,9 +656,6 @@ mod tests {
                 0x0002_0032,
             )
             .await;
-        // Simulate a clean restore pass: last_pass_failed clear, but the
-        // compound latch still set because no sentinel pass has happened
-        // since.
         tmc_state()
             .safe_state_last_pass_failed
             .store(false, Ordering::Relaxed);
@@ -767,7 +663,6 @@ mod tests {
             .safe_state_incomplete
             .store(true, Ordering::Relaxed);
 
-        // A sentinel mismatch must leave the compound latch set.
         backend.read_override = Some((
             foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS.addr(),
             0x0002_0032 ^ 1,
@@ -783,7 +678,6 @@ mod tests {
         );
         backend.read_override = None;
 
-        // A successful sentinel pass clears it.
         tmc_state().store_current_limit(
             foci_tmc4671::current_limit::PidTorqueFluxLimit::new(0x1234).unwrap(),
             Ordering::Relaxed,
@@ -1299,20 +1193,6 @@ mod tests {
         );
     }
 
-    /// The pending-config check and the enable-pin write must share one
-    /// critical section.
-    ///
-    /// The config handlers run in the P2 USB dispatch task, which preempts
-    /// this P1 arming path. A plain check-then-act pair can therefore be
-    /// split by an interrupt landing between the load and the GPIO write,
-    /// and the arm would energize against configuration it had just
-    /// established was absent. Masking interrupts across both is what closes
-    /// that window.
-    ///
-    /// Guarded at the source because no host test can reproduce it: the fix
-    /// works by making the interleaving unrepresentable, so a synchronous
-    /// test has nothing left to interleave. What a test can still check is
-    /// that the two halves have not drifted back apart.
     #[test]
     fn the_pending_config_check_and_the_enable_pin_share_one_critical_section() {
         let source = include_str!("lifecycle.rs");

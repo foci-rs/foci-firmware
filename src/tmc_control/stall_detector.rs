@@ -2,8 +2,7 @@
 
 /// Absolute following error in TMC position units.
 ///
-/// Both registers are 32-bit two's-complement positions; the difference is
-/// taken wrapping so a revolution boundary between them does not blow up.
+/// Both registers are wrapping 32-bit positions; the difference wraps.
 pub fn following_error_units(target: u32, actual: u32) -> u32 {
     (target.wrapping_sub(actual) as i32).unsigned_abs()
 }
@@ -31,36 +30,16 @@ impl StallTriggerPath {
 const STALLED_ENCODER_JITTER_COUNTS: u32 = 3;
 const MOTION_NOISE_FLOOR_COUNTS: u32 = STALLED_ENCODER_JITTER_COUNTS + 1;
 
-/// Consecutive motion-confirmed ticks required before the baseline is
-/// trusted. Firmware constant; see spec's residual-risk section for why
-/// this needs hardware tuning, not just a reasonable-looking default.
 const MOTION_WARMUP_TICKS: u16 = 8;
 
-/// EMA weight for the baseline update, as a right-shift on the fixed-point
-/// accumulator: new baseline = old + (error - old) >> EMA_SHIFT. Firmware
-/// constant.
 const EMA_SHIFT: u32 = 3;
 
-/// Extra fractional bits kept in the baseline accumulator beyond
-/// `EMA_SHIFT`. Without them, a plain-integer EMA truncates to a zero step
-/// whenever `|error - baseline| < 2^EMA_SHIFT`, so any error smaller than
-/// that (a realistic case at this printer's mm-to-position-unit scale)
-/// would never move the baseline off its initial value. Every comparison
-/// against the baseline (the margin check, and the reported margin-delta
-/// peak) must stay in this scaled representation too -- downscaling the
-/// baseline to real units before comparing reintroduces the exact same
-/// truncation dead zone one level up, at the comparison rather than the
-/// accumulation. Only the final `peak_margin_delta_units()` accessor,
-/// reporting to the host for telemetry, downscales, and does so once.
 const BASELINE_FRAC_BITS: u32 = 8;
 
 /// Consecutive-tick following-error detector with a sticky latch.
 ///
-/// Runs two independent checks per tick: an unconditional absolute
-/// `ceiling` (always active, catches a stall present before any baseline
-/// exists) and a `margin` check relative to a motion-gated EMA baseline
-/// (the primary mechanism, only active once warmed up). Either latches the
-/// detector; a same-tick tie favors `Ceiling`.
+/// Runs an unconditional absolute `ceiling` check and a `margin` check against a
+/// motion-gated EMA baseline. Either latches the detector; a same-tick tie favors `Ceiling`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StallDetector {
     ceiling_units: u32,
@@ -71,17 +50,11 @@ pub struct StallDetector {
     margin_consecutive: u8,
     ticks: u32,
     peak_error_units: u32,
-    /// Largest scaled margin delta observed, in the same `2^BASELINE_FRAC_BITS`
-    /// fixed-point representation as `baseline_scaled`. Only downscaled to
-    /// real units in the public `peak_margin_delta_units()` accessor.
     peak_margin_delta_scaled: u64,
     trigger_tick: u32,
     trigger_path: StallTriggerPath,
     latched: bool,
     prev_actual: u32,
-    /// Baseline, scaled by `2^BASELINE_FRAC_BITS`. Never downscaled for a
-    /// comparison -- only the public accessor downscales, once, for
-    /// telemetry.
     baseline_scaled: u64,
     motion_warmup_ticks: u16,
 }
@@ -129,8 +102,6 @@ impl StallDetector {
             return true;
         }
 
-        // Motion evidence and baseline update, before either check so a
-        // margin breach on this same tick already sees the fresh baseline.
         let motion_confirmed = !first_tick
             && (actual.wrapping_sub(self.prev_actual) as i32).unsigned_abs()
                 >= self.motion_noise_floor_units;
@@ -142,12 +113,6 @@ impl StallDetector {
                 self.motion_warmup_ticks += 1;
                 baseline_valid = self.motion_warmup_ticks >= MOTION_WARMUP_TICKS;
             }
-            // Move the fixed-point baseline a 1/2^EMA_SHIFT fraction of the
-            // way from its old value toward the current error, entirely in
-            // scaled units so the step never truncates to zero for a small
-            // real error. i64 avoids any overflow concern at these
-            // magnitudes; clamp at 0 since error and baseline are both
-            // conceptually unsigned.
             let diff = error_scaled as i64 - self.baseline_scaled as i64;
             let step = diff >> EMA_SHIFT;
             self.baseline_scaled = (self.baseline_scaled as i64 + step).max(0) as u64;
@@ -160,10 +125,6 @@ impl StallDetector {
             0
         };
 
-        // Margin comparison stays in scaled space throughout -- comparing a
-        // downscaled baseline against real-unit margin_units would
-        // reintroduce the truncation dead zone the fixed-point accumulator
-        // exists to avoid.
         let margin_delta_scaled = error_scaled.saturating_sub(self.baseline_scaled);
         if baseline_valid && margin_delta_scaled > self.peak_margin_delta_scaled {
             self.peak_margin_delta_scaled = margin_delta_scaled;
@@ -181,7 +142,6 @@ impl StallDetector {
         if ceiling_latches || margin_latches {
             self.latched = true;
             self.trigger_tick = self.ticks;
-            // Tie rule: Ceiling wins.
             self.trigger_path = if ceiling_latches {
                 StallTriggerPath::Ceiling
             } else {
@@ -201,21 +161,9 @@ impl StallDetector {
         self.peak_error_units
     }
 
-    /// Largest `error - baseline` observed since arming, while the baseline
-    /// was valid, downscaled from the internal fixed-point representation
-    /// to real position units, **rounded up** (ceiling division). 0 if the
-    /// baseline never warmed up. This is the quantity the hardware
-    /// validation campaign's margin-headroom acceptance criterion measures
-    /// directly, against a strict `<= 0.8 * margin_units` bound -- rounding
-    /// down here could report a value one fractional unit under a real
-    /// violation, letting an unsafe configuration pass. Rounding up is
-    /// conservative in the direction that matters: it can only make the
-    /// gate harder to pass, never easier. The downscaling happens only
-    /// here, once, for telemetry -- the latch decision itself never
-    /// downscales (see `BASELINE_FRAC_BITS`).
+    /// Largest `error - baseline` seen while the baseline was valid, in position units rounded
+    /// up. 0 if the baseline never warmed up.
     pub const fn peak_margin_delta_units(&self) -> u32 {
-        // Standard ceiling-division-by-power-of-2: adding (2^n - 1) before
-        // the shift rounds any non-negative value up to the next unit.
         let round_up_bias = (1u64 << BASELINE_FRAC_BITS) - 1;
         ((self.peak_margin_delta_scaled + round_up_bias) >> BASELINE_FRAC_BITS) as u32
     }
@@ -250,9 +198,6 @@ mod tests {
 
     #[test]
     fn ceiling_check_latches_on_gross_error_before_baseline_warms_up() {
-        // Jammed-from-tick-1: actual never advances, error grows past the
-        // ceiling well before MOTION_WARMUP_TICKS worth of real motion could
-        // ever be observed, so the margin check cannot be the one that fires.
         let mut det = StallDetector::new(
             /* ceiling */ 100,
             /* margin */ 10,
@@ -286,11 +231,6 @@ mod tests {
 
     #[test]
     fn margin_check_stays_masked_while_axis_is_jammed_from_tick_1() {
-        // Companion to the ceiling test above: the delta check never
-        // activates for a stall present since tick 1, because the baseline
-        // only updates on motion-confirmed ticks and this axis never moves.
-        // A large ceiling means only the margin path could latch here, and
-        // it must not.
         let mut det = StallDetector::new(
             /* ceiling */ 10_000,
             /* margin */ 10,
@@ -305,9 +245,6 @@ mod tests {
 
     #[test]
     fn margin_check_latches_once_baseline_warms_up_and_error_grows() {
-        // Real motion (actual advancing tick over tick) feeds the baseline;
-        // once warmed up, a sustained rise above baseline by margin_units
-        // latches via the margin path, well under a loose ceiling.
         let mut det = StallDetector::new(
             /* ceiling */ 10_000,
             /* margin */ 20,
@@ -320,8 +257,6 @@ mod tests {
             assert!(!det.observe(actual + 5, actual));
         }
         assert!(!det.latched());
-        // Contact: actual stops advancing, error above the settled baseline
-        // (~5) grows past margin_units (20).
         assert!(!det.observe(actual + 30, actual));
         assert!(det.observe(actual + 30, actual));
         assert!(det.latched());
@@ -382,8 +317,6 @@ mod tests {
 
     #[test]
     fn same_tick_tie_between_ceiling_and_margin_reports_ceiling() {
-        // A ceiling low enough to coincide with an already-warmed-up
-        // margin breach on the same tick: the tie rule picks Ceiling.
         let mut det = StallDetector::new(
             /* ceiling */ 40,
             /* margin */ 5,
@@ -396,8 +329,6 @@ mod tests {
             det.observe(actual + 2, actual);
         }
         assert!(!det.latched());
-        // Single tick: error 40 clears both the ceiling (>=40) and, since
-        // baseline sits near 2, the margin (40 - 2 = 38 >= 5) at once.
         assert!(det.observe(actual + 40, actual));
         assert_eq!(det.trigger_path(), StallTriggerPath::Ceiling);
     }
@@ -443,12 +374,6 @@ mod tests {
 
     #[test]
     fn baseline_converges_for_a_sub_shift_error_instead_of_sticking_at_zero() {
-        // A naive integer EMA (baseline += (error - baseline) >> EMA_SHIFT
-        // computed directly in real units) truncates to a zero step whenever
-        // |error - baseline| < 2^EMA_SHIFT, so a small but real cruise error
-        // would never move the baseline off zero. The fixed-point
-        // accumulator must still converge for an error smaller than
-        // 2^EMA_SHIFT.
         let mut det = StallDetector::new(
             /* ceiling */ 10_000,
             /* margin */ 1,
@@ -460,21 +385,11 @@ mod tests {
             actual += 70;
             det.observe(actual + 1, actual);
         }
-        // If the baseline were stuck at 0, error(1) - baseline(0) = 1 >=
-        // margin_units(1) would have latched by persistence 1 on the very
-        // first post-warmup tick. It must not: the baseline has to have
-        // converged close enough to 1 that the margin never breaches.
         assert!(!det.latched());
     }
 
     #[test]
     fn slow_creep_under_the_ceiling_stays_masked_by_the_tracking_baseline() {
-        // Documents the spec's accepted residual-risk limitation: a stall
-        // that develops slower than the EMA can track (partial binding,
-        // not a hard dead stop) is chased by the baseline the same way a
-        // jammed-from-tick-1 stall would be -- this is expected, not a bug,
-        // and this test exists so a future change to the EMA constants
-        // cannot silently alter that property without a test noticing.
         let mut det = StallDetector::new(
             /* ceiling */ 10_000,
             /* margin */ 20,
@@ -487,11 +402,6 @@ mod tests {
             det.observe(actual + 5, actual);
         }
         assert!(!det.latched());
-        // Error grows by 1 unit per tick from here -- far slower than the
-        // margin_units(20) threshold, and motion continues (actual still
-        // advances), so the baseline keeps tracking it. Total error growth
-        // over 300 ticks (300 units) vastly exceeds margin_units, yet the
-        // detector must still never latch.
         let mut error_offset = 5u32;
         for _ in 0..300 {
             actual += 70;
@@ -504,10 +414,6 @@ mod tests {
 
     #[test]
     fn peak_margin_delta_reports_at_least_the_true_observed_gap() {
-        // Regression guard for the rounding direction: peak_margin_delta_units()
-        // must never report less than the real gap it measured -- rounding
-        // toward zero could let a hardware validation run pass a
-        // margin-headroom threshold it actually violated.
         let mut det = StallDetector::new(
             /* ceiling */ 10_000,
             /* margin */ 10_000,
@@ -519,11 +425,6 @@ mod tests {
             actual += 70;
             det.observe(actual + 5, actual);
         }
-        // One tick with a known, large jump while actual holds still: the
-        // baseline (converged near 5) cannot have caught up, so the true
-        // gap is close to 995 (1000 - ~5). Neither check latches (margin
-        // and ceiling are both 10_000), so this only exercises peak
-        // tracking, not the latch path.
         det.observe(actual + 1000, actual);
         assert!(det.peak_margin_delta_units() >= 990);
     }

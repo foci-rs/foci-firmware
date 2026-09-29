@@ -102,20 +102,9 @@ async fn retry_plain_write<B: CommissionRegisterIo>(
 /// Configure the safety registers required before normal TMC operation.
 ///
 /// Writes `ADC_VM_LIMITS` to its maximum-safe value, writes `status_mask`
-/// to `STATUS_MASK`, then reads back `STATUS_FLAGS`. If any bit the
-/// corrected `status_mask` still considers critical is set in that
-/// readback, this is a genuine live fault (not a stale bit the mask now
-/// excludes): the flags are logged via `defmt::error!` and returned as
-/// `Err(TmcSafetyBootstrapFailure { stage: RetainedCriticalFault { flags } })`
-/// without clearing `STATUS_FLAGS`, so the evidence survives. Otherwise
-/// `STATUS_FLAGS` is cleared (best-effort; the TMC4671 does not support
-/// clearing individual bits) and the bootstrap succeeds.
-///
-/// `channel` identifies the TMC4671 channel purely for diagnostics (the
-/// `defmt::error!` line above); it does not affect which registers are
-/// written. Callers separately pass `channel` to
-/// `TmcSafetyBootstrapFailure::shutdown_reason` to map a failure to the
-/// channel-specific `ShutdownReason`.
+/// to `STATUS_MASK`, then reads back `STATUS_FLAGS`. A critical bit set in the
+/// readback fails with `RetainedCriticalFault` without clearing the flags;
+/// otherwise `STATUS_FLAGS` is cleared. `channel` is used for diagnostics only.
 ///
 /// # Errors
 ///
@@ -304,8 +293,6 @@ mod tests {
                     stage: TmcSafetyBootstrapStage::RetainedCriticalFault { flags: MASKS[0] },
                 })
             );
-            // Write(ADC_VM_LIMITS), Read(verify), Write(STATUS_MASK), Read(verify),
-            // Read(STATUS_FLAGS) -- five ops, no trailing Write(STATUS_FLAGS, 0).
             assert_eq!(backend.spi_log.len(), 5);
             assert!(matches!(backend.spi_log[4], SpiOp::Read));
         });
@@ -315,8 +302,6 @@ mod tests {
     fn tmc_safety_bootstrap_clears_a_stale_masked_out_bit_normally() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
-            // enc_n (bit 28) is not part of MASKS[0] (bit 26 only): a stale
-            // unmasked bit from a prior session, not a live critical fault.
             backend.read_override = Some((STATUS_FLAGS.addr(), 1 << 28));
 
             let result = bootstrap_tmc_safety(&mut backend, 0, MASKS[0]).await;
@@ -332,7 +317,6 @@ mod tests {
     #[test]
     fn tmc_safety_bootstrap_retained_fault_check_uses_each_board_critical_mask() {
         pollster::block_on(async {
-            // STATUS_CRITICAL_MASK on both boards today (adc_i_clipped only).
             const BOARD_MASK: u32 = 1 << 26;
             let mut backend = MockBackend::new();
             backend.read_override = Some((STATUS_FLAGS.addr(), BOARD_MASK));

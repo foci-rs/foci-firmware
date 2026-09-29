@@ -314,9 +314,8 @@ pub struct ResistanceRunReport {
     pub status: u8,
     /// Selected count-space resistance slope, scaled by 1000.
     pub selected_r_count_slope_milli: i32,
-    /// Resistance count-slope (milli-units) actually consumed by the gain
-    /// path, for the same-run 64x count-slope-milli audit. Commission-only;
-    /// always 0 on the standalone diagnostic path.
+    /// Resistance count-slope (milli-units) consumed by the gain path; 0 on the
+    /// standalone diagnostic.
     pub gain_path_count_slope_milli: i32,
     /// Run-level warning bitfield.
     pub warning_flags: u32,

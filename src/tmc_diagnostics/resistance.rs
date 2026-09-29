@@ -20,33 +20,9 @@ use super::{
     empty_resistance_run_report,
 };
 
-/// Adapter exposing the board-agnostic [`DiagnosticContext`] as a
-/// [`ResistanceBackend`] for the shared resistance-identification runner.
-///
-/// `set_enable_pin` is a no-op: the diagnostic runs in
-/// [`ResistanceRunMode::ExternallyArmed`], so the runner never asserts or
-/// clears the enable pin. `is_armed_for_open_loop_voltage` checks the same
-/// runtime/lifecycle state every other diagnostic-test handler in this module
-/// uses to gate readiness: the enable pin asserted
-/// ([`crate::tmc_control::TmcControlRuntime::is_motor_enabled`]) and
-/// calibration established
-/// ([`crate::tmc_control::TmcControlRuntime::is_calibrated`]).
-/// `adc_offsets_ready` checks the channel's `motor_sentinel`, the same flag
-/// [`crate::commissioning::backend::CommissionBoardConfig::adc_offsets_ready`]
-/// uses: it is captured by the ADC-calibration phase before any later
-/// commissioning phase energizes, so a non-zero sentinel proves ADC offsets
-/// were established at some commission/arm cycle, independent of whether full
-/// commissioning ever ran afterward.
 pub(super) struct DiagnosticResistanceBackend<'ctx, 'a, B, D> {
     ctx: &'ctx mut DiagnosticContext<'a, B, D>,
-    /// Consumed by exactly the next `read_register`/`write_register` call
-    /// after it is set: injects one `Err` to trip the shared runner's
-    /// restore path, then clears itself so the restore writes that follow
-    /// reach real SPI. Never a persistent latch -- see `host_liveness_aborted`.
     pending_liveness_injection: bool,
-    /// Set once a liveness expiry is observed and never cleared. Read only
-    /// by `run_resistance_test_request` afterward to pick the reported
-    /// status; has no effect on register-call behavior.
     host_liveness_aborted: bool,
 }
 
@@ -109,12 +85,9 @@ where
         self.ctx.delay.now_us()
     }
 
-    fn set_enable_pin(&mut self, _enabled: bool) {
-        // No-op: `ExternallyArmed` mode never asserts/clears the enable pin.
-    }
+    fn set_enable_pin(&mut self, _enabled: bool) {}
 
     fn interlock_tripped(&self) -> bool {
-        // An invalid channel counts as tripped, which is fail-closed.
         crate::state::tmc::tmc_channel(self.ctx.runtime.channel())
             .is_none_or(crate::tmc_control::interlock::fault_interlock_tripped)
     }
@@ -223,8 +196,6 @@ fn success_run_report(
         oid,
         status: 0,
         selected_r_count_slope_milli: result.selected_r_count_slope_milli,
-        // The diagnostic path's `ResistanceRunResult` has no gain-path
-        // concept; only the commission path populates this field.
         gain_path_count_slope_milli: 0,
         warning_flags: result.warning_flags.0,
         status_flags_or: result.status_flags_or,
@@ -253,12 +224,6 @@ pub(super) fn failed_run_report(
     }
 }
 
-/// Which status a terminal resistance failure should report: the dedicated
-/// host-liveness status when the abort was liveness-driven, otherwise the
-/// error's own status code. `error` is only used for its status code in the
-/// non-liveness case -- both paths surface as `ResistanceError::BackendIo`
-/// from the shared runner's point of view, so this is the only place the
-/// two are actually distinguished.
 pub(super) fn terminal_status(error: ResistanceError, host_liveness_aborted: bool) -> u8 {
     if host_liveness_aborted {
         crate::autotune::CommissionError::HostLivenessExpired.status_code()
@@ -277,19 +242,9 @@ fn handled(
 
 /// Run a resistance-identification diagnostic request.
 ///
-/// Runs the shared engine in [`ResistanceRunMode::ExternallyArmed`] over the
-/// motor the normal lifecycle path has already armed and enabled. Never
-/// touches commissioning state.
-///
-/// Rejects with the same not-ready status the sibling
-/// [`voltage_step`](super::run_voltage_step_request) and
-/// [`current_step`](super::run_current_step_request) diagnostics use when
-/// `readiness.homing_active` or `readiness.stepper_active` is set, before
-/// invoking the shared runner. The runner's own entry pre-checks only see
-/// enabled/calibrated/ADC-ready state through
-/// [`ResistanceBackend::is_armed_for_open_loop_voltage`]; without this
-/// dispatch-level gate a resistance test could switch the motor to open-loop
-/// voltage while homing or active stepping is in progress.
+/// Runs the shared engine in [`ResistanceRunMode::ExternallyArmed`] over an
+/// already armed motor. Rejects with the not-ready status when
+/// `readiness.homing_active` or `readiness.stepper_active` is set.
 pub async fn run_resistance_test_request<B, D>(
     req: TmcRequest,
     mut ctx: DiagnosticContext<'_, B, D>,

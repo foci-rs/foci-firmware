@@ -17,15 +17,12 @@ pub enum SetCurrentError {
 
 /// Apply a new RMS current limit to the TMC4671.
 ///
-/// Converts the Klipper-convention RMS milliamp value to the TMC4671 peak
-/// amplitude count (datasheet eq. 19/21: `I_phase = I_D * sin(phi_e)`),
-/// writes `PID_TORQUE_FLUX_LIMITS`, and stores the register value in
-/// channel current-limit state for use by the commissioning engine.
+/// Converts the RMS milliamp value to the TMC4671 peak amplitude count,
+/// writes `PID_TORQUE_FLUX_LIMITS`, and stores the register value in channel
+/// current-limit state.
 ///
-/// While a homing clamp is active on this channel (`tmc_state.homing_clamp_active`),
-/// the register write is deferred: the requested run current is still stored
-/// so it takes effect once homing's own restore step reads it back, but
-/// writing it live here would silently lift the homing clamp mid-move.
+/// While `tmc_state.homing_clamp_active` is set, the register write is deferred
+/// and only the stored run current is updated.
 ///
 /// # Parameters
 ///
@@ -87,9 +84,7 @@ where
 
 /// Apply a new operational PIDOUT_UQ_UD_LIMITS value.
 ///
-/// This is a live bringup diagnostic for current-loop voltage authority. It
-/// does not energize the motor and does not change current limits; it only
-/// adjusts the q/d voltage-output clamp used by the TMC4671 PID cascade.
+/// Adjusts the q/d voltage-output clamp only; current limits are unchanged.
 ///
 /// # Errors
 ///
@@ -148,7 +143,6 @@ where
         defmt::error!("TMC4671 SPI write failed: ABN_DECODER_PPR");
         return Err(crate::motion_scale::MotionScaleRejection::EncoderRegisterWriteFailed);
     }
-    // STEP_WIDTH consumes position units per emitted physical TMC pulse.
     if tmc
         .write_register(STEP_WIDTH, scale.physical_step_width())
         .await
@@ -163,9 +157,7 @@ where
 /// Apply an encoder direction setting to the TMC4671.
 ///
 /// Writes `ABN_DECODER_MODE` (bit 12 selects reversed/default direction),
-/// stores the inversion flag, and sets the channel feedforward reset flag to
-/// prevent a one-tick velocity impulse from the sign-flipped delta in the
-/// feedforward path on the next tick.
+/// stores the inversion flag, and sets the channel feedforward reset flag.
 ///
 /// # Parameters
 ///
@@ -193,9 +185,6 @@ where
     tmc_state
         .encoder_reversed
         .store(invert, core::sync::atomic::Ordering::Relaxed);
-    // Signal the tick loop to reset feedforward state: prev_position_target
-    // has the wrong sign after a direction flip, which would produce a
-    // one-tick velocity impulse in the feedforward delta computation.
     tmc_state
         .feedforward_reset
         .store(true, core::sync::atomic::Ordering::Relaxed);

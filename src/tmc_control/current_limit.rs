@@ -35,9 +35,6 @@ pub fn current_limit_from_run_ma(
     if !counts.is_finite() {
         return Err(CurrentLimitConversionError::NonFiniteResult);
     }
-    // A negative finite result is unreachable after validating an unsigned
-    // current and positive scale, but remains a domain error if those input
-    // contracts change.
     if counts < 0.0 || counts >= PidTorqueFluxLimit::MAX.register_value() as f32 + 1.0 {
         return Err(CurrentLimitConversionError::OutOfRange);
     }
@@ -50,14 +47,9 @@ pub fn current_limit_from_run_ma(
 /// `fraction` is a permille ratio of the configured torque/flux current limit.
 /// The product truncates toward zero.
 ///
-/// A zero `current_limit` yields a zero envelope, which fails closed at every
-/// comparison site. The encoder phase already rejects a zero limit before
-/// electrical identification runs, so this is a backstop rather than the
-/// primary check.
+/// A zero `current_limit` yields a zero envelope.
 #[must_use]
 pub fn diagnostic_current_envelope(current_limit: PidTorqueFluxLimit, fraction: Permille) -> u16 {
-    // `PidTorqueFluxLimit` is at most 0x7fff and callers are asserted at or
-    // below 1000 permille, so the product stays well inside `u32`.
     let product = u32::from(current_limit) * u32::from(fraction.raw());
     (product / 1000) as u16
 }
@@ -104,11 +96,8 @@ mod tests {
     #[test]
     fn diagnostic_envelope_truncates_toward_zero() {
         let limit = PidTorqueFluxLimit::new(2816).unwrap();
-        // 2816 * 600 / 1000 = 1689.6 -> 1689, so the configured 1600 still binds.
         assert_eq!(diagnostic_current_envelope(limit, Permille::new(600)), 1689);
-        // 2816 * 200 / 1000 = 563.2 -> 563
         assert_eq!(diagnostic_current_envelope(limit, Permille::new(200)), 563);
-        // 568 permille falls one count short of preserving the 1600 ceiling.
         assert_eq!(diagnostic_current_envelope(limit, Permille::new(568)), 1599);
         assert_eq!(diagnostic_current_envelope(limit, Permille::new(569)), 1602);
     }

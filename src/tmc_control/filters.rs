@@ -69,12 +69,6 @@ fn biquad_filter_regs(target: BiquadFilterTarget) -> BiquadFilterSubRegs {
     }
 }
 
-/// The valid cutoff ceiling for one biquad filter target.
-///
-/// Velocity and position stay on the conservative motion-filter ceiling;
-/// torque and flux use the wider current-filter ceiling. Centralizing this
-/// here means every `butterworth_lowpass` caller in this file supplies the
-/// correct limit rather than assuming one.
 pub(crate) fn cutoff_ceiling_hz(target: BiquadFilterTarget) -> u16 {
     match target {
         BiquadFilterTarget::Velocity | BiquadFilterTarget::Position => {
@@ -158,13 +152,8 @@ where
     Ok(())
 }
 
-/// Force the velocity and position biquad filters disabled.
-///
-/// Writes `enable=0` directly, bypassing the zero-cutoff no-op in
-/// `apply_one_backend_filter` (which leaves an already-enabled filter
-/// active on `filter_hz == 0`). Used at installed-tuning dispatch so a commissioning
-/// measurement's filter state is deterministic and independent of whatever
-/// `printer.cfg` has configured, rather than inheriting it.
+/// Force the velocity and position biquad filters disabled, writing `enable=0` even where a
+/// zero cutoff would otherwise be a no-op.
 ///
 /// # Errors
 ///
@@ -724,8 +713,6 @@ mod tests {
     #[fixture_test]
     async fn filter_cutoffs_step_skips_filter_with_no_valid_coefficients() {
         use core::sync::atomic::Ordering;
-        // pwm_maxcnt = 0 makes butterworth_lowpass return None for every
-        // nonzero cutoff -- the second no-op path, distinct from filter_hz == 0.
         tmc_state()
             .velocity_filter_hz
             .store(Some(100), Ordering::Relaxed);

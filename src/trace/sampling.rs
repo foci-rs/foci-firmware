@@ -1,8 +1,4 @@
-//! Pure trace sampling input construction and planning helpers.
-//!
-//! This module owns board-agnostic sampling inputs and planning decisions. It
-//! does not own USB queues, timestamps, source identity, SPI reads, trace
-//! counters, or frame encoding.
+//! Trace sampling input construction and planning.
 
 use crate::tmc_control::{TmcControlTraceState, TmcControlTraceTick};
 
@@ -10,8 +6,7 @@ use crate::tmc_control::{TmcControlTraceState, TmcControlTraceTick};
 /// sampling may start.
 pub const COMMISSION_TRACE_SAMPLE_MIN_BUDGET_US: u64 = 250;
 
-/// Runtime-owned values copied into critical/current-path/control-detail trace
-/// samples by board-local trace integrations.
+/// Runtime values copied into trace samples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct TraceSampleInputs {
     /// Last command rate in TMC position counts per PWM cycle.

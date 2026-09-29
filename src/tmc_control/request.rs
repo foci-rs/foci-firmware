@@ -1,7 +1,4 @@
 //! Shared TMC control request runner.
-//!
-//! Board crates keep ownership of SPI, GPIO, RTIC task context, and reply
-//! emission. This module owns board-agnostic request ordering and policy.
 
 use embedded_hal_async::spi::SpiDevice;
 use foci_tmc4671::spi::Tmc4671Spi;
@@ -33,8 +30,6 @@ pub enum TmcPreRequestDisposition {
     RequestHandled,
 }
 
-// The breakaway campaign carries the whole admitted campaign by value; boxing is
-// unavailable in this heapless crate, matching the campaign's own terminal enums.
 #[allow(clippy::large_enum_variant)]
 enum TuneRoute {
     FixedGainAmplitude(
@@ -43,17 +38,9 @@ enum TuneRoute {
     Breakaway(crate::commissioning::outer::velocity::breakaway_campaign::BreakawayCampaign),
     IntegralResume(crate::commission_dispatch::integral::IntegralPreflight),
     Robustness(crate::commission_dispatch::robustness::RobustnessPreflight),
-    // Carries only the run sequence: this sweep admits no plan ahead of
-    // time, but `compute_tune_route` and `apply_tune_route` no longer share
-    // scope, so the sequence has to travel with the route.
     PositionTune(u32),
 }
 
-/// Map a refused Integral resume onto the terminal the host will render.
-///
-/// Every rejection here names retained state that disagrees with the request,
-/// so each keeps a plan digest where one exists. The empty-slot case is not a
-/// rejection and is built separately.
 fn integral_resume_rejection_terminal(
     run_sequence: u32,
     rejection: crate::commission_dispatch::integral::IntegralPreflightRejection,
@@ -68,10 +55,6 @@ fn integral_resume_rejection_terminal(
         IntegralPreflightRejection::NoTransitionCapableOperatingPoint(failure) => {
             failed_integral_terminal(run_sequence, failure)
         }
-        // Both remaining rejections mean retained authority exists and the
-        // request disagrees with it, so both name the retained plan. Only the
-        // empty slot reports no plan at all, which is what lets the host tell
-        // "nothing to resume" apart from "that is not what was retained".
         IntegralPreflightRejection::RejectedPlanMismatch { retained, .. } => {
             let mut terminal = missing_authority_integral_terminal(run_sequence);
             terminal.cause = crate::commissioning::types::IntegralOutcomeCause::Dispatch(
@@ -91,13 +74,6 @@ fn integral_resume_rejection_terminal(
     }
 }
 
-/// Build the `integral_resume` route's disclosed workflow envelope.
-///
-/// `reproduce_ms` is the retained Integral plan's own `maximum_workflow_ms`. An
-/// admitted resume continues inline into robustness on the same dispatch, so
-/// the disclosed envelope has to bound reproduce plus the robustness worst
-/// case: the host arms one wait covering the whole run instead of re-arming
-/// a second wait when robustness starts.
 fn build_integral_resume_workflow_plan(
     run_sequence: u32,
     reproduce_ms: u32,
@@ -155,19 +131,7 @@ where
     fn default_current_filter_hz(&self) -> u16;
     /// Return the configured PWM frequency that defines the Integral I ladder.
     fn pwm_freq_hz(&self) -> u32;
-    /// Return the step-queue stimulus timer frequency, in Hz.
-    ///
-    /// Mirrors `CommissionBackendHooks::commission_step_timer_hz`'s own
-    /// "0 means this board ships no step stimulus" convention: a board that
-    /// does not override this default reports an unplannable stroke, so the
-    /// position-P sweep's disclosed duration falls back to `u32::MAX` rather
-    /// than a false, understated envelope.
-    ///
-    /// Distinct from `commissioning::backend::CommissionStepStimulus::stimulus_step_timer_hz`
-    /// (same name, different source): this one backs the dispatch-time
-    /// duration disclosure, before the commissioning engine exists; that one
-    /// backs actual stroke execution. A board must keep both wired to the
-    /// same hardware timer frequency.
+    /// Return the step-queue stimulus timer frequency in Hz; 0 means the board ships no step stimulus.
     fn stimulus_step_timer_hz(&self) -> u32 {
         0
     }
@@ -244,9 +208,6 @@ where
 }
 
 /// Reject a queued request while commissioning exclusively owns the motor.
-///
-/// This synchronous path intentionally receives no runtime, SPI, or GPIO
-/// capability, so it cannot disturb the active engine or its deadline.
 pub fn handle_commission_wait_reject<Sink>(
     req: TmcRequest,
     sink: &mut Sink,
@@ -364,9 +325,6 @@ where
                         .cancel_requested
                         .store(false, core::sync::atomic::Ordering::Relaxed);
                     defmt::info!("Auto-calibrating on enable");
-                    // A routine same-channel re-enable may auto-calibrate after the
-                    // required disarm/cooling interval; preserve that channel's
-                    // Integral authority across the alignment lifecycle.
                     integral_candidate.preserve_for_same_channel_calibration(board.channel());
                     runtime.set_commission_engine(
                         CommissioningEngine::new_calibrate_for_tmc_with_gains_and_trace_seq(
@@ -448,9 +406,6 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
-            // Host homing explicitly calibrates after the required disarm/cooling
-            // interval. Preserve same-channel Integral authority across that
-            // alignment lifecycle.
             integral_candidate.preserve_for_same_channel_calibration(board.channel());
             runtime.clear_calibrated();
             board
@@ -708,10 +663,6 @@ where
                 Ok(snapshot) => snapshot,
                 Err(outcome) => return outcome,
             };
-            // Measurement runs filter-free regardless of `printer.cfg`;
-            // `entry_snapshot` above already captured the operator's real
-            // values, which the existing restore-on-failure and
-            // restore-on-success paths use to put them back afterward.
             if crate::tmc_control::filters::force_velocity_position_filters_disabled(tmc)
                 .await
                 .is_err()
@@ -1113,10 +1064,6 @@ where
                     plan: workflow,
                 },
             );
-            // The workflow envelope only discloses the shape and its
-            // durations. The exact plan is a separate reply, and the
-            // host refuses Integral evidence that arrives before it, so
-            // it has to be on the wire before the engine takes a stroke.
             for record in crate::commissioning::outer::velocity::integral_reporting::
                         encode_velocity_integral_plan_trace(run_sequence, preflight.plan)
                     {
@@ -1190,10 +1137,6 @@ where
                         return Err(TmcControlRequestOutcome::skip_tick_tail());
                     }
                 };
-            // Disclose the run's worst-case duration before any motion
-            // so the host arms its extended run timeout: the K-cycle
-            // probe runs far longer than the host's 5 s initial plan
-            // window, which caps the run when no workflow plan arrives.
             let workflow = crate::commissioning::outer::velocity::workflow_plan::
                         CommissioningWorkflowPlan::new_robustness(
                             run_sequence,
@@ -1212,18 +1155,7 @@ where
             );
             TuneRoute::Robustness(preflight)
         }
-        // No preflight, unlike every sibling action: this phase's
-        // `MeasuringFloor` entry reads the encoder resolution, torque cap,
-        // and live velocity gains from the backend and installs its own
-        // safety envelope, so the shared checks above are the whole
-        // admission.
         crate::tmc::AutotuneAction::PositionTune => {
-            // Disclose the sweep's worst-case duration before any motion
-            // so the host arms its extended run timeout: the half-octave
-            // rung ladder runs far longer than the host's 5 s initial plan
-            // window, which caps the run when no workflow plan arrives. The
-            // per-rung cost is planned from the same budget and step-queue
-            // configuration the phase itself arms its strokes from.
             let position_tune_budget = crate::commissioning::outer::OuterMotionBudget {
                 requested_velocity_mrev_s,
                 machine_velocity_ceiling_mrev_s,
@@ -1452,13 +1384,7 @@ where
     normal_outcome(board.normal_tail())
 }
 
-/// Handle one request with a throwaway, per-call Integral candidate slot.
-///
-/// This wrapper is a test/convenience entry point: it allocates a fresh
-/// `IntegralRetentionSlot` on every call, so it retains no Integral state across
-/// calls. Production board integration calls
-/// [`handle_tmc_control_request_with_stages`] directly with its persistent,
-/// task-local Integral slot.
+/// Handle one request with a throwaway Integral candidate slot; retains no Integral state across calls.
 pub async fn handle_tmc_control_request<Spi, Board>(
     req: TmcRequest,
     pre_request: TmcPreRequestDisposition,
@@ -2052,9 +1978,6 @@ mod tests {
                 ),
                 ExpectedReply::Diagnostic,
             ),
-            // Non-zero channel: the busy reply must carry the request's own
-            // channel, not the board's (RecordingBoard::channel stays 0), so a
-            // hardcoded 0 in emit_reply's channel argument fails this case.
             (
                 TmcRequest::new(1, TmcRequestKind::Calibrate { oid: 4 }),
                 ExpectedReply::Calibrate(4),
@@ -2519,9 +2442,6 @@ mod tests {
         board
             .tmc_state()
             .store_current_limit(current_limit(2_816), Relaxed);
-        // Simulate a race with a just-finished previous run on this channel:
-        // a cancel latched against its tail end, with no run currently in
-        // flight.
         board.tmc_state().cancel_requested.store(true, Relaxed);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
@@ -2545,8 +2465,6 @@ mod tests {
             "a fresh admission must clear a stale cancel_requested"
         );
 
-        // The freshly admitted engine must not be immediately cancelled by
-        // the stale flag at its first operator-cancel checkpoint.
         let mut backend = MockBackend::new();
         let cancel_outcome = runtime
             .drive_operator_cancel(&mut backend, tmc_channel0(), stepper_channel0(), 4095)
@@ -2666,8 +2584,6 @@ mod tests {
             "measurement dispatch must disable the position filter on the chip \
              regardless of the configured cutoff"
         );
-        // The operator's configured cutoffs are untouched -- only the chip's
-        // live state is forced off for the duration of measurement.
         assert_eq!(tmc_state.velocity_filter_hz.load(Relaxed), Some(200));
         assert_eq!(tmc_state.position_filter_hz.load(Relaxed), Some(50));
     }
@@ -2697,9 +2613,6 @@ mod tests {
         )
         .await;
 
-        // The campaign discloses only its command-level envelope before
-        // construction; the probe's Planned evidence is recorded on its first
-        // engine step, not at admission, so exactly one reply is emitted.
         assert_eq!(board.replies.len(), 1);
         assert_eq!(board.reply_channels, std::vec![0]);
         let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
@@ -2724,10 +2637,6 @@ mod tests {
 
     #[fixture_test]
     async fn encoder_not_ready_tune_fails_as_commission_phase_not_velocity_sweep_terminal() {
-        // Reach the Proportional preflight with the encoder domain unestablished:
-        // the current limit is stored (so the NoCurrent pre-check passes) but
-        // motion scale is never configured, so `encoder_counts_per_rev()` is
-        // None and the preflight rejects before any workflow plan is emitted.
         let mut board = RecordingBoard::skip_tick_tail();
         let tmc_state = tmc_channel0();
         tmc_state.store_current_limit(current_limit(2_816), Relaxed);
@@ -2746,11 +2655,6 @@ mod tests {
         )
         .await;
 
-        // The encoder-not-ready preflight must surface as a commission-phase
-        // failure the host already handles (autotune.py sets commissioning
-        // error_code and raises), not a planless velocity-sweep terminal reply
-        // that the host's "envelope before evidence" gate rejects with a cryptic
-        // protocol error while discarding the real cause.
         assert_eq!(board.replies.len(), 1);
         assert_eq!(board.reply_channels, std::vec![0]);
         assert_commission_phase_failure(
@@ -2898,8 +2802,6 @@ mod tests {
         )
         .await;
 
-        // The worst-case-duration envelope is the very first reply, before the
-        // engine and any motion, so the host arms its extended run timeout.
         assert_eq!(board.reply_channels.first(), Some(&0));
         let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
         else {
@@ -2915,7 +2817,6 @@ mod tests {
             crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(3_000_000)
         );
         assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);
-        // Exactly one workflow plan is emitted.
         assert_eq!(
             board
                 .replies
@@ -2925,8 +2826,6 @@ mod tests {
             1
         );
         assert!(runtime.is_commission_active());
-        // No motion command was written during the dispatch: the plan precedes
-        // the long-motion phase.
         let spi = tmc.into_inner();
         assert!(
             spi.write_attempts
@@ -2947,9 +2846,6 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        // Deliberately empty: the position-P sweep reads the live velocity
-        // gains from the chip at phase entry, so it admits without any
-        // retained acceptance point, unlike every other follow-up action.
         let mut integral = IntegralRetentionSlot::new();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
@@ -2963,9 +2859,6 @@ mod tests {
         )
         .await;
 
-        // The worst-case-duration envelope is the very first reply, before the
-        // engine and any motion, so the host arms its extended run timeout
-        // instead of capping the sweep at its 5 s plan window.
         assert_eq!(board.reply_channels.first(), Some(&0));
         let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
         else {
@@ -2976,8 +2869,6 @@ mod tests {
             crate::commissioning::outer::velocity::workflow_plan::VelocityAutotuneWorkflowKind::
                 PositionTune
         );
-        // Same budget and step-queue configuration `tune_request_with_action`
-        // and `RecordingBoard` feed the dispatch itself.
         let expected_budget = crate::commissioning::outer::OuterMotionBudget {
             requested_velocity_mrev_s: 6_000,
             machine_velocity_ceiling_mrev_s: 10_000,
@@ -3014,7 +2905,6 @@ mod tests {
             )
         );
         assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);
-        // Exactly one workflow plan is emitted.
         assert_eq!(
             board
                 .replies
@@ -3036,8 +2926,6 @@ mod tests {
             .expect("a position-tune phase carries an outer motion budget");
         assert_eq!(outer_budget.homing_speed_mrev_s, 4_375);
         assert_eq!(outer_budget.max_accel_mrev_s2, 200_000);
-        // Construction is pure state assembly: the sweep's first stroke is
-        // only reachable through the engine step loop.
         let spi = tmc.into_inner();
         assert!(
             spi.write_attempts
@@ -3130,9 +3018,6 @@ mod tests {
             workflow.shape,
             crate::commissioning::outer::velocity::workflow_plan::VelocityAutotuneWorkflowKind::Resume
         );
-        // The envelope bounds reproduce plus the inline robustness continuation,
-        // not just the reproduce budget: the host arms one wait across the whole
-        // dispatch instead of re-arming a second wait when robustness starts.
         assert_eq!(
             workflow.maximum_workflow_ms,
             plan.maximum_workflow_ms
@@ -3140,8 +3025,6 @@ mod tests {
                     plan.recovery_maximum_slot_us
                 )
         );
-        // The exact plan, not just the envelope: motion evidence that reaches
-        // the host before this reply has no plan to be assembled against.
         let ReplyPayload::VelocityIntegralPlan {
             plan: disclosed, ..
         } = board.replies[1]
@@ -3219,8 +3102,6 @@ mod tests {
 
         assert_eq!(board.replies.len(), 1);
         assert_eq!(board.reply_channels, std::vec![0]);
-        // The refusal namespace, not the ordinary terminal: an ordinary terminal
-        // expands to leading evidence fragments describing a run that never ran.
         let ReplyPayload::VelocityIntegralRefusal { terminal, .. } = board.replies[0] else {
             panic!("a refused resume must use the Integral refusal namespace")
         };
@@ -3231,8 +3112,6 @@ mod tests {
                 crate::commission_dispatch::integral::INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH
             )
         );
-        // The host tells "nothing retained" from "not what was retained" by the
-        // digest, so a mismatch has to name the plan it disagreed with.
         assert_eq!(terminal.plan_digest, retained.identity.plan_digest);
         assert_ne!(terminal.plan_digest, 0);
         assert!(!runtime.is_commission_active());
@@ -3264,9 +3143,6 @@ mod tests {
             &mut integral,
             resumable_integral_plan(),
         );
-        // No Proportional plan reconstructs from this, so the preflight refuses
-        // before it can compare digests. The refusal still has to say which
-        // retained plan the operator failed to resume.
         let mut request = tune_request_with_action(crate::tmc::AutotuneAction::IntegralResume);
         let TmcRequestKind::Tune {
             max_duration_ms, ..
@@ -3289,8 +3165,6 @@ mod tests {
 
         assert_eq!(board.replies.len(), 1);
         assert_eq!(board.reply_channels, std::vec![0]);
-        // The refusal namespace, not the ordinary terminal: an ordinary terminal
-        // expands to leading evidence fragments describing a run that never ran.
         let ReplyPayload::VelocityIntegralRefusal { terminal, .. } = board.replies[0] else {
             panic!("a refused resume must use the Integral refusal namespace")
         };

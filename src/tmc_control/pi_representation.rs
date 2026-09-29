@@ -82,11 +82,6 @@ pub async fn bootstrap_pi_representation<B: CommissionRegisterIo>(
     Ok(())
 }
 
-/// One step of `verify_pi_representation`'s two-call sequence, advanced by
-/// exactly one raw backend operation per `advance()` call. Unlike
-/// `write_register_verified`, this sequence has no retry loop and no
-/// driver-level opacity forcing its write and read together, so it splits
-/// cleanly into two steps rather than needing an exception.
 #[derive(Clone, Copy)]
 pub(crate) enum PiRepresentationVerifyStep {
     WriteSelector,
@@ -98,10 +93,6 @@ impl PiRepresentationVerifyStep {
         Self::WriteSelector
     }
 
-    /// Perform the next raw backend operation. Returns `None` while a step
-    /// remains; `Some(result)` once verification has succeeded or failed,
-    /// mirroring `verify_pi_representation`'s original behavior exactly,
-    /// including clearing `pi_representation_established` on any failure.
     pub(crate) async fn advance<B: CommissionRegisterIo>(
         &mut self,
         backend: &mut B,
@@ -143,9 +134,6 @@ impl PiRepresentationVerifyStep {
     }
 }
 
-/// Verify the fixed PI representation through a commissioning backend.
-///
-/// This verifier never repairs missing or mismatching state.
 #[cfg(test)]
 pub(crate) async fn verify_pi_representation<B: CommissionRegisterIo>(
     backend: &mut B,
@@ -159,9 +147,6 @@ pub(crate) async fn verify_pi_representation<B: CommissionRegisterIo>(
     }
 }
 
-/// Verify the fixed PI representation through the raw request-path SPI owner.
-///
-/// This has the same fail-closed semantics as [`PiRepresentationVerifyStep`].
 pub(crate) async fn verify_pi_representation_spi<Spi: SpiDevice<u8>>(
     tmc: &mut Tmc4671Spi<Spi>,
     state: &TmcChannelState,

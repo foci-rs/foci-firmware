@@ -1,12 +1,7 @@
 //! Connect-time TMC configuration drain.
 //!
-//! Config-time setters record their value in [`TmcChannelState`] and set a
-//! bit in `config_apply_pending` instead of enqueueing an SPI request, so a
-//! connect-time configuration burst cannot overflow the bounded TMC request
-//! channel. This module owns the one drain that pushes that recorded state
-//! to the chip: the board control tick runs it on its own schedule, and
-//! `arm_motor_electrical` runs it before energizing so a motor never arms
-//! against configuration the host believes was applied.
+//! Config-time setters record their value and set a `config_apply_pending` bit; this module
+//! owns the drain that pushes that recorded state to the chip.
 
 use embedded_hal_async::spi::SpiDevice;
 use foci_tmc4671::spi::Tmc4671Spi;
@@ -39,24 +34,12 @@ pub enum PendingConfigItem {
     Filters,
 }
 
-/// Take ownership of a pending item before reading the value to apply.
-///
-/// Clearing first is what makes a racing higher-priority setter recoverable:
-/// its `fetch_or` then lands on a bit this pass has already given up, so the
-/// value it recorded is drained next pass instead of being erased by a clear
-/// that belongs to the older value.
-///
-/// `AcqRel`, not the `Relaxed` used everywhere else on this atomic: the whole
-/// guarantee is that the value read afterwards belongs to a claim that has
-/// already happened, and relaxed operations may be reordered against each
-/// other, which would let the read be hoisted above the clear.
 fn claim(tmc_state: &TmcChannelState, bit: u8) {
     tmc_state
         .config_apply_pending
         .fetch_and(!bit, core::sync::atomic::Ordering::AcqRel);
 }
 
-/// Hand a claimed item back after a failed apply, so it is retried.
 fn release(tmc_state: &TmcChannelState, bit: u8) {
     tmc_state
         .config_apply_pending
@@ -65,27 +48,8 @@ fn release(tmc_state: &TmcChannelState, bit: u8) {
 
 /// Drain configuration recorded by config-time setters, if any is pending.
 ///
-/// Config-time setters record their value in [`TmcChannelState`] and set
-/// `config_apply_pending` rather than enqueueing an SPI request, so a
-/// connect-time configuration burst cannot overflow the bounded TMC request
-/// channel. The TMC task calls this from its periodic control tick to push
-/// that recorded state to the chip.
-///
-/// Each bit is checked and cleared individually, so a failure writing one
-/// item does not prevent retrying on the next control tick. Routes through
-/// [`apply_live_filter`] so a recorded `0` disables its filter.
-///
-/// On `Ok`, every bit observed on entry has been applied. Config handlers run
-/// at a higher priority than the control and arming paths, so a bit can be
-/// raised while this runs. Each branch therefore claims its item -- clears the
-/// bit -- before reading the value it writes, so a handler preempting the
-/// apply re-raises the bit against a pass that has already given it up and the
-/// newer value is drained on the next pass rather than erased by this one. A
-/// failed apply re-raises the bit itself, so the item is retried rather than
-/// swallowed by its own claim.
-///
-/// The always-on assert at the end checks the applied mask against a local
-/// snapshot rather than the live atomic so a concurrent setter cannot trip it.
+/// Each pending item is applied and cleared independently; a failed item stays pending for the
+/// next tick. A recorded filter cutoff of `0` disables that filter.
 ///
 /// # Errors
 ///
@@ -154,10 +118,6 @@ where
 
     if (pending & PENDING_ENCODER_DIR) != 0 {
         claim(tmc_state, PENDING_ENCODER_DIR);
-        // An unset sentinel means the host has not chosen a direction, so
-        // there is nothing to write -- but the item is still drained. Leaving
-        // the bit set here would strand it forever, since no later drain has
-        // anything more to go on.
         if let Some(invert) = tmc_state.encoder_invert_cfg.load(Relaxed)
             && crate::tmc_control::request_writes::apply_set_encoder_dir(tmc, tmc_state, invert)
                 .await
@@ -390,9 +350,6 @@ mod tests {
                 .config_apply_pending
                 .store(crate::state::tmc::PENDING_CURRENT, Relaxed);
 
-            // A P2 `tmc_set_current` lands while this drain's own SPI write is
-            // in flight, recording a newer run current and re-raising the bit
-            // in the order the handler itself uses.
             let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
                 .race_pending_config_on_write(PID_TORQUE_FLUX_LIMITS.addr(), || {
                     tmc_state().run_current_ma_cfg.store(900, Relaxed);
@@ -421,8 +378,6 @@ mod tests {
                  drain applies the newer current instead of losing it"
             );
 
-            // The second pass is the one that has to land the newer value: the
-            // first was already committed to the limit it read before the race.
             let mut tmc = Tmc4671Spi::new(crate::tmc_control::test_spi::RuntimeMockSpi::default());
             drain_pending_config(
                 &mut tmc,
@@ -918,9 +873,6 @@ mod tests {
 
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
-            // `TmcChannelState::reset` nulls `encoder_invert_cfg` without
-            // touching `config_apply_pending`, so a deferred queue flush can
-            // leave this pairing behind.
             tmc_state().encoder_invert_cfg.store(None, Relaxed);
             tmc_state()
                 .config_apply_pending

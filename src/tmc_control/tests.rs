@@ -69,8 +69,6 @@ fn runtime_starts_disarmed_and_uncalibrated() {
 
 #[test]
 fn channel_runtime_size_stays_bounded() {
-    // The runtime embeds the `CommissioningEngine`, so it tracks that engine's
-    // size plus the runtime's own fixed overhead.
     #[cfg(feature = "trace")]
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_144);
     #[cfg(not(feature = "trace"))]
@@ -1314,9 +1312,6 @@ fn homing_state_1_outer_gain_failure_retries_twice_then_fails_closed() {
     });
 }
 
-/// Board current scale realistic enough that both the homing and the run
-/// current land inside the TMC4671 limit domain. `commissioning_runtime_config`
-/// uses 0.03125 mA/LSB, which caps the representable run current near 724 mA.
 const HOMING_CURRENT_SCALE_MA_PER_LSB: f32 = 1.155;
 
 fn homing_runtime_config() -> TmcControlConfig {
@@ -1952,10 +1947,8 @@ fn homing_restore_writes_run_current_and_publishes_result() {
         assert!(tmc_state.stall_result_latched.load(Relaxed));
         assert_eq!(tmc_state.stall_peak_error_units.load(Relaxed), 1000);
         assert_eq!(tmc_state.stall_trigger_tick.load(Relaxed), 2);
-        assert_eq!(tmc_state.stall_trigger_path.load(Relaxed), 1); // Ceiling
+        assert_eq!(tmc_state.stall_trigger_path.load(Relaxed), 1);
         assert!(!runtime.stall_detector_armed_for_test());
-        // Baseline never warmed up in these 2-3 ticks, so no margin-delta
-        // headroom was ever tracked.
         assert_eq!(tmc_state.stall_peak_margin_delta_units.load(Relaxed), 0);
     });
 }
@@ -3478,14 +3471,6 @@ fn trace_tick_marks_metadata_due_at_1000() {
     assert!(tick.metadata_due);
 }
 
-// --- terminal-restore cancellation ------------------------------------------
-//
-// A terminal restore survives across ticks, so a shutdown, queue flush,
-// emergency disable, or host-lease expiry arriving mid-restore must drive the
-// motor to safe state rather than dropping the machine on a half-armed motor.
-// One test per exit source, plus the shared invariant that the slots stay
-// populated until the drain has actually run.
-
 fn zero_cal_result() -> crate::commissioning::types::AdcCalResult {
     crate::commissioning::types::AdcCalResult {
         adc_i0: 0,
@@ -3501,7 +3486,6 @@ fn zero_cal_result() -> crate::commissioning::types::AdcCalResult {
     }
 }
 
-/// Install an armed motor with a terminal restore started but not yet advanced.
 fn armed_runtime_with_restore_started(runtime: &mut TmcControlRuntime, backend: &mut MockBackend) {
     use crate::commissioning::backend::CommissionMotorControl;
 
@@ -3522,7 +3506,6 @@ fn armed_runtime_with_restore_started(runtime: &mut TmcControlRuntime, backend: 
     assert!(runtime.is_commission_active());
 }
 
-/// Install an armed motor with a terminal restore stopped part-way through.
 async fn armed_runtime_mid_restore(
     runtime: &mut TmcControlRuntime,
     backend: &mut MockBackend,
@@ -3544,8 +3527,6 @@ async fn armed_runtime_mid_restore(
     assert!(runtime.is_commission_active());
 }
 
-/// Drain a latched cancel and assert the motor reached safe state with both
-/// slots retired and no further restore work left to do.
 async fn assert_drain_reaches_safe_state(
     runtime: &mut TmcControlRuntime,
     backend: &mut MockBackend,
@@ -3584,7 +3565,6 @@ async fn assert_drain_reaches_safe_state(
     assert!(!runtime.is_commission_active(), "engine slot must be gone");
     assert!(!runtime.restore_cancel_pending());
 
-    // A later tick must not advance any restore or re-assert the enable pin.
     let before = backend.spi_log.len();
     let mut retention = crate::commission_dispatch::CommissionRetention::new(slot);
     assert!(
@@ -3642,8 +3622,6 @@ fn shutdown_safe_state_drains_a_pending_restore_before_disarming() {
         let mut backend = MockBackend::new();
         armed_runtime_mid_restore(&mut runtime, &mut backend, &mut slot).await;
 
-        // The board's shutdown chokepoint: it must drain the restore itself,
-        // without any board-side cancel request.
         assert!(!runtime.restore_cancel_pending());
         crate::tmc_control::lifecycle::apply_shutdown_safe_state(
             &mut runtime,
@@ -3712,8 +3690,6 @@ fn lease_expiry_mid_restore_drains_to_safe_state_before_clearing_slots() {
         let mut backend = MockBackend::new();
         armed_runtime_mid_restore(&mut runtime, &mut backend, &mut slot).await;
 
-        // Host-lease expiry is a board-side classification with no runtime
-        // helper of its own; its only obligation is the latch.
         runtime.request_restore_cancel();
 
         assert_drain_reaches_safe_state(&mut runtime, &mut backend, &mut slot).await;
@@ -3753,11 +3729,6 @@ fn cancelled_mid_restore_reports_cancelled_status_not_shutdown() {
             .await
             .expect("a cancel latched mid-restore must produce a terminal outcome");
 
-        // armed_runtime_mid_restore's fixture is a CalibrateDone restore, so
-        // the reply is a CalibrateResult whose status is the calibration-side
-        // mapping of the status this drain was told to report -- Cancelled,
-        // not the InternalError fallback Shutdown maps to (Shutdown has no
-        // explicit CalibrationError arm).
         match outcome {
             crate::commission_dispatch::CommissionOutcome::Terminal { reply, .. } => match reply {
                 crate::commission_dispatch::ReplyPayload::CalibrateResult { status, .. } => {
@@ -3862,12 +3833,6 @@ fn cancelled_mid_phase_disarms_only_the_targeted_channel_and_reports_cancelled()
     });
 }
 
-/// A `MockBackend` primed to run a `PositionTune` outer engine to a live
-/// mid-stroke capture, mirroring
-/// `position_tune::tests::position_tune_backend` -- the fields `predict`
-/// needs to succeed (a physical step width, a resolvable encoder resolution,
-/// and a valid velocity-gain register) are set explicitly since
-/// `MockBackend::new()` leaves them at defaults `predict` rejects.
 fn position_tune_cancel_backend() -> MockBackend {
     let mut backend = MockBackend::new();
     backend.spi_elapsed_step_us = 0;
@@ -3886,11 +3851,6 @@ fn position_tune_cancel_backend() -> MockBackend {
     backend
 }
 
-/// Drive a fresh `PositionTune` outer engine partway into its first stroke's
-/// capture -- far enough that the step-queue stimulus is genuinely armed and
-/// `capture_running`, short of the small excursion's own deadline (mirrors
-/// `position_tune::tests::an_outer_safety_fault_mid_stroke_...`'s own drive
-/// loop).
 fn position_tune_engine_mid_stroke(backend: &mut MockBackend) -> CommissioningEngine {
     let mut engine = CommissioningEngine::new_outer_for_tmc_with_position_tune(
         7,
@@ -3913,10 +3873,6 @@ fn position_tune_engine_mid_stroke(backend: &mut MockBackend) -> CommissioningEn
     engine
 }
 
-/// Find the first `MODE_RAMP_MODE_MOTION = 0` write in `event_log` -- the
-/// safe-state restore's own first write (`tmc_safe_state`'s step 0) -- and
-/// require `abort_stimulus`'s `Stop` then `Feedforward(false)` to be the two
-/// events immediately before it, with nothing else between.
 fn assert_stimulus_stopped_before_safe_state_restore(event_log: &[MockEvent]) {
     let restore_write_index = event_log
         .iter()
@@ -4009,9 +3965,6 @@ fn a_shutdown_safe_state_mid_stroke_stops_the_stimulus_before_the_disarm() {
     });
 }
 
-/// Assert the drop landed inside a real backend operation: the verified write
-/// that was in flight had already pushed its register write, and its verifying
-/// read-back had not run yet.
 fn assert_dropped_mid_operation(backend: &MockBackend, ops_before: usize) {
     assert!(
         backend.spi_log.len() > ops_before,
@@ -4025,8 +3978,6 @@ fn assert_dropped_mid_operation(backend: &MockBackend, ops_before: usize) {
     );
 }
 
-/// Acquire the shared-state guard and reset the channel atomics without an
-/// enclosing `block_on`, so the caller can poll futures by hand afterwards.
 fn lock_and_reset_shared_state() -> impl core::ops::DerefMut<Target = ()> + 'static {
     let guard =
         pollster::block_on(crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.lock());
@@ -4037,11 +3988,6 @@ fn lock_and_reset_shared_state() -> impl core::ops::DerefMut<Target = ()> + 'sta
 
 #[test]
 fn a_torn_down_restore_poll_keeps_both_slots_installed() {
-    // The restore machine must live in the runtime slot for every suspension
-    // point of a poll, not in a local moved out of it. Dropping an in-flight
-    // poll is the observable form of that: with the machine moved into the
-    // future, the drop would destroy it and the runtime would report no
-    // pending restore while the motor is still mid-sequence.
     let _guard = lock_and_reset_shared_state();
     let tmc = crate::state::tmc::tmc_channel0();
     let stepper = crate::state::stepper::stepper_channel0();
@@ -4050,8 +3996,6 @@ fn a_torn_down_restore_poll_keeps_both_slots_installed() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     let mut backend = MockBackend::new();
     armed_runtime_with_restore_started(&mut runtime, &mut backend);
-    // Restart as an InnerFailed terminal: its first step is the safe-state
-    // sequence, whose verified writes are where the mock can suspend.
     runtime.request_restore_cancel();
     pollster::block_on(runtime.drive_restore_cancel(
         &mut backend,
@@ -4079,7 +4023,6 @@ fn a_torn_down_restore_poll_keeps_both_slots_installed() {
         ));
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         matches!(future.as_mut().poll(&mut context), std::task::Poll::Pending)
-        // The future is dropped here, mid-await.
     };
 
     assert!(
@@ -4099,9 +4042,6 @@ fn a_torn_down_restore_poll_keeps_both_slots_installed() {
 
 #[test]
 fn a_torn_down_restore_cancel_keeps_the_slots_and_latch_and_stays_resumable() {
-    // Same ownership contract for the cancel drain, which runs the mandatory
-    // safe-state sequence: neither slot nor the latch may be retired until
-    // that sequence has actually run, and a torn-down drain must be resumable.
     let _guard = lock_and_reset_shared_state();
     let tmc = crate::state::tmc::tmc_channel0();
     let stepper = crate::state::stepper::stepper_channel0();
@@ -4146,7 +4086,6 @@ fn a_torn_down_restore_cancel_keeps_the_slots_and_latch_and_stays_resumable() {
         runtime.restore_cancel_pending(),
         "a torn-down drain must leave the cancel latched so it is retried"
     );
-    // The retry the latch guarantees still reaches safe state.
     pollster::block_on(assert_drain_reaches_safe_state(
         &mut runtime,
         &mut backend,

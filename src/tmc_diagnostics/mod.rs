@@ -1,8 +1,7 @@
 //! Shared active TMC4671 diagnostic runners.
 //!
-//! The runners own chip-level diagnostic sequencing and report construction.
-//! Board crates keep channel selection, reply emission, shutdown glue, RTIC
-//! timing, and hardware validation.
+//! The runners own chip-level sequencing and report construction; boards own channel
+//! selection, reply emission, and shutdown glue.
 
 mod current_step;
 mod helpers;
@@ -58,10 +57,6 @@ pub trait DiagnosticDelay {
     }
 
     /// Monotonic microsecond timestamp from the board clock.
-    ///
-    /// Diagnostics use this to stamp samples with the real time each measurement
-    /// was taken, including register-read and gate-check overhead between
-    /// requested delays. Boards back it with their microsecond monotonic.
     fn now_us(&self) -> u64;
 }
 
@@ -87,19 +82,12 @@ pub struct DiagnosticContext<'a, B, D> {
     pub power_stage: &'a mut dyn DiagnosticPowerStage,
     /// Board readiness snapshot for the selected request channel.
     pub readiness: DiagnosticReadiness,
-    /// Board-specific TMC4671 hardware configuration, used by the
-    /// resistance-test diagnostic to build the board's resistance profile.
+    /// Board-specific TMC4671 hardware configuration.
     pub tmc_config: &'static crate::config::TmcConfig,
-    /// This channel's feedback wiring, used by shared active-diagnostic
-    /// runners that check `STATUS_FLAGS` against the current-loop mask.
+    /// This channel's feedback wiring.
     pub feedback_config: crate::config::FeedbackConfig,
     /// Board-supplied host-liveness check, consulted by checked delays.
-    /// `None` means "no check installed" -- treated as never-expired; every
-    /// production call site must supply `Some`, wired to the board's raw
-    /// `lease_expired` result with a freshly sampled timer. Never wire this
-    /// to `classify_lease_check`: its shutdown-active suppression exists to
-    /// stop the P1 loop's own per-tick re-entrancy and does not apply to a
-    /// diagnostic runner's one-shot poll.
+    /// `None` means no check is installed (never expired).
     pub host_liveness_expired: Option<&'a mut dyn FnMut() -> bool>,
 }
 
@@ -127,8 +115,7 @@ pub enum DiagnosticReport {
     /// Open-loop voltage-step diagnostic.
     VoltageStep(VoltageStepReport),
     /// Shared resistance-identification diagnostic. Axis reports are absent
-    /// when the run failed before producing per-axis fit results (entry
-    /// pre-check rejection or a mid-run backend/quality-gate failure).
+    /// when the run failed before producing per-axis fit results.
     ResistanceTest {
         /// Board/profile metadata, always present.
         profile: ResistanceProfileReport,

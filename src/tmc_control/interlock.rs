@@ -15,11 +15,6 @@ use crate::state::tmc::{TMC_DISABLE_SIGNAL, TmcChannelState};
 
 /// True when a fault is latched in firmware, a disable is pending, or the
 /// channel's STATUS pin is asserted.
-///
-/// The three inputs are deliberately redundant: the ISRs set `FAULT_ACTIVE`
-/// and signal `TMC_DISABLE_SIGNAL`, and the board loop stores the polled pin
-/// level. Any one of them is enough to refuse a `STATUS_FLAGS` clear or an
-/// enable-pin assertion.
 pub fn fault_interlock_tripped(tmc: &TmcChannelState) -> bool {
     FAULT_ACTIVE.load(Relaxed)
         || TMC_DISABLE_SIGNAL.signaled()

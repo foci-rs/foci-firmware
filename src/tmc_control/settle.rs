@@ -6,17 +6,12 @@ use foci_tmc4671::spi::Tmc4671Spi;
 use crate::state::tmc::TmcChannelState;
 
 /// Acceptable residual following error after a completed move, in physical
-/// emitted-pulse counts. Within this window the controller is fighting encoder
-/// quantization and belt/motor compliance more than useful position error.
+/// emitted-pulse counts.
 pub const HOLD_SETTLE_DEADBAND_COUNTS: u32 = 5;
 
 /// Clear TMC4671 PID error accumulators.
 ///
-/// The current-loop sums can saturate during commissioning and step
-/// transients, then keep STATUS_FLAGS asserted even after the commanded
-/// position has returned to zero. Clearing all four sums at lifecycle
-/// boundaries removes stale integral state without changing configured
-/// gains or the active position target.
+/// Configured gains and the active position target are unchanged.
 pub async fn clear_pid_error_sums<B>(tmc: &mut Tmc4671Spi<B>) -> Result<(), ()>
 where
     B: SpiDevice<u8>,
@@ -41,13 +36,8 @@ where
 /// Snap the TMC4671 hold target to the measured actual position when within
 /// the settle deadband, then clear all PID error accumulators and STATUS_FLAGS.
 ///
-/// With ABN feedback active, `PID_POSITION_ACTUAL` is driven by encoder phase.
-/// Accepting tiny settled error by moving the internal TMC hold target to the
-/// measured actual position keeps firmware and Klipper logical step counts
-/// unchanged while preventing stale controller state from driving unnecessary
-/// corrective current. Per the TMC4671 datasheet, writing `PID_POSITION_ACTUAL`
-/// also writes the same value into `PID_POSITION_TARGET`, avoiding an unwanted
-/// move while re-synchronizing the position accumulator.
+/// Firmware and Klipper logical step counts are unchanged. Per the TMC4671
+/// datasheet, writing `PID_POSITION_ACTUAL` also writes `PID_POSITION_TARGET`.
 ///
 /// # Errors
 ///
@@ -71,14 +61,9 @@ where
         .read_register(PID_POSITION_ACTUAL)
         .await
         .map_err(|_| ())?;
-    // Units: position units per physical emitted pulse multiplied by physical
-    // emitted-pulse counts yields the position-unit settle deadband.
     let deadband = physical_step_width.saturating_mul(HOLD_SETTLE_DEADBAND_COUNTS);
     let error = (actual as i32).wrapping_sub(target as i32);
     if error.unsigned_abs() <= deadband {
-        // Writing PID_POSITION_ACTUAL also writes PID_POSITION_TARGET per the
-        // datasheet. Use that path here because it resets the TMC position
-        // accumulator and target together instead of only moving the target.
         tmc.write_register(PID_POSITION_ACTUAL, actual)
             .await
             .map_err(|_| ())?;

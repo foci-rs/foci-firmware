@@ -356,17 +356,17 @@ fn current_vector_uses_vector_report_flag() {
 fn current_step_success_records_settle_delays_and_restores_limit() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0) // saved MODE_RAMP_MODE_MOTION
-            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
-            .with_read(100) // ABN_DECODER_COUNT before
-            .with_read(1000) // ABN_DECODER_PPR
-            .with_read(0x0005_0000) // PID_TORQUE_FLUX_ACTUAL before
-            .with_read(0x0009_000a) // PID_TORQUE_FLUX_ACTUAL during
-            .with_read(0x000b_000c) // INTERIM_FOC_IQ_ID
-            .with_read(0x000d_000e) // INTERIM_FOC_UQ_UD_LIMITED
-            .with_read(0x0000_1234) // ADC_AGPI_A_RAW_ADC_VM_RAW
-            .with_read(120) // ABN_DECODER_COUNT after
-            .with_read(0x0006_0000); // PID_TORQUE_FLUX_ACTUAL after
+            .with_read(0)
+            .with_read(0xaaaa_bbbb)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0x0005_0000)
+            .with_read(0x0009_000a)
+            .with_read(0x000b_000c)
+            .with_read(0x000d_000e)
+            .with_read(0x0000_1234)
+            .with_read(120)
+            .with_read(0x0006_0000);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -463,17 +463,17 @@ fn current_step_success_records_settle_delays_and_restores_limit() {
 fn flux_current_step_drives_and_reports_flux_axis() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0) // saved MODE_RAMP_MODE_MOTION
-            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
-            .with_read(100) // ABN_DECODER_COUNT before
-            .with_read(1000) // ABN_DECODER_PPR
-            .with_read(0x0005_fffe) // PID_TORQUE_FLUX_ACTUAL before
-            .with_read(0x0009_0014) // PID_TORQUE_FLUX_ACTUAL during
-            .with_read(0x000b_000c) // INTERIM_FOC_IQ_ID
-            .with_read(0x000d_000e) // INTERIM_FOC_UQ_UD_LIMITED
-            .with_read(0x0000_1234) // ADC_AGPI_A_RAW_ADC_VM_RAW
-            .with_read(120) // ABN_DECODER_COUNT after
-            .with_read(0x0006_fff9); // PID_TORQUE_FLUX_ACTUAL after
+            .with_read(0)
+            .with_read(0xaaaa_bbbb)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0x0005_fffe)
+            .with_read(0x0009_0014)
+            .with_read(0x000b_000c)
+            .with_read(0x000d_000e)
+            .with_read(0x0000_1234)
+            .with_read(120)
+            .with_read(0x0006_fff9);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -572,10 +572,10 @@ fn busy_torque_samples_report_their_kind() {
 fn current_step_invalid_ppr_aborts_before_excitation() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0) // saved MODE_RAMP_MODE_MOTION
-            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
-            .with_read(100) // ABN_DECODER_COUNT before
-            .with_read(0); // ABN_DECODER_PPR -- invalid
+            .with_read(0)
+            .with_read(0xaaaa_bbbb)
+            .with_read(100)
+            .with_read(0);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -616,16 +616,16 @@ fn current_step_invalid_ppr_aborts_before_excitation() {
 fn current_step_exact_half_turn_aborts_via_post_measurement_error() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0) // saved MODE_RAMP_MODE_MOTION
-            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
-            .with_read(100) // ABN_DECODER_COUNT before
-            .with_read(1000) // ABN_DECODER_PPR
-            .with_read(0x0005_0000) // PID_TORQUE_FLUX_ACTUAL before
-            .with_read(0x0009_000a) // PID_TORQUE_FLUX_ACTUAL during
-            .with_read(0x000b_000c) // INTERIM_FOC_IQ_ID
-            .with_read(0x000d_000e) // INTERIM_FOC_UQ_UD_LIMITED
-            .with_read(0x0000_1234) // ADC_AGPI_A_RAW_ADC_VM_RAW
-            .with_read(600); // ABN_DECODER_COUNT after -- exact half turn from 100 at ppr 1000
+            .with_read(0)
+            .with_read(0xaaaa_bbbb)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0x0005_0000)
+            .with_read(0x0009_000a)
+            .with_read(0x000b_000c)
+            .with_read(0x000d_000e)
+            .with_read(0x0000_1234)
+            .with_read(600);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -660,27 +660,15 @@ fn current_step_exact_half_turn_aborts_via_post_measurement_error() {
 #[test]
 fn current_step_host_liveness_expiry_reports_dedicated_status_and_restores() {
     pollster::block_on(async {
-        // The pre-check reads (saved mode, saved position) are followed,
-        // after the pre-settle delay succeeds, by encoder-before, encoder
-        // PPR (must be non-zero), and torque-before -- all reached before
-        // the main delay this test targets.
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(555) // saved position actual
-            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
-            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
-            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+            .with_read(0x8000_0003)
+            .with_read(555)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
-        // duration_ms=150 makes the main delay 2 slices ([100, 50]); the
-        // pre-settle delay (CURRENT_STEP_SETTLE_MS=20, always 1 slice) is
-        // let through so this test reaches the SECOND checked-delay call
-        // site, not just the first, and exercises the final slice of a
-        // genuinely multi-slice delay. Checks: pre-settle pre-loop (1),
-        // pre-settle post-slice (2) -- both false, letting 20ms through --
-        // main pre-loop (3), main post-slice-1/100ms (4) -- both false --
-        // main post-slice-2/50ms, the FINAL slice (5) -- true.
         let mut calls = 0u32;
         let mut expire_during_main_delay_final_slice = || {
             calls += 1;
@@ -712,19 +700,8 @@ fn current_step_host_liveness_expiry_reports_dedicated_status_and_restores() {
             panic!("expected current step report");
         };
         assert_eq!(report.status, CURRENT_STEP_STATUS_HOST_LIVENESS);
-        // Proves the slicing actually ran inside this runner, not just
-        // inside the shared helper's own unit tests: pre-settle (20ms,
-        // one slice) plus two main-delay slices (100ms, 50ms) before
-        // detection on the final one.
         assert_eq!(delay.delays_ms, std::vec![20, 100, 50]);
 
-        // Same unconditional restore tail a genuine SPI failure already
-        // triggers: torque/flux zeroed, voltage limit and mode restored.
-        // The setup writes before the first checked delay (target zero,
-        // voltage limit, integrator clears, mode) already happened for
-        // real; assert only the trailing restore sequence, not the whole
-        // vector, so this test doesn't also have to hardcode the
-        // integrator sub-register write pairs.
         let raw_spi = tmc.into_inner();
         let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 4..];
         assert_eq!(
@@ -741,17 +718,10 @@ fn current_step_host_liveness_expiry_reports_dedicated_status_and_restores() {
 
 #[test]
 fn current_step_pre_settle_host_liveness_expiry_reports_dedicated_status() {
-    // Distinct from the test above: this one expires on the pre-settle
-    // delay itself (the FIRST checked-delay call site), catching a
-    // mistake where that specific call was left as a raw, unchecked
-    // `delay.delay_ms(...)` while the main-duration one was correctly
-    // converted -- the two call sites are independent substitutions and
-    // a per-site regression at only one of them would not be caught by
-    // testing only the other.
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(555); // saved position actual
+            .with_read(0x8000_0003)
+            .with_read(555);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -782,35 +752,22 @@ fn current_step_pre_settle_host_liveness_expiry_reports_dedicated_status() {
             panic!("expected current step report");
         };
         assert_eq!(report.status, CURRENT_STEP_STATUS_HOST_LIVENESS);
-        // No delay was ever recorded -- the very first liveness check,
-        // before the pre-settle delay's first slice, already caught it.
         assert!(delay.delays_ms.is_empty());
     });
 }
 
 #[test]
 fn current_step_post_settle_host_liveness_expiry_reports_dedicated_status() {
-    // Third and last call site in this function. `DiagnosticMockSpi`'s
-    // unstocked reads fall back to `register_values` (populated by prior
-    // writes to that address) or 0 (see its `Operation::Read` arm) --
-    // none of the INTERIM_* reads between the main delay and this one
-    // gate on a specific value (they are only stored into report fields),
-    // so no additional mock reads are needed beyond the same 5 this
-    // function's other two tests already use.
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(555) // saved position actual
-            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
-            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
-            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+            .with_read(0x8000_0003)
+            .with_read(555)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
-        // Checks: pre-settle pre-loop/post-slice (1, 2), main pre-loop/
-        // post-slice (3, 4) -- all false, letting both 20ms delays and
-        // every intervening register read through -- post-settle
-        // pre-loop (5) -- true.
         let mut calls = 0u32;
         let mut expire_at_post_settle = || {
             calls += 1;
@@ -842,8 +799,6 @@ fn current_step_post_settle_host_liveness_expiry_reports_dedicated_status() {
             panic!("expected current step report");
         };
         assert_eq!(report.status, CURRENT_STEP_STATUS_HOST_LIVENESS);
-        // Pre-settle and main delays (20ms each, single-slice) both ran in
-        // full; post-settle never started.
         assert_eq!(delay.delays_ms, std::vec![20, 20]);
 
         let raw_spi = tmc.into_inner();
@@ -899,10 +854,10 @@ fn torque_sample_not_ready_does_not_emit_detail() {
 fn current_torque_sample_invalid_ppr_aborts_before_excitation() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0) // saved MODE_RAMP_MODE_MOTION
-            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
-            .with_read(100) // ABN_DECODER_COUNT before
-            .with_read(0); // ABN_DECODER_PPR -- invalid
+            .with_read(0)
+            .with_read(0xaaaa_bbbb)
+            .with_read(100)
+            .with_read(0);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -943,22 +898,22 @@ fn current_torque_sample_invalid_ppr_aborts_before_excitation() {
 fn current_torque_sample_exact_half_turn_aborts_via_post_measurement_error() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0) // saved MODE_RAMP_MODE_MOTION
-            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
-            .with_read(100) // ABN_DECODER_COUNT before
-            .with_read(1000) // ABN_DECODER_PPR
-            .with_read(0) // PID_TORQUE_FLUX_ACTUAL before
-            .with_read(0) // INTERIM_PIDIN_TARGET_TORQUE
-            .with_read(0) // INTERIM_PIDIN_TARGET_FLUX
-            .with_read(0) // INTERIM_PIDOUT_TARGET_TORQUE
-            .with_read(0) // INTERIM_PIDOUT_TARGET_FLUX
-            .with_read(0) // INTERIM_PID_TORQUE_TARGET_TORQUE_ACTUAL
-            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR
-            .with_read(0) // PID_ERROR_PID_FLUX_ERROR
-            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR_SUM
-            .with_read(0) // PID_ERROR_PID_FLUX_ERROR_SUM
-            .with_read(0) // STATUS_FLAGS
-            .with_read(600); // ABN_DECODER_COUNT sample -- exact half turn from 100 at ppr 1000
+            .with_read(0)
+            .with_read(0xaaaa_bbbb)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(600);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -994,31 +949,31 @@ fn current_torque_sample_exact_half_turn_aborts_via_post_measurement_error() {
 fn current_torque_sample_success_reports_current_torque_sample_kind() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0) // saved MODE_RAMP_MODE_MOTION
-            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
-            .with_read(100) // ABN_DECODER_COUNT before
-            .with_read(1000) // ABN_DECODER_PPR
-            .with_read(0x0005_0000) // PID_TORQUE_FLUX_ACTUAL before
-            .with_read(0) // INTERIM_PIDIN_TARGET_TORQUE
-            .with_read(0) // INTERIM_PIDIN_TARGET_FLUX
-            .with_read(0) // INTERIM_PIDOUT_TARGET_TORQUE
-            .with_read(0) // INTERIM_PIDOUT_TARGET_FLUX
-            .with_read(0) // INTERIM_PID_TORQUE_TARGET_TORQUE_ACTUAL
-            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR
-            .with_read(0) // PID_ERROR_PID_FLUX_ERROR
-            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR_SUM
-            .with_read(0) // PID_ERROR_PID_FLUX_ERROR_SUM
-            .with_read(0) // STATUS_FLAGS
-            .with_read(110) // ABN_DECODER_COUNT sample
-            .with_read(0x0009_000a) // PID_TORQUE_FLUX_ACTUAL sample
-            .with_read(0x000b_000c) // INTERIM_FOC_IQ_ID
-            .with_read(0x000d_000e) // INTERIM_FOC_UQ_UD
-            .with_read(0) // INTERIM_FF_VELOCITY
-            .with_read(0) // INTERIM_FF_TORQUE
-            .with_read(0x000f_0010) // INTERIM_FOC_UQ_UD_LIMITED
-            .with_read(0x0000_1234) // ADC_AGPI_A_RAW_ADC_VM_RAW
-            .with_read(120) // ABN_DECODER_COUNT after
-            .with_read(0x0006_0000); // PID_TORQUE_FLUX_ACTUAL after
+            .with_read(0)
+            .with_read(0xaaaa_bbbb)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0x0005_0000)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(110)
+            .with_read(0x0009_000a)
+            .with_read(0x000b_000c)
+            .with_read(0x000d_000e)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0x000f_0010)
+            .with_read(0x0000_1234)
+            .with_read(120)
+            .with_read(0x0006_0000);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -1096,8 +1051,8 @@ fn position_offset_rejects_non_position_mode() {
 fn position_offset_spi_failure_attempts_offset_restore() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(0x1234_5678) // saved offset
+            .with_read(0x8000_0003)
+            .with_read(0x1234_5678)
             .fail_writes_to(PIDOUT_UQ_UD_LIMITS.addr());
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
@@ -1155,10 +1110,10 @@ fn position_offset_spi_failure_attempts_offset_restore() {
 fn position_torque_offset_sample_invalid_ppr_aborts_before_excitation() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(0x1234_5678) // saved offset
-            .with_read(100) // ABN_DECODER_COUNT before
-            .with_read(0); // ABN_DECODER_PPR -- invalid
+            .with_read(0x8000_0003)
+            .with_read(0x1234_5678)
+            .with_read(100)
+            .with_read(0);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -1201,22 +1156,22 @@ fn position_torque_offset_sample_invalid_ppr_aborts_before_excitation() {
 fn position_torque_offset_sample_exact_half_turn_aborts_via_post_measurement_error() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(0x1234_5678) // saved offset
-            .with_read(100) // ABN_DECODER_COUNT before
-            .with_read(1000) // ABN_DECODER_PPR
-            .with_read(0) // PID_TORQUE_FLUX_ACTUAL before
-            .with_read(0) // INTERIM_PIDIN_TARGET_TORQUE
-            .with_read(0) // INTERIM_PIDIN_TARGET_FLUX
-            .with_read(0) // INTERIM_PIDOUT_TARGET_TORQUE
-            .with_read(0) // INTERIM_PIDOUT_TARGET_FLUX
-            .with_read(0) // INTERIM_PID_TORQUE_TARGET_TORQUE_ACTUAL
-            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR
-            .with_read(0) // PID_ERROR_PID_FLUX_ERROR
-            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR_SUM
-            .with_read(0) // PID_ERROR_PID_FLUX_ERROR_SUM
-            .with_read(0) // STATUS_FLAGS
-            .with_read(600); // ABN_DECODER_COUNT sample -- exact half turn from 100 at ppr 1000
+            .with_read(0x8000_0003)
+            .with_read(0x1234_5678)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(600);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -1252,31 +1207,31 @@ fn position_torque_offset_sample_exact_half_turn_aborts_via_post_measurement_err
 fn position_torque_offset_sample_success_reports_position_torque_offset_kind() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved MODE_RAMP_MODE_MOTION -- must be position mode
-            .with_read(0x1234_5678) // saved PID_TORQUE_FLUX_OFFSET
-            .with_read(100) // ABN_DECODER_COUNT before
-            .with_read(1000) // ABN_DECODER_PPR
-            .with_read(0x0005_0000) // PID_TORQUE_FLUX_ACTUAL before
-            .with_read(0) // INTERIM_PIDIN_TARGET_TORQUE
-            .with_read(0) // INTERIM_PIDIN_TARGET_FLUX
-            .with_read(0) // INTERIM_PIDOUT_TARGET_TORQUE
-            .with_read(0) // INTERIM_PIDOUT_TARGET_FLUX
-            .with_read(0) // INTERIM_PID_TORQUE_TARGET_TORQUE_ACTUAL
-            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR
-            .with_read(0) // PID_ERROR_PID_FLUX_ERROR
-            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR_SUM
-            .with_read(0) // PID_ERROR_PID_FLUX_ERROR_SUM
-            .with_read(0) // STATUS_FLAGS
-            .with_read(110) // ABN_DECODER_COUNT sample
-            .with_read(0x0009_000a) // PID_TORQUE_FLUX_ACTUAL sample
-            .with_read(0x000b_000c) // INTERIM_FOC_IQ_ID
-            .with_read(0x000d_000e) // INTERIM_FOC_UQ_UD
-            .with_read(0) // INTERIM_FF_VELOCITY
-            .with_read(0) // INTERIM_FF_TORQUE
-            .with_read(0x000f_0010) // INTERIM_FOC_UQ_UD_LIMITED
-            .with_read(0x0000_1234) // ADC_AGPI_A_RAW_ADC_VM_RAW
-            .with_read(120) // ABN_DECODER_COUNT after
-            .with_read(0x0006_0000); // PID_TORQUE_FLUX_ACTUAL after
+            .with_read(0x8000_0003)
+            .with_read(0x1234_5678)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0x0005_0000)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0)
+            .with_read(110)
+            .with_read(0x0009_000a)
+            .with_read(0x000b_000c)
+            .with_read(0x000d_000e)
+            .with_read(0)
+            .with_read(0)
+            .with_read(0x000f_0010)
+            .with_read(0x0000_1234)
+            .with_read(120)
+            .with_read(0x0006_0000);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -1312,23 +1267,15 @@ fn position_torque_offset_sample_success_reports_position_torque_offset_kind() {
 #[test]
 fn current_torque_sample_host_liveness_expiry_reports_dedicated_status_and_restores() {
     pollster::block_on(async {
-        // Same shape as current-step: after the pre-settle delay succeeds,
-        // encoder-before, encoder PPR (non-zero), and torque-before are
-        // read before the main delay this test targets.
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(555) // saved position actual
-            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
-            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
-            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+            .with_read(0x8000_0003)
+            .with_read(555)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
-        // sample_delay_ms=150 makes the main delay 2 slices ([100, 50]);
-        // the pre-settle delay (20ms, 1 slice) is let through so this test
-        // reaches the SECOND checked-delay call site and its final slice,
-        // same reasoning as
-        // current_step_host_liveness_expiry_reports_dedicated_status_and_restores.
         let mut calls = 0u32;
         let mut expire_during_main_delay_final_slice = || {
             calls += 1;
@@ -1362,8 +1309,6 @@ fn current_torque_sample_host_liveness_expiry_reports_dedicated_status_and_resto
         assert_eq!(report.status, CURRENT_STEP_STATUS_HOST_LIVENESS);
         assert_eq!(delay.delays_ms, std::vec![20, 100, 50]);
 
-        // Same restore tail as current-step: target zeroed, voltage limit
-        // and position target restored, mode restored.
         let raw_spi = tmc.into_inner();
         let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 4..];
         assert_eq!(
@@ -1381,25 +1326,15 @@ fn current_torque_sample_host_liveness_expiry_reports_dedicated_status_and_resto
 #[test]
 fn position_offset_host_liveness_expiry_reports_dedicated_status_and_restores() {
     pollster::block_on(async {
-        // `run_position_torque_offset_sample_request` has no pre-settle
-        // delay -- its first (and only, before the post-settle) checked
-        // delay is the sample delay, reached only after reading saved
-        // mode, saved offset, encoder-before, encoder PPR (must be
-        // non-zero or EncoderDomain::new rejects it before the delay is
-        // ever reached), and torque-before, in that order. All five reads
-        // must be queued for the mock to get there.
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(0x1234_5678) // saved offset
-            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
-            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
-            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+            .with_read(0x8000_0003)
+            .with_read(0x1234_5678)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
-        // sample_delay_ms=150 is this function's FIRST checked delay (no
-        // pre-settle here), so 2 slices ([100, 50]): main pre-loop (1),
-        // post-slice-1/100ms (2), post-slice-2/50ms -- the final slice -- (3).
         let mut calls = 0u32;
         let mut expire_during_main_delay_final_slice = || {
             calls += 1;
@@ -1432,16 +1367,6 @@ fn position_offset_host_liveness_expiry_reports_dedicated_status_and_restores() 
         assert_eq!(report.status, CURRENT_STEP_STATUS_HOST_LIVENESS);
         assert_eq!(delay.delays_ms, std::vec![100, 50]);
 
-        // The unconditional restore tail is 3 writes (verified against
-        // the current source): saved offset restored, saved voltage
-        // limit restored, saved mode restored -- in that order. The
-        // 150ms retarget means, unlike the existing
-        // position_offset_spi_failure_attempts_offset_restore test (whose
-        // injected failure is the very FIRST write, so its expected
-        // vector has no preceding setup writes to skip), this run's
-        // setup writes (voltage limit, STATUS_FLAGS clear, the requested
-        // offset) succeed for real before the delay fails -- assert only
-        // the trailing 3-write restore sequence, not the whole vector.
         let raw_spi = tmc.into_inner();
         let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 3..];
         assert_eq!(
@@ -1457,14 +1382,10 @@ fn position_offset_host_liveness_expiry_reports_dedicated_status_and_restores() 
 
 #[test]
 fn current_torque_sample_pre_settle_host_liveness_expiry_reports_dedicated_status() {
-    // Same reasoning as current_step_pre_settle_host_liveness_expiry_reports_dedicated_status:
-    // an independent call site (this function's own pre-settle
-    // delay) needs its own regression coverage, since a mistake converting
-    // only the main delay would not be caught by the test above.
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(555); // saved position actual
+            .with_read(0x8000_0003)
+            .with_read(555);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -1501,15 +1422,13 @@ fn current_torque_sample_pre_settle_host_liveness_expiry_reports_dedicated_statu
 
 #[test]
 fn current_torque_sample_post_settle_host_liveness_expiry_reports_dedicated_status() {
-    // Third call site, same reasoning and mock-exhaustion-defaults-to-0
-    // argument as current_step_post_settle_host_liveness_expiry_reports_dedicated_status.
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(555) // saved position actual
-            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
-            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
-            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+            .with_read(0x8000_0003)
+            .with_read(555)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -1562,21 +1481,16 @@ fn current_torque_sample_post_settle_host_liveness_expiry_reports_dedicated_stat
 
 #[test]
 fn position_offset_post_settle_host_liveness_expiry_reports_dedicated_status() {
-    // No pre-settle delay in this function, so this is its second and
-    // last call site.
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(0x1234_5678) // saved offset
-            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
-            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
-            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+            .with_read(0x8000_0003)
+            .with_read(0x1234_5678)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
-        // Checks: main pre-loop/post-slice (1, 2) -- both false, letting
-        // the 20ms sample delay and every intervening read through --
-        // post-settle pre-loop (3) -- true.
         let mut calls = 0u32;
         let mut expire_at_post_settle = || {
             calls += 1;
@@ -1662,10 +1576,10 @@ fn voltage_step_rejects_non_position_mode() {
 fn voltage_step_failure_clears_external_voltage_and_restores_mode() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(100) // encoder before
-            .with_read(1000) // ppr
-            .with_read(0x0001_0000) // torque before
+            .with_read(0x8000_0003)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0x0001_0000)
             .fail_writes_to(UQ_UD_EXT.addr());
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
@@ -1729,9 +1643,9 @@ fn voltage_step_failure_clears_external_voltage_and_restores_mode() {
 fn voltage_step_invalid_ppr_aborts_before_excitation() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(100) // encoder before
-            .with_read(0); // ppr -- invalid
+            .with_read(0x8000_0003)
+            .with_read(100)
+            .with_read(0);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -1772,11 +1686,11 @@ fn voltage_step_invalid_ppr_aborts_before_excitation() {
 fn voltage_step_exact_half_turn_aborts_via_post_measurement_error() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(100) // encoder before
-            .with_read(1000) // ppr
-            .with_read(0x0001_0000) // torque before
-            .with_read(600); // encoder sample -- exact half turn from 100 at ppr 1000
+            .with_read(0x8000_0003)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0x0001_0000)
+            .with_read(600);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
@@ -1810,22 +1724,14 @@ fn voltage_step_exact_half_turn_aborts_via_post_measurement_error() {
 #[test]
 fn voltage_step_host_liveness_expiry_reports_dedicated_status_and_restores() {
     pollster::block_on(async {
-        // `run_voltage_step_request`'s only checked delay before the
-        // post-settle one is the sample delay, reached only after reading
-        // saved mode (must equal the position-mode constant, 0x8000_0003),
-        // encoder-before, encoder PPR (must be non-zero), and torque-before,
-        // in that order.
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
-            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
-            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+            .with_read(0x8000_0003)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
-        // sample_delay_ms=150 makes this delay 2 slices ([100, 50]):
-        // pre-loop (1), post-slice-1/100ms (2), post-slice-2/50ms -- the
-        // final slice -- (3).
         let mut calls = 0u32;
         let mut expire_during_main_delay_final_slice = || {
             calls += 1;
@@ -1858,11 +1764,6 @@ fn voltage_step_host_liveness_expiry_reports_dedicated_status_and_restores() {
         assert_eq!(report.status, CURRENT_STEP_STATUS_HOST_LIVENESS);
         assert_eq!(delay.delays_ms, std::vec![100, 50]);
 
-        // Restore tail on any mid-run failure: mode zeroed, external
-        // voltage zeroed, mode restored to the saved value. The setup
-        // writes before the delay (STATUS_FLAGS clear, the requested
-        // UQ_UD_EXT, open-loop mode) succeed for real first, so assert
-        // only the trailing 3-write restore sequence.
         let raw_spi = tmc.into_inner();
         let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 3..];
         assert_eq!(
@@ -1878,20 +1779,15 @@ fn voltage_step_host_liveness_expiry_reports_dedicated_status_and_restores() {
 
 #[test]
 fn voltage_step_post_settle_host_liveness_expiry_reports_dedicated_status() {
-    // Second and last call site: the post-settle delay after the main
-    // sample delay already covered above.
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
-            .with_read(0x8000_0003) // saved mode
-            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
-            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
-            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+            .with_read(0x8000_0003)
+            .with_read(100)
+            .with_read(1000)
+            .with_read(0);
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
-        // Checks: main pre-loop/post-slice (1, 2) -- both false, letting
-        // the 20ms sample delay and every intervening read through --
-        // post-settle pre-loop (3) -- true.
         let mut calls = 0u32;
         let mut expire_at_post_settle = || {
             calls += 1;
@@ -2035,22 +1931,11 @@ impl DiagnosticReplySink for RecordingDiagnosticSink {
 
 #[fixture_test]
 async fn resistance_test_request_dispatches_to_shared_runner() {
-    // Global per-channel state (`motor_sentinel`) is shared across the
-    // whole test binary; serialize against other suites that touch it.
     let channel_state = crate::state::tmc::tmc_channel(0).unwrap();
-    // Non-zero sentinel: ADC offsets are "ready", isolating the
-    // `NotArmed` rejection this test exercises from the `NotAdcReady`
-    // entry pre-check that runs first.
     channel_state
         .motor_sentinel
         .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
 
-    // Motor not enabled/calibrated: the shared runner's
-    // `ExternallyArmed` entry pre-check rejects with `NotArmed` before
-    // touching SPI. This proves the request reaches the shared runner
-    // (rather than being silently dropped) without needing the full
-    // register-level mock already covered by
-    // `resistance_identification::tests`.
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     let mut delay = MockDelay::default();
     let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
@@ -2232,8 +2117,6 @@ async fn resistance_test_uses_board_monotonic_for_sample_timing() {
     let mut runtime = ready_runtime();
     let mut delay = MockDelay {
         advance_on_delay: true,
-        // Each logical sample observes two 3 ms register-operation spans,
-        // exceeding the 5 ms sample-start period's service deadline.
         advance_on_now_us: 3_000,
         ..MockDelay::default()
     };
@@ -2294,16 +2177,7 @@ async fn resistance_test_uses_board_monotonic_for_sample_timing() {
 
 #[fixture_test]
 async fn resistance_test_rejects_during_homing_without_invoking_runner() {
-    // Mirrors `current_step_not_ready_returns_status_without_writes`:
-    // sibling diagnostics reject on `readiness.homing_active` /
-    // `readiness.stepper_active` before touching SPI. The resistance-test
-    // dispatch must do the same instead of only gating on
-    // enabled+calibrated, or a resistance test can switch the motor to
-    // open-loop voltage while homing or active stepping is in progress.
     let channel_state = crate::state::tmc::tmc_channel(0).unwrap();
-    // Non-zero sentinel and an enabled+calibrated runtime: every other
-    // entry gate (`NotAdcReady`, `NotArmed`) is satisfied, isolating the
-    // homing-readiness rejection this test exercises.
     channel_state
         .motor_sentinel
         .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
@@ -2342,10 +2216,6 @@ async fn resistance_test_rejects_during_homing_without_invoking_runner() {
         panic!("expected resistance test report");
     };
     assert_eq!(profile.oid, 11);
-    // Homing/active-stepping is a "busy, not ready" rejection, the same
-    // semantics the sibling voltage_step/current_step diagnostics report
-    // via `CURRENT_STEP_STATUS_NOT_READY` -- not `NotArmed`, which means
-    // the motor itself is not armed/calibrated for open-loop voltage.
     assert_eq!(run.status, CURRENT_STEP_STATUS_NOT_READY);
     assert!(axes.is_none());
     assert!(
@@ -2362,10 +2232,6 @@ fn resistance_backend_delay_ms_liveness_expiry_injects_one_shot_error_then_recov
         let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
         let mut power_stage = MockDiagnosticPowerStage::default();
         let mut calls = 0u32;
-        // 150ms delay slices into [100, 50]. Checks: pre-loop (1), after
-        // slice 1 (2), after slice 2/the final slice (3) -- expiring on the
-        // 3rd check proves detection after the LAST slice, not just before
-        // each one.
         let mut expire_after_final_slice = || {
             calls += 1;
             calls >= 3
@@ -2388,7 +2254,6 @@ fn resistance_backend_delay_ms_liveness_expiry_injects_one_shot_error_then_recov
 
         crate::resistance_identification::ResistanceBackend::delay_ms(&mut backend, 150).await;
 
-        // The one-shot injection fires on exactly the next register call...
         let first = crate::resistance_identification::ResistanceBackend::write_register(
             &mut backend,
             0x01,
@@ -2396,8 +2261,6 @@ fn resistance_backend_delay_ms_liveness_expiry_injects_one_shot_error_then_recov
         )
         .await;
 
-        // ...and is consumed: the restore sequence's subsequent writes are
-        // not suppressed by the persistent host_liveness_aborted flag.
         let second = crate::resistance_identification::ResistanceBackend::write_register(
             &mut backend,
             0x01,
@@ -2405,8 +2268,6 @@ fn resistance_backend_delay_ms_liveness_expiry_injects_one_shot_error_then_recov
         )
         .await;
 
-        // A third call proves the one-shot really doesn't re-arm itself --
-        // not just that exactly one Err happened somewhere in the sequence.
         let third = crate::resistance_identification::ResistanceBackend::write_register(
             &mut backend,
             0x01,
@@ -2414,13 +2275,9 @@ fn resistance_backend_delay_ms_liveness_expiry_injects_one_shot_error_then_recov
         )
         .await;
 
-        // `backend` (and the `ctx`/`delay` borrow it holds) is not used
-        // again after this point, so `delay.delays_ms` can be read directly
-        // below -- reading it any earlier, while `backend` is still going
-        // to be used again, would not satisfy the borrow checker.
         let aborted = backend.host_liveness_aborted();
 
-        assert!(aborted); // still true after two more calls -- persistent
+        assert!(aborted);
         assert!(first.is_err());
         assert!(second.is_ok());
         assert!(third.is_ok());
@@ -2456,21 +2313,18 @@ async fn resistance_test_request_host_liveness_expiry_reports_dedicated_status()
         .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
 
     let raw_spi = DiagnosticMockSpi::default()
-        .with_read(1600) // ReadSavedLimit: PIDOUT_UQ_UD_LIMITS >= max_abs_ud()
-        .with_read(0x0002_0032) // ReadMotorType: TwoPhase, 50 pole pairs
-        .with_read(7) // Setup(4) verify_read: PWM_SV_CHOP
-        .with_read(3999) // Setup(5) verify_read: PWM_MAXCNT
-        .with_read(2313) // Setup(6) verify_read: PWM_BBM_H_BBM_L = (9<<8)|9
-        .with_read(21_692_747) // Setup(7) verify_read: DSADC_MDEC_B_MDEC_A = (331<<16)|331
-        .with_read(0) // Setup(8): STATUS_FLAGS baseline
-        .with_read(0); // Setup(10): STATUS_FLAGS, no actionable bits
+        .with_read(1600)
+        .with_read(0x0002_0032)
+        .with_read(7)
+        .with_read(3999)
+        .with_read(2313)
+        .with_read(21_692_747)
+        .with_read(0)
+        .with_read(0);
     let mut tmc = Tmc4671Spi::new(raw_spi);
     let mut runtime = ready_runtime();
     let mut delay = MockDelay::default();
     let mut power_stage = MockDiagnosticPowerStage::default();
-    // Checks: pre-loop (1), post-slice-1/100ms (2), post-slice-2/100ms (3),
-    // post-slice-3/50ms -- the FINAL slice of zero_settle_ms's [100,100,50]
-    // -- (4).
     let mut calls = 0u32;
     let mut expire_during_settle_final_slice = || {
         calls += 1;
@@ -2510,7 +2364,6 @@ async fn resistance_test_request_host_liveness_expiry_reports_dedicated_status()
         crate::autotune::CommissionError::HostLivenessExpired.status_code()
     );
     assert_eq!(delay.delays_ms, std::vec![100, 100, 50]);
-    // The four-write safe-state restore ran in full, with real values.
     let raw_spi = tmc.into_inner();
     let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 4..];
     assert_eq!(
@@ -2529,12 +2382,6 @@ async fn resistance_test_request_host_liveness_expiry_reports_dedicated_status()
 
 #[fixture_test]
 async fn resistance_test_request_genuine_spi_failure_reports_generic_status() {
-    // Identical setup to the liveness test, no liveness signal at all --
-    // instead, fail the PHI_E_EXT write SelectAxis(1) makes. This is after
-    // Setup(0) has already set `energized = true`, so the shared runner's
-    // `fail()` path (not the entry-pre-check `complete_without_restore`
-    // path) runs, exercising the same four-write restore for a genuine,
-    // non-liveness reason.
     let channel_state = crate::state::tmc::tmc_channel(0).unwrap();
     channel_state
         .motor_sentinel
@@ -2583,9 +2430,6 @@ async fn resistance_test_request_genuine_spi_failure_reports_generic_status() {
         panic!("expected resistance test report");
     };
 
-    // Proves the two failure modes are actually distinguishable at the
-    // full report level: this status must differ from
-    // CommissionError::HostLivenessExpired.status_code() above.
     assert_eq!(
         run.status,
         crate::resistance_identification::ResistanceError::BackendIo.status_code()
@@ -2594,7 +2438,6 @@ async fn resistance_test_request_genuine_spi_failure_reports_generic_status() {
         run.status,
         crate::autotune::CommissionError::HostLivenessExpired.status_code()
     );
-    // Restore still ran, for a completely different reason.
     let raw_spi = tmc.into_inner();
     let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 4..];
     assert_eq!(

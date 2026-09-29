@@ -17,10 +17,8 @@ use crate::tmc_control::config::{TmcControlConfig, TmcControlHomingRefs, TmcCont
 use crate::tmc_control::signals::TmcControlSignals;
 use foci_tmc4671::pid::{PidGainPair, PidIGain};
 
-/// Consecutive failed state-1 homing attempts tolerated before failing closed.
 pub(crate) const HOMING_CLAMP_MAX_RETRIES: u8 = 3;
 
-/// Consecutive run-current restore attempts tolerated before failing closed.
 pub(crate) const HOMING_RESTORE_MAX_RETRIES: u8 = 2;
 
 /// Trace-only cached state. Core safety state stays in `TmcControlRuntime`.
@@ -99,22 +97,15 @@ pub struct HomingClockWindow {
     pub start: u32,
 }
 
-/// Lead, in Klipper clock ticks, by which homing preparation precedes the
-/// homing move's start clock: 4 ms.
-///
-/// Wide enough for one maintenance period plus the clamp's SPI writes on
-/// either board, and for the report-clock offset Klipper adds on a later MCU
-/// of a multi-MCU home, while short enough that only the decelerating tail
-/// of the previous move runs under the clamp.
+/// Lead in Klipper clock ticks (4 ms) by which homing preparation precedes the
+/// homing move's start clock.
 pub const fn homing_clamp_lead_ticks(clock_freq: u32) -> u32 {
     clock_freq / 250
 }
 
 /// Whether the homing preparation window has opened for `window`.
 ///
-/// Uses wrapping clock arithmetic; Klipper never schedules a homing start
-/// more than a fraction of the clock period ahead of the command that
-/// announces it.
+/// Uses wrapping clock arithmetic.
 pub fn homing_clamp_due(window: HomingClockWindow, clock_freq: u32) -> bool {
     let opens = window
         .start
@@ -234,9 +225,7 @@ impl TmcControlRuntime {
 
     /// Build a borrowed dispatch view over runtime-owned state.
     ///
-    /// The `tmc` and `stepper` args must be `'static` because `DispatchState`
-    /// borrows them as `&'static`; the three flag fields are borrowed mutably
-    /// for the lifetime of the returned view.
+    /// `tmc` and `stepper` must be `'static`.
     pub fn dispatch_state<'a>(
         &'a mut self,
         tmc: &'static TmcChannelState,
@@ -276,11 +265,6 @@ impl TmcControlRuntime {
     }
 
     /// Drop runtime-owned homing state without touching channel atomics.
-    ///
-    /// The clamped torque limit is restored by construction on every path that
-    /// calls this: shutdown de-energizes and every re-energize path rewrites
-    /// the limit from stored channel state, and a config reset makes the host
-    /// re-send the run current.
     pub fn clear_homing_runtime(&mut self) {
         self.stall_detector = None;
         self.homing_state_1_retries = 0;
@@ -295,18 +279,9 @@ impl TmcControlRuntime {
 
     /// Consume a config-reset queue flush request and return board actions.
     ///
-    /// Returns an empty action list when no queue flush was requested. When a
-    /// flush is pending, this consumes the signal, resets runtime-local and
-    /// channel-local state, and emits `StopNow` so the board shell can stop
-    /// physical stepping.
-    ///
-    /// The fault latch is retired only when neither containment leg reports a
-    /// fault: `tmc.status_pin_asserted`, which the board republishes from its
-    /// polled STATUS level, and a pending emergency disable. A host config
-    /// reset that coincides with a live fault would otherwise hand the board a
-    /// clean slate before its emergency path has read `STATUS_FLAGS`, losing
-    /// the diagnosis of which condition tripped. A caller that never publishes
-    /// `status_pin_asserted` leaves that leg reading clear.
+    /// Returns an empty list when no flush was requested; otherwise resets runtime-local and
+    /// channel-local state and emits `StopNow`. The fault latch is retired only when neither
+    /// `tmc.status_pin_asserted` nor a pending emergency disable reports a fault.
     pub fn poll_queue_flush(
         &mut self,
         signals: &TmcControlSignals,
@@ -318,7 +293,6 @@ impl TmcControlRuntime {
             return actions;
         }
 
-        // Sample before the channel reset, which clears the cached pin level.
         let contained = tmc.status_pin_asserted.load(Relaxed) || signals.disable_signal.signaled();
 
         self.reset_runtime_state();
@@ -410,13 +384,8 @@ impl TmcControlRuntime {
             .store(!self.feedforward_restoration_pending(), Relaxed);
     }
 
-    /// Force the pending terminal restore onto its safe-disarm path with
-    /// the safe-state-incomplete outcome. Used when a stimulus's
-    /// feedforward surfaces could not be restored within the driver's
-    /// retry budget. Reuses the operator-cancel machinery: the cancel
-    /// latch plus `drive_restore_cancel`, which runs the machine's
-    /// `force_safe_terminal` (safe-state register sequence, disarm, stop
-    /// post-action) and retires the engine in one step.
+    /// Force the pending terminal restore onto its safe-disarm path with the
+    /// safe-state-incomplete outcome.
     pub(crate) async fn force_restore_safe_state_incomplete<B>(
         &mut self,
         backend: &mut B,
@@ -447,10 +416,6 @@ impl TmcControlRuntime {
     }
 
     /// Install a new commissioning engine, replacing any existing one.
-    ///
-    /// Invalidates the feedforward-offset write cache: commissioning writes
-    /// `PID_VELOCITY_OFFSET`/`PID_TORQUE_FLUX_OFFSET` directly while a
-    /// commission engine is installed, bypassing the control tick's cache.
     pub fn set_commission_engine(&mut self, engine: CommissioningEngine) {
         self.commission_engine = Some(engine);
         self.applied_velocity_offset = None;
@@ -459,9 +424,6 @@ impl TmcControlRuntime {
 
     /// Remove and return the active commissioning engine without completing a
     /// breakaway-campaign breadcrumb.
-    ///
-    /// Invalidates the feedforward-offset write cache; see
-    /// [`Self::set_commission_engine`].
     pub fn take_commission_engine(&mut self) -> Option<CommissioningEngine> {
         self.applied_velocity_offset = None;
         self.applied_torque_flux_offset = None;
@@ -470,10 +432,7 @@ impl TmcControlRuntime {
 
     /// Complete a retained active breakaway cancellation, then remove its engine.
     ///
-    /// Callers must first restore their path-specific safe state. Non-breakaway
-    /// engines are removed without changing persistent breakaway evidence.
-    /// Invalidates the feedforward-offset write cache; see
-    /// [`Self::set_commission_engine`].
+    /// Callers must first restore their path-specific safe state.
     pub fn take_commission_engine_after_handled_stop(&mut self) -> Option<CommissioningEngine> {
         self.applied_velocity_offset = None;
         self.applied_torque_flux_offset = None;
@@ -541,12 +500,6 @@ impl TmcControlRuntime {
         }
     }
 
-    /// Clear the commissioning engine, unless a terminal restore is mid-flight.
-    ///
-    /// A pending restore owns the motor: dropping its bookkeeping here would
-    /// strand a half-armed motor with no record that a restore was running.
-    /// Latch a cancel request instead and let `drive_restore_cancel` retire
-    /// both slots once the safe-state sequence has actually run.
     fn clear_or_cancel_commission(&mut self) {
         if self.restore_machine.is_some() {
             self.restore_cancel_requested = true;
@@ -568,11 +521,6 @@ impl TmcControlRuntime {
             self.restore_machine.is_none(),
             "a terminal restore is already in flight on this channel"
         );
-        // Seed the pre-force status with the terminal's own cause, so a
-        // safe-state-incomplete escape that reads it before forcing sees the
-        // fault that put the channel on the restore path, not the machine's
-        // Shutdown default. `drive_restore_cancel` still overwrites this with
-        // `SafeStateIncomplete` immediately before the forced terminal.
         let status_error = match &result {
             CommissionTerminal::InnerFailed(error) | CommissionTerminal::OuterFailed(error) => {
                 Some(*error)
@@ -593,10 +541,6 @@ impl TmcControlRuntime {
     }
 
     /// Latch a cancel request for a pending terminal restore.
-    ///
-    /// Synchronous, so any exit path — including the sync quiesce helpers —
-    /// can mark the restore doomed. The slots stay populated until
-    /// [`Self::drive_restore_cancel`] has run the safe-state sequence.
     pub fn request_restore_cancel(&mut self) {
         if self.restore_machine.is_some() {
             self.restore_cancel_requested = true;
@@ -608,10 +552,6 @@ impl TmcControlRuntime {
         self.restore_cancel_requested
     }
 
-    /// Advance a pending terminal restore by one backend operation.
-    ///
-    /// Returns `None` while the restore still has work left, and the outcome
-    /// once it reaches its terminal.
     async fn poll_restore_outcome<B>(
         &mut self,
         backend: &mut B,
@@ -622,9 +562,6 @@ impl TmcControlRuntime {
     where
         B: CommissioningBackend,
     {
-        // The machine is advanced in place, never moved into a local across the
-        // await: the slot must read `Some` for every suspension point of the
-        // poll, so a torn-down poll cannot lose the machine that owns the motor.
         let step = {
             let machine = self.restore_machine.as_mut()?;
             let mut dispatch = crate::commission_dispatch::DispatchState::new(
@@ -656,10 +593,7 @@ impl TmcControlRuntime {
     }
 
     /// Advance a pending terminal restore and map a completed one to the
-    /// board-facing action.
-    ///
-    /// Returns `None` while the restore is still in flight; the caller must
-    /// poll again rather than stepping the engine.
+    /// board-facing action; `None` while it is still in flight.
     pub async fn poll_commissioning_terminal<B>(
         &mut self,
         backend: &mut B,
@@ -686,11 +620,6 @@ impl TmcControlRuntime {
     }
 
     /// Drive a latched cancel to safe state, then retire both slots.
-    ///
-    /// Runs the mandatory disarm/safe-state sequence with the caller's backend
-    /// and only then clears `restore_machine`, consumes the engine, and drops
-    /// the latch, so an interrupted teardown never leaves cleared bookkeeping
-    /// behind a half-restored motor.
     pub async fn drive_restore_cancel<B>(
         &mut self,
         backend: &mut B,
@@ -713,10 +642,6 @@ impl TmcControlRuntime {
                 crate::commission_dispatch::CommissionOutcome::Continue,
             );
         }
-        // Driven in place, never moved into a local across the await: both the
-        // machine slot and the latch must still read "restore in progress" at
-        // every suspension point of the safe-state sequence, and are retired
-        // only once it has actually run.
         let outcome = {
             let machine = self
                 .restore_machine
@@ -742,12 +667,10 @@ impl TmcControlRuntime {
         crate::commission_dispatch::RestoreStep::Done(outcome)
     }
 
-    /// Cancel this channel's in-flight commissioning run on operator
-    /// request. Returns `None` when `tmc.cancel_requested` was not set, or
-    /// when it was set but nothing on this channel needs cancelling (the
-    /// flag is still consumed in that case). The caller must emit the
-    /// returned reply itself, exactly as it already does for
-    /// `poll_commissioning_terminal`'s `Terminal` result.
+    /// Cancel this channel's in-flight commissioning run on operator request.
+    ///
+    /// Returns `None` when `tmc.cancel_requested` was not set or nothing needs cancelling
+    /// (the flag is consumed either way). The caller must emit the returned reply.
     pub async fn drive_operator_cancel<B>(
         &mut self,
         backend: &mut B,
@@ -763,18 +686,6 @@ impl TmcControlRuntime {
             return None;
         }
         if self.restore_machine.is_some() {
-            // Halt the step-queue stimulus before this branch drives its own
-            // disarm. `request_restore_cancel`/`drive_restore_cancel`
-            // eventually clear `motor_armed` (via `disarm_motor`), which
-            // stops the step-timer ISR from emitting further steps, but
-            // does not itself drain the queue, cancel the scheduler's
-            // stepper entry, or close the stimulus's motor-armed capture
-            // session (see `TmcChannelState::stimulus_restore_motor_armed`)
-            // -- a queue left undrained and a capture session left open
-            // corrupt the next stimulus session's own restore. Gated on
-            // there actually being a restore or engine to cancel: an idle
-            // cancel (neither present) must not touch the stimulus at all,
-            // or it stops unrelated in-flight motion.
             crate::commissioning::outer::position_tune::abort_stimulus(backend);
             self.request_restore_cancel();
             match self
@@ -792,10 +703,6 @@ impl TmcControlRuntime {
                 }
             }
         } else if let Some(engine) = self.commission_engine.as_ref() {
-            // Same rationale as the restore-machine branch above: halt the
-            // stimulus before this branch's own terminal restore drives its
-            // disarm, so a queue left undrained doesn't corrupt the next
-            // stimulus session's restore.
             crate::commissioning::outer::position_tune::abort_stimulus(backend);
             let kind = engine.kind();
             let mut machine = crate::commission_dispatch::TerminalRestoreMachine::start_cancelled(
@@ -827,15 +734,9 @@ impl TmcControlRuntime {
 
     /// Prepare an enable request up to the point where SPI or backend work begins.
     ///
-    /// Returns no action when the motor is already enabled, or when
-    /// the motor is uncalibrated and `auto_calibrate_on_enable_allowed` is not
-    /// set. Returns the required stepper post-action when the motor is calibrated,
-    /// so the board shell can drive the electrical arm verification and step/dir
-    /// arming without carrying the general reply-capable action buffer.
-    ///
-    /// This helper intentionally does not energize the motor; the caller's SPI
-    /// path and the auto-calibrate commissioning construction remain in the
-    /// request handler.
+    /// Returns no action when the motor is already enabled or uncalibrated without
+    /// `auto_calibrate_on_enable_allowed`; otherwise the required stepper post-action.
+    /// Does not energize the motor.
     pub fn prepare_enable_request(
         &mut self,
         tmc: &TmcChannelState,
@@ -850,8 +751,6 @@ impl TmcControlRuntime {
             {
                 return None;
             }
-            // Auto-calibrate construction stays in the request handler.
-            // This preflight helper must not energize the motor.
             return None;
         }
         Some(crate::commission_dispatch::StepperPostAction::ArmPreservePosition)
@@ -859,10 +758,8 @@ impl TmcControlRuntime {
 
     /// Prepare a disable request, emitting an immediate board stop action.
     ///
-    /// Clears `motor_enabled` and `calibrated` so the next enable request
-    /// requires a new calibration pass before it can arm. The returned
-    /// [`StepperAction::StopNow`] action must be processed by the board shell
-    /// before issuing any further SPI commands.
+    /// Clears `motor_enabled` and `calibrated`; the board must apply the returned
+    /// [`StepperAction::StopNow`] before issuing further SPI commands.
     pub fn prepare_disable_request(&mut self) -> BoardActions {
         let mut actions = BoardActions::new();
         push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
@@ -873,9 +770,7 @@ impl TmcControlRuntime {
 
     /// Clear runtime and shared step-acceptance state after a diagnostic trip.
     ///
-    /// The board must lower the physical enable GPIO and stop its step timer
-    /// before calling this synchronous bookkeeping method. It performs no SPI,
-    /// delay, allocation, or asynchronous work.
+    /// The board must lower the enable GPIO and stop its step timer first.
     pub fn contain_diagnostic_trip(&mut self) {
         self.motor_enabled = false;
         self.calibrated = false;
@@ -924,10 +819,7 @@ impl TmcControlRuntime {
 
     /// Invalidate the cached applied `PID_TORQUE_FLUX_OFFSET` value.
     ///
-    /// Call this after any write to that register outside the control tick's
-    /// own feedforward path (for example a diagnostic that writes a test
-    /// value and restores the prior one), so the next tick re-verifies rather
-    /// than trusting a value it never wrote.
+    /// Call after any write to that register outside the feedforward path.
     pub fn invalidate_torque_flux_offset_cache(&mut self) {
         self.applied_torque_flux_offset = None;
     }
@@ -976,13 +868,8 @@ impl TmcControlRuntime {
 
     /// Apply velocity and acceleration feedforward.
     ///
-    /// The velocity offset runs on every control tick. The acceleration offset
-    /// runs only when `slow_control_tick` is true, matching the board-local
-    /// decimation used by the surrounding maintenance path.
-    ///
-    /// Active feedforward SPI operations are best-effort to preserve existing
-    /// board behavior. Failed inactive velocity- and torque-offset clears are
-    /// propagated so the runtime retains its active latch and retries the clear.
+    /// The acceleration offset runs only when `slow_control_tick` is true. Active feedforward
+    /// SPI failures are best-effort; failed inactive-offset clears are propagated so the clear is retried.
     pub async fn apply_feedforward_tick<B>(
         &mut self,
         tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
@@ -1153,19 +1040,12 @@ impl TmcControlRuntime {
 
     /// Apply one channel's homing maintenance for a frozen homing state.
     ///
-    /// The caller owns global homing state advancement. This method only
-    /// performs per-channel TMC register work for the provided snapshot.
-    ///
-    /// State 1 suppresses the position integrator, clamps the torque/flux
-    /// current limit to the configured homing current, and arms the stall
-    /// detector. State 2 feeds the detector one target/actual position sample.
-    /// State 3 restores the stored run current and publishes the detector
-    /// result. A missing precondition or an exhausted write-retry budget
-    /// returns [`HomingMaintenanceResult::FailClosed`], which the board must
-    /// translate into an emergency disable.
-    ///
-    /// The clamp writes `PID_TORQUE_FLUX_LIMITS` directly and never mutates the
-    /// stored run-current limit in `TmcChannelState`.
+    /// State 1 suppresses the position integrator, clamps the torque/flux limit to the homing
+    /// current, and arms the stall detector. State 2 feeds the detector one sample. State 3
+    /// restores the stored run current and publishes the detector result. A missing
+    /// precondition or exhausted retry budget returns [`HomingMaintenanceResult::FailClosed`],
+    /// which the board must translate into an emergency disable. The stored run-current limit
+    /// is never mutated.
     pub async fn apply_homing_channel_tick<B>(
         &mut self,
         tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
@@ -1400,13 +1280,6 @@ impl TmcControlRuntime {
         }
     }
 
-    /// Leave state 3, then promote a pass that registered during the restore.
-    ///
-    /// The order matters: the registration handler preempts this task and
-    /// runs to completion, so it lands either before the exchange (it saw 3,
-    /// set the flag, and the swap picks it up) or after it (it saw 0 and took
-    /// the idle path itself). Consuming the flag before leaving 3 would let a
-    /// registration in between set a flag nothing ever reads.
     fn leave_restore_pending(homing: &TmcControlHomingRefs<'_>) {
         if homing
             .state
@@ -1420,10 +1293,8 @@ impl TmcControlRuntime {
 
     /// Apply the shared per-channel slow PID and homing policy.
     ///
-    /// Board shells with multi-channel loops can use this helper before their
-    /// own status polling and trace transport logic. A non-ready homing result
-    /// means the caller should skip later slow-maintenance work for this
-    /// channel until the next slow tick.
+    /// A non-ready homing result means the caller should skip later slow-maintenance work
+    /// for this channel until the next slow tick.
     pub async fn apply_slow_channel_maintenance_tick<B>(
         &mut self,
         tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
@@ -1464,12 +1335,8 @@ impl TmcControlRuntime {
 
     /// Compute the requested control period in microseconds from current state.
     ///
-    /// Returns [`crate::tmc::CONTROL_PERIOD_IDLE_US`] whenever the motor is
-    /// disabled or `Self::planner_paths_allowed` is false, otherwise
-    /// [`crate::tmc::CONTROL_PERIOD_ACTIVE_US`].
-    ///
-    /// # Parameters
-    /// - `refs`: Borrowed channel atomics for this motor.
+    /// Returns [`crate::tmc::CONTROL_PERIOD_IDLE_US`] when the motor is disabled or
+    /// `Self::planner_paths_allowed` is false, otherwise [`crate::tmc::CONTROL_PERIOD_ACTIVE_US`].
     pub fn control_period_us(&self, refs: TmcControlStateRefs<'_>) -> u32 {
         if !self.motor_enabled || !self.planner_paths_allowed(refs) {
             return crate::tmc::CONTROL_PERIOD_IDLE_US;
@@ -1477,8 +1344,6 @@ impl TmcControlRuntime {
         crate::tmc::CONTROL_PERIOD_ACTIVE_US
     }
 
-    /// Begin a terminal restore and poll it to completion, as the board's
-    /// commission unit does across ticks.
     #[cfg(test)]
     pub(crate) async fn drive_commissioning_terminal_for_test<B>(
         &mut self,
@@ -1603,33 +1468,21 @@ impl TmcControlRuntime {
     }
 }
 
-/// TMC4671 STATUS_FLAGS bit 26: ADC current clipped (overcurrent).
 const STATUS_ADC_I_CLIPPED: u32 = 1 << 26;
 
-/// Whether a STATUS_FLAGS read indicates ADC current clipping (overcurrent).
-///
-/// A failed register read is never coerced into a clean STATUS_FLAGS value:
-/// it carries no evidence either way and must report `false` here, the same
-/// as a genuine non-clipped read, rather than being silently indistinguishable
-/// from a healthy chip at the call site.
+/// Whether a STATUS_FLAGS read indicates ADC current clipping; a failed read reports `false`.
 pub fn is_adc_current_clipped(status_flags: Result<u32, ()>) -> bool {
     matches!(status_flags, Ok(flags) if flags & STATUS_ADC_I_CLIPPED != 0)
 }
 
-/// Which emergency-disable shutdown message a STATUS_FLAGS poll (or set of
-/// polls, for a multi-channel board) selects.
+/// Which emergency-disable shutdown message a STATUS_FLAGS poll selects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum EmergencyDisableFault {
-    /// ADC current clipped (overcurrent) — the most specific, actionable
-    /// fault; wins over the other two regardless of poll order.
+    /// ADC current clipped (overcurrent); wins over the other variants.
     AdcCurrentClipped,
-    /// The STATUS_FLAGS read itself failed, carrying no fault evidence
-    /// either way. Distinct from [`Self::Generic`] so a transport error is
-    /// never indistinguishable from a genuine unclassified fault bit.
+    /// The STATUS_FLAGS read itself failed.
     StatusReadFailed,
-    /// A non-ADC-clip fault bit was set, or all attempted reads succeeded
-    /// with no bit set (reaching the emergency-disable path at all implies
-    /// something else already triggered it).
+    /// A non-ADC-clip fault bit was set, or no bit was set.
     Generic,
 }
 
@@ -1644,11 +1497,9 @@ pub fn classify_emergency_disable_fault(status_flags: Result<u32, ()>) -> Emerge
     }
 }
 
-/// Combines one channel's classification into a running multi-channel
-/// aggregate, in priority order: [`EmergencyDisableFault::AdcCurrentClipped`]
-/// beats [`EmergencyDisableFault::StatusReadFailed`] beats
-/// [`EmergencyDisableFault::Generic`], regardless of which channel produced
-/// which outcome or the order channels are folded in.
+/// Fold one channel's classification into a multi-channel aggregate; priority is
+/// [`EmergencyDisableFault::AdcCurrentClipped`] over [`EmergencyDisableFault::StatusReadFailed`]
+/// over [`EmergencyDisableFault::Generic`].
 pub fn combine_emergency_disable_fault(
     so_far: EmergencyDisableFault,
     channel: EmergencyDisableFault,

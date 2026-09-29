@@ -1,7 +1,4 @@
-//! Pure USB trace transport helpers.
-//!
-//! This module owns no board queues, USB wakeups, timestamps, boot IDs, or
-//! metadata policy. Board crates supply headers and queue storage.
+//! USB trace transport helpers.
 
 use core::sync::atomic::{AtomicU16, Ordering};
 
@@ -204,8 +201,8 @@ pub fn build_metadata_payload(
     metadata_push(
         &mut payload,
         &[
-            1, // metadata schema
-            1, // trace feature revision
+            1,
+            1,
             inputs.sources.len() as u8,
             inputs.skipped_sample_counter_count,
         ],
@@ -586,14 +583,7 @@ mod tests {
 
     fn expected_metadata_payload_for_two_channels() -> heapless::Vec<u8, METADATA_PAYLOAD_MAX> {
         let mut expected = heapless::Vec::<u8, METADATA_PAYLOAD_MAX>::new();
-        expected
-            .extend_from_slice(&[
-                1, // metadata schema
-                1, // trace feature revision
-                5, // source count
-                3, // skipped sample counter count
-            ])
-            .unwrap();
+        expected.extend_from_slice(&[1, 1, 5, 3]).unwrap();
         expected
             .extend_from_slice(&260_000_000u32.to_le_bytes())
             .unwrap();
@@ -772,7 +762,7 @@ mod tests {
         assert_eq!(payload[0], 2);
         assert_eq!(payload[1], 3);
         assert_eq!(&payload[2..4], &0x1234u16.to_le_bytes());
-        assert_eq!(payload[4], 4); // arg_count clamped from 5 to 4
+        assert_eq!(payload[4], 4);
         assert_eq!(&payload[8..12], &11i32.to_le_bytes());
         assert_eq!(&payload[12..16], &(-22i32).to_le_bytes());
         assert_eq!(&payload[16..20], &33i32.to_le_bytes());

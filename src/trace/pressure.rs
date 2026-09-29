@@ -1,8 +1,4 @@
-//! Shared trace pressure counters and policy.
-//!
-//! This module owns board-global trace-health telemetry. It deliberately does
-//! not own USB queues, DWT reads, frame emission, metadata, status source
-//! layout, or board-specific step timing.
+//! Board-global trace-health counters and status-throttle policy.
 
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 
@@ -161,8 +157,6 @@ impl TracePressureRuntime {
         if pending_change {
             let previous = self.last_status_change_emit_tick.load(Ordering::Relaxed);
             if control_tick.wrapping_sub(previous) < 10 {
-                // Preserve the existing behavior: a throttled status-change
-                // event also suppresses an otherwise regular status sample.
                 self.suppressed_status_change_count
                     .fetch_add(1, Ordering::Relaxed);
                 return false;

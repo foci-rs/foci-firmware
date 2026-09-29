@@ -1,38 +1,12 @@
 //! USB trace stream protocol encoding.
 //!
-//! This module owns the FTRC wire format. It performs no USB I/O and
-//! no TMC register reads; board crates provide samples and transport.
+//! FTRC wire format; performs no I/O.
 
 #![cfg(feature = "trace")]
 
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
-/// Firmware trace protocol version. Version 23 adds `EVENT_PHASE_BOUNDARY`
-/// (event id 12, subsystem `SUBSYSTEM_STEP_TIMER`): a one-shot marker for an
-/// accel/cruise/decel phase-class transition, detected in the step-queue ISR
-/// independent of the critical-frame sampler's rate. Version 22 replaced the
-/// computed
-/// critical position_error with the chip's PID_POSITION_ERROR read and
-/// appended the sampler-budget fields to the status payload. Version 21
-/// adds `stop_rung_index` to
-/// the breakaway discovery terminal record: the rung the discovery walk had
-/// reached when it stopped, distinct from the breakaway probe's rung (which
-/// is constant per ladder and appears elsewhere in the record). Version 20
-/// adds the velocity feedforward clamp-engaged flag to the critical sample,
-/// at byte 83 bit 0. Version 19 adds `error_code` to the
-/// breakaway campaign terminal record, so a confirmed acceptance whose
-/// Integral plan build was refused names the `CommissionError` behind it
-/// rather than leaving the terminal cause self-contradictory. Version 18
-/// adds the breakaway rejected-recovery-rest record, the only evidence that
-/// explains a `velocity_rest_not_confirmed` terminal: it pairs the
-/// scored-rest selector's per-suffix verdicts with the settle displacement
-/// bounds that gate the one-count fallback. Only rejections are reported, so
-/// an accepted campaign emits none. Version 17 added `error_code` to the
-/// breakaway discovery terminal, so a `*_internal_fault` names the
-/// `CommissionError` behind it rather than leaving the fault unattributable.
-/// Version 16 added the measured `moving_pid_output_peak` to the breakaway
-/// raw-observation record. Version 15 published the
-/// physical-excursion upward-probe contract.
+/// Firmware trace protocol version.
 pub const PROTOCOL_VERSION: u8 = 23;
 /// Fixed envelope length in bytes.
 pub const HEADER_LEN: usize = 32;
@@ -131,9 +105,6 @@ pub const METADATA_SOURCE_MAX: usize = 16;
 /// Maximum metadata payload bytes accepted by firmware.
 pub const METADATA_PAYLOAD_MAX: usize = 192;
 /// Maximum frame bytes stored in firmware queues.
-///
-/// Critical frames still obey [`CRITICAL_FRAME_BUDGET`]. This larger storage
-/// exists for low-rate metadata frames and for 64-byte USB packet chunking.
 pub const FRAME_BUF_CAPACITY: usize = 256;
 
 /// Trace frame header fields excluding fixed magic/version values.
@@ -227,9 +198,8 @@ pub fn frame_sequence(frame: &FrameBuf) -> u32 {
 
 /// Return true when `candidate` should be emitted no later than `other`.
 ///
-/// Sequence numbers are compared in the RFC 1982 style half-range window. The
-/// trace queues are tiny relative to `u32::MAX`, so values exactly half a range
-/// apart are treated as not before to avoid guessing.
+/// Sequence numbers compare in an RFC 1982 half-range window; values exactly
+/// half a range apart are treated as not before.
 pub fn sequence_before_or_equal(candidate: u32, other: u32) -> bool {
     candidate == other || other.wrapping_sub(candidate) < (1u32 << 31)
 }
@@ -294,13 +264,9 @@ pub struct CriticalSample {
     pub step_position: i32,
     /// TMC position actual.
     pub tmc_position_actual: i32,
-    /// TMC4671 `PID_POSITION_ERROR` (target minus actual, position units), read
-    /// from the chip immediately after `PID_POSITION_ACTUAL`. A register read,
-    /// not a host-side difference; sign as the chip defines it.
+    /// TMC4671 `PID_POSITION_ERROR` register read, sign as the chip defines it.
     pub position_error: i32,
     /// Software command rate in TMC position counts per PWM cycle.
-    ///
-    /// This is derived from Klipper STEP/DIR timing. It is not a TMC register read.
     pub target_velocity: i32,
     /// TMC velocity actual.
     pub pid_velocity_actual: i32,
@@ -510,7 +476,6 @@ pub fn encode_critical_payload(sample: &CriticalSample, out: &mut [u8; CRITICAL_
     } else {
         0
     };
-    // Bytes 84..88 are reserved and always zero.
     put_i32(out, 84, 0);
 }
 

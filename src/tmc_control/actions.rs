@@ -113,7 +113,6 @@ pub enum StepperAction {
 }
 
 /// One immediate effect for the board shell to apply.
-///
 pub enum BoardAction {
     /// Enter Klipper shutdown with the provided reason.
     Shutdown(ShutdownReason),
@@ -124,10 +123,6 @@ pub enum BoardAction {
 }
 
 /// Fixed-capacity list of board actions emitted by one runtime call.
-///
-/// Capacity proof: current paths emit at most three actions
-/// (stop, shutdown, and one arm action). Keep capacity at 8 so a
-/// future path can add compact routing actions without silently dropping safety work.
 pub type BoardActions = heapless::Vec<BoardAction, 8>;
 
 const _: () = assert!(core::mem::size_of::<BoardActions>() <= 456);
@@ -166,8 +161,4 @@ pub enum ScheduledCommissionTickAction {
     },
 }
 
-// This routing enum still carries the pre-existing terminal reply so the board
-// can preserve stop-trace -> stepper action -> reply ordering. Keep it at the
-// compact size; continuation evidence must never add a second
-// inline reply carrier.
 const _: () = assert!(core::mem::size_of::<ScheduledCommissionTickAction>() <= 1_400);

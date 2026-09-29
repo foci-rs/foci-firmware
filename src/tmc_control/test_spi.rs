@@ -54,22 +54,16 @@ impl RuntimeMockSpi {
             .any(|addr| *addr == register.addr())
     }
 
-    /// Read back every verified write's own value instead of a seeded read.
     pub(crate) fn echo_writes(mut self) -> Self {
         self.echo_writes = true;
         self
     }
 
-    /// Fail every register read.
     pub(crate) fn fail_reads(mut self) -> Self {
         self.fail_reads = true;
         self
     }
 
-    /// Run `handler` while the write to `addr` is in flight, modelling a
-    /// config handler preempting a drain mid-apply. `handler` stands in for a
-    /// `tmc_set_*` body, so it should both record its value and raise its
-    /// pending bit, in that order.
     pub(crate) fn race_pending_config_on_write(
         mut self,
         addr: u8,
@@ -186,7 +180,6 @@ impl embedded_hal::spi::SpiDevice<u8> for RuntimeMockSpi {
     }
 }
 
-/// Enable pin stand-in that records its level.
 #[derive(Debug, Default)]
 pub(crate) struct TestPin {
     pub(crate) high: bool,
@@ -208,7 +201,6 @@ impl embedded_hal::digital::OutputPin for TestPin {
     }
 }
 
-/// Monotonic clock the test hooks report.
 pub(crate) static ELAPSED_US: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) static TEST_CONFIG: TmcConfig = TmcConfig {
@@ -237,7 +229,6 @@ pub(crate) static TEST_FEEDBACK_CONFIGS: [FeedbackConfig; 8] = {
     configs
 };
 
-/// Board hooks for driver tests.
 pub(crate) struct TestHooks;
 
 impl CommissionBackendHooks for TestHooks {
@@ -260,13 +251,9 @@ impl CommissionBackendHooks for TestHooks {
     async fn commission_delay_us(_us: u32) {}
 }
 
-/// Backend over the mock SPI, the same type the boards build over real hardware.
 pub(crate) type TestBackend<'a> =
     SharedCommissioningBackend<'a, RuntimeMockSpi, TestPin, TestHooks>;
 
-/// Mock SPI recording raw transaction buffers, with failure after N writes.
-///
-/// Complements [`RuntimeMockSpi`], which fails per register address instead.
 #[derive(Default)]
 pub(crate) struct MockRawSpi {
     pub(crate) writes: std::vec::Vec<std::vec::Vec<u8>>,

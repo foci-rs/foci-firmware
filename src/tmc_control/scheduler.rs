@@ -32,7 +32,6 @@ pub enum UnitClass {
 }
 
 impl UnitClass {
-    /// Tie-break rank among non-commission classes; lower wins.
     const fn rank(self) -> u8 {
         match self {
             UnitClass::Commission | UnitClass::Restore => 0,
@@ -123,11 +122,8 @@ pub enum ChannelMode {
 /// Scheduler-owned state of one open 1 ms maintenance group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct MaintenanceGroup {
-    /// Homing state observed when the group opened; every unit uses it.
     homing_snapshot: u8,
-    /// Bit `ch` set once channel `ch` has completed (or been skipped).
     done: u8,
-    /// The finalize unit is the only thing left.
     finalize_pending: bool,
 }
 
@@ -161,10 +157,6 @@ pub struct ChannelScheduler<const N: usize> {
     audit_stats: SourceStats,
     bootstrap_stats: SourceStats,
     rr_cursor: u8,
-    /// Bit `ch` set once channel `ch` has taken its `Fast` turn in the current
-    /// round. The cursor advances once the round completes, not once per pick:
-    /// a whole cohort of picks would otherwise wrap it back to where it
-    /// started and hand the same channel the first slot at every grid point.
     rr_served: u8,
     in_flight: Option<Unit>,
 }
@@ -577,8 +569,6 @@ impl<const N: usize> ChannelScheduler<N> {
         ((1u16 << N) - 1) as u8
     }
 
-    /// Bit `ch` set for every channel currently in `Ready`, i.e. every channel
-    /// a `Fast` round can expect a turn from.
     fn ready_mask(&self) -> u8 {
         let mut mask = 0u8;
         for (idx, slot) in self.channels.iter().enumerate() {
@@ -590,8 +580,6 @@ impl<const N: usize> ChannelScheduler<N> {
     }
 }
 
-/// Advance a periodic deadline to the first strictly future grid point and
-/// report how many grid points were skipped.
 fn advance_grid(previous_deadline_us: u64, period_us: u64, now_us: u64) -> (u64, u32) {
     match next_grid_deadline(previous_deadline_us, period_us, now_us) {
         Ok(next) => {
@@ -615,8 +603,6 @@ mod tests {
         s
     }
 
-    /// Drive the scheduler over `[start, end)` with zero-duration units and
-    /// count how many `Fast` units each channel received.
     fn service_counts<const N: usize>(
         s: &mut ChannelScheduler<N>,
         start: u64,
@@ -649,7 +635,6 @@ mod tests {
     #[test]
     fn unit_duration_does_not_stretch_cadence() {
         let mut s = ready(0, [100]);
-        // Every unit takes 40 us; the deadline grid must stay at 100 us.
         let mut now = 0;
         let mut fast_deadlines = [0u64; 5];
         let mut seen = 0;
@@ -674,12 +659,10 @@ mod tests {
         let unit = s.pick(0, 0).unwrap();
         assert_eq!(unit.class, UnitClass::Fast);
         s.record(0, 0);
-        // Sleep through 4 grid points (100, 200, 300, 400); wake at 450.
         let unit = s.pick(450, 0).unwrap();
         assert_eq!(unit.class, UnitClass::Fast);
         assert_eq!(unit.deadline_us, 100);
         s.record(450, 0);
-        // No burst: the next fast unit is at 500, not 200.
         assert!(s.pick(450, 0).is_none());
         assert_eq!(s.earliest_due_us(), Some(500));
         let stats = s.fast_stats(0);
@@ -716,19 +699,11 @@ mod tests {
         let idle_period_us = u64::from(crate::tmc::CONTROL_PERIOD_IDLE_US);
         let fast_period_us: u32 = 1_000;
 
-        // Channel starts Ready-but-disabled at the new idle period.
         let mut s = ready(0, [crate::tmc::CONTROL_PERIOD_IDLE_US]);
         let mut now = 0u64;
         let mut fast_deadlines = std::vec::Vec::new();
         let mut enable_time = None;
 
-        // Collect two Fast-class deadlines, draining every other due unit
-        // (maintenance/audit/finalize, the same pattern
-        // unit_duration_does_not_stretch_cadence above uses) transparently
-        // in between. The motor enables immediately after the first Fast
-        // pick -- the earliest the scheduler could possibly notice is its
-        // next already-armed due time, which is the second Fast pick,
-        // still governed by the stale idle period.
         while fast_deadlines.len() < 2 {
             match s.pick(now, 0) {
                 Some(unit) => {
@@ -745,22 +720,10 @@ mod tests {
         }
         let enable_time = enable_time.unwrap();
 
-        // Bound: the first pick after enable (the second Fast pick, still
-        // governed by the stale idle-rate due time) occurs no more than
-        // one idle period after the enable event.
         assert!(fast_deadlines[1] - enable_time <= idle_period_us);
 
-        // At this pick, drive_fast now observes motor_enabled == true and
-        // returns the fast period via Reschedule; the board applies it via
-        // set_fast_period afterward, exactly as it does today for any
-        // other Reschedule outcome (main.rs:983-985). record() for this
-        // pick already ran above, using the still-idle period, mirroring
-        // main.rs calling scheduler.record() before handling the outcome
-        // (main.rs:975-976).
         s.set_fast_period(0, fast_period_us, fast_deadlines[1]);
 
-        // The *next* Fast pick reflects the fast period, not another idle
-        // wait -- confirming the transition actually took effect.
         let next_fast_deadline = loop {
             match s.pick(now, 0) {
                 Some(unit) => {
@@ -788,17 +751,11 @@ mod tests {
         let second = s.pick(0, 0).unwrap();
         s.record(0, 0);
         assert_eq!((first.channel, second.channel), (0, 1));
-        // The cursor advances once the round completes, so the next grid point
-        // starts with the channel that went second here.
         let third = s.pick(100, 0).unwrap();
         s.record(100, 0);
         let fourth = s.pick(100, 0).unwrap();
         s.record(100, 0);
         assert_eq!((third.channel, fourth.channel), (1, 0));
-        // Three channels make the rotation visible. Deadline still comes
-        // first: at t=450 channel 1 is overdue from t=200 and goes first;
-        // channels 0 and 2 then tie at 450 and the cursor, which sits just
-        // past channel 1, puts channel 2 ahead of channel 0.
         let mut t = ready(0, [100, 100, 100]);
         let mut order = [0u8; 3];
         for slot in &mut order {
@@ -818,8 +775,6 @@ mod tests {
         assert_eq!(later, [1, 2, 0]);
     }
 
-    /// Serve every channel at each of several grid points and report which
-    /// channel went first at each one.
     fn first_served_per_grid<const N: usize>(
         s: &mut ChannelScheduler<N>,
         period_us: u64,
@@ -859,12 +814,10 @@ mod tests {
     #[test]
     fn maintenance_group_runs_every_ready_channel_then_finalizes_with_one_snapshot() {
         let mut s = ready(0, [1_000, 1_000]);
-        // Fast ticks at t=0 first (they are due and earliest).
         let _ = s.pick(0, 0).unwrap();
         s.record(0, 0);
         let _ = s.pick(0, 0).unwrap();
         s.record(0, 0);
-        // Maintenance is due at t=1000 with homing_state = 3.
         let mut classes = [UnitClass::Fast; 5];
         let mut i = 0;
         while let Some(unit) = s.pick(1_000, 3) {
@@ -873,7 +826,6 @@ mod tests {
             if unit.class == UnitClass::Maintenance {
                 assert_eq!(s.maintenance_group().unwrap().homing_snapshot(), 3);
             }
-            // A different homing state during the group must not change the snapshot.
             s.record(1_000, 0);
         }
         assert_eq!(
@@ -897,16 +849,13 @@ mod tests {
         s.record(0, 0);
         let _ = s.pick(0, 0).unwrap();
         s.record(0, 0);
-        // At t=1000 both fast ticks tie with maintenance and win by class.
         let _ = s.pick(1_000, 7).unwrap();
         s.record(1_000, 0);
         let _ = s.pick(1_000, 7).unwrap();
         s.record(1_000, 0);
-        // The group opened at the first t=1000 pick with snapshot 7.
         let unit = s.pick(1_000, 7).unwrap();
         assert_eq!((unit.class, unit.channel), (UnitClass::Maintenance, 0));
         s.record(1_000, 0);
-        // Homing state changes to 8 before channel 1's unit is picked.
         let unit = s.pick(1_000, 8).unwrap();
         assert_eq!((unit.class, unit.channel), (UnitClass::Maintenance, 1));
         assert_eq!(s.maintenance_group().unwrap().homing_snapshot(), 7);
@@ -1111,10 +1060,6 @@ mod tests {
 
     #[test]
     fn maintenance_cannot_be_starved_by_fast_ticks() {
-        // One channel at 100 us whose unit always takes 100 us: fast is due
-        // again the moment it finishes, but strictly-future advance means it
-        // actually falls behind by a full period each cycle. Maintenance must
-        // still run once its own lateness makes it the earliest deadline.
         let mut s = ready(0, [100]);
         let mut now = 0;
         let mut saw_maintenance = false;
@@ -1175,7 +1120,6 @@ mod tests {
             }
             now = s.earliest_due_us().unwrap();
         }
-        // Audit at t=1s and t=2s for both channels; t=0 is not an audit point.
         assert_eq!(audits, [2, 2]);
         assert_eq!(s.audit_stats().serviced, 4);
     }
@@ -1184,15 +1128,11 @@ mod tests {
     fn bootstrap_and_parked_channels_get_no_fast_or_maintenance_units() {
         let mut s = ChannelScheduler::new(0, [100, 100]);
         s.set_mode(1, ChannelMode::Parked, 0);
-        // Channel 0 is in Bootstrap: its Bootstrap unit stays due until the
-        // driver reports Ready, and the parked channel gets nothing.
         for _ in 0..3 {
             let unit = s.pick(0, 0).unwrap();
             assert_eq!((unit.class, unit.channel), (UnitClass::Bootstrap, 0));
             s.record(0, 0);
         }
-        // Maintenance at 1 ms skips both channels and only finalizes; the
-        // overdue Bootstrap unit still goes first by deadline.
         let unit = s.pick(1_000, 0).unwrap();
         assert_eq!(unit.class, UnitClass::Bootstrap);
         s.record(1_000, 0);
@@ -1202,7 +1142,6 @@ mod tests {
         let unit = s.pick(1_000, 0).unwrap();
         assert_eq!(unit.class, UnitClass::Bootstrap);
         s.record(1_000, 0);
-        // Only a Ready channel is ever offered Fast or Maintenance.
         s.set_mode(0, ChannelMode::Ready, 1_000);
         let unit = s.pick(1_000, 0).unwrap();
         assert_eq!((unit.class, unit.channel), (UnitClass::Fast, 0));
@@ -1229,8 +1168,6 @@ mod tests {
     #[test]
     fn due_commission_unit_beats_any_number_of_overdue_units() {
         let mut s = commissioning(0, [100, 100], 0);
-        // Channel 1 fast is overdue by 900 us, maintenance by 500 us,
-        // channel 1 audit is overdue too; commission became due just now.
         s.set_commission_due(0, Some(1_000));
         let unit = s.pick(1_000, 0).unwrap();
         assert_eq!(
@@ -1243,10 +1180,8 @@ mod tests {
     #[test]
     fn commission_due_mid_unit_waits_exactly_one_unit() {
         let mut s = commissioning(0, [100, 100], 0);
-        // Channel 1's fast unit is picked at t=0 and runs until t=60.
         let unit = s.pick(0, 0).unwrap();
         assert_eq!((unit.class, unit.channel), (UnitClass::Fast, 1));
-        // Commission becomes due at t=20, while that unit is in flight.
         s.set_commission_due(0, Some(20));
         assert!(
             s.pick(40, 0).is_none(),
@@ -1276,7 +1211,6 @@ mod tests {
         let mut s = commissioning(0, [100, 100], 0);
         s.set_commission_due(0, Some(0));
         s.note_commission_yield(0);
-        // Channel 1 fast is due at t=0 as well; it must go first.
         let unit = s.pick(0, 0).unwrap();
         assert_eq!((unit.class, unit.channel), (UnitClass::Fast, 1));
         s.record(0, 0);
@@ -1288,7 +1222,6 @@ mod tests {
     #[test]
     fn yield_with_nothing_else_due_runs_commission_immediately() {
         let mut s = commissioning(0, [100, 100], 0);
-        // Consume channel 1's t=0 fast tick first.
         let _ = s.pick(0, 0).unwrap();
         s.record(0, 0);
         s.set_commission_due(0, Some(0));
@@ -1302,9 +1235,6 @@ mod tests {
     fn fast_delay_during_ready_now_run_is_bounded_by_the_forced_yield_count() {
         use crate::tmc_control::MAX_CONSECUTIVE_READY_POLLS;
         let mut s = commissioning(0, [100, 100], 0);
-        // Channel 1's fast tick is due from t=0 and stays overdue while the
-        // engine answers ReadyNow forever; the poll driver forces a YieldNow
-        // after MAX_CONSECUTIVE_READY_POLLS. Model that here.
         let mut commission_runs = 0u8;
         let mut now = 0u64;
         loop {

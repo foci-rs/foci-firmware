@@ -96,7 +96,6 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(
                 sink.foci_resistance_axis(report_seq, axis0);
                 sink.foci_resistance_axis(report_seq, axis1);
             }
-            // Run reply last: it is the diagnostic's terminal/"done" signal.
             sink.foci_resistance_run(report_seq, run);
         }
     }
@@ -512,8 +511,6 @@ mod tests {
         crate::state::report_seq::reset_report_seq();
         let mut sink = RecordingSink::default();
 
-        // Draw an unused seq first so the shared value isn't the default 0,
-        // which would also pass if the seq were accidentally never threaded.
         let _ = crate::state::report_seq::next_report_seq(0);
 
         emit_diagnostic_report(

@@ -150,9 +150,7 @@ pub const EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL: u16 = 154;
 /// Breakaway-seeded campaign: immutable additive discovery plan, its
 /// ceiling's binding source, and its resolved ladder.
 pub const EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN: u16 = 155;
-/// Breakaway-seeded campaign: discovery terminal and the rung-zero motion
-/// diagnostic (its collected in-band rung margins now stream separately under
-/// `EVENT_COMMISSION_BREAKAWAY_DISCOVERY_MARGIN`).
+/// Breakaway-seeded campaign: discovery terminal and the rung-zero motion diagnostic.
 pub const EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL: u16 = 156;
 /// Breakaway-seeded campaign: immutable held-out confirmation plan.
 pub const EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN: u16 = 157;
@@ -161,22 +159,17 @@ pub const EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN: u16 = 157;
 pub const EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL: u16 = 158;
 /// Breakaway-seeded campaign: canonical closure record.
 pub const EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL: u16 = 159;
-/// Breakaway-seeded campaign: one collected observation's raw settled-rate
-/// evidence, streamed on the tick its stroke completes (discovery and
-/// confirmation share this id; the record's `phase` field distinguishes them).
+/// Breakaway-seeded campaign: one observation's raw settled-rate evidence.
+/// Discovery and confirmation share this id; the record's `phase` field distinguishes them.
 pub const EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION: u16 = 160;
-/// Breakaway-seeded campaign: one collected in-band rung's nomination margin,
-/// streamed on its own tick as the discovery walk folds the rung, so the
-/// discovery-terminal tick no longer fans the whole batch (up to 32 records)
-/// into the bounded trace motion queue. A non-nominatable in-band rung produces
-/// no record, so a gap in `collected_index` is normal.
+/// Breakaway-seeded campaign: one collected in-band rung's nomination margin.
+/// A non-nominatable rung produces no record, so gaps in `collected_index` are normal.
 pub const EVENT_COMMISSION_BREAKAWAY_DISCOVERY_MARGIN: u16 = 161;
 /// Breakaway-seeded campaign: one recovered probe decision committed to the
 /// adaptive cursor.
 pub const EVENT_COMMISSION_BREAKAWAY_PROBE_DECISION: u16 = 162;
 /// Breakaway-seeded campaign: one rejected recovery-rest scoring window.
-/// Accepted rest windows emit nothing, so this id appears at most a handful of
-/// times per run and normally not at all.
+/// Accepted rest windows emit nothing.
 pub const EVENT_COMMISSION_BREAKAWAY_RECOVERY_REST_REJECTED: u16 = 163;
 /// Breakaway-seeded campaign: one recovery refused because its origin moved
 /// between the tick that captured it and the tick recovery began.
