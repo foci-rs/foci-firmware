@@ -50,30 +50,37 @@ fn mean_i16(sum: i32, count: u16) -> i16 {
     (sum / count).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
-#[allow(clippy::too_many_arguments)]
-fn residual_evidence(
-    stage: AdcResidualStage,
-    count: u16,
+struct ResidualRegisters {
     pwm_sv_chop: u8,
     pwm_bbm: u32,
     adc_i0_scale_offset: u32,
     adc_i1_scale_offset: u32,
-    adc_iux_sum: i32,
-    adc_iwy_sum: i32,
-    pid_flux_sum: i32,
-    pid_torque_sum: i32,
+}
+
+struct ResidualSums {
+    adc_iux: i32,
+    adc_iwy: i32,
+    pid_flux: i32,
+    pid_torque: i32,
+}
+
+fn residual_evidence(
+    stage: AdcResidualStage,
+    count: u16,
+    registers: ResidualRegisters,
+    sums: ResidualSums,
 ) -> AdcResidualEvidence {
     AdcResidualEvidence {
         stage: residual_stage_code(stage),
         sample_count: count.min(u16::from(u8::MAX)) as u8,
-        pwm_sv_chop,
-        pwm_bbm,
-        adc_i0_scale_offset,
-        adc_i1_scale_offset,
-        adc_iux_mean_count: mean_i16(adc_iux_sum, count),
-        adc_iwy_mean_count: mean_i16(adc_iwy_sum, count),
-        pid_flux_mean_count: mean_i16(pid_flux_sum, count),
-        pid_torque_mean_count: mean_i16(pid_torque_sum, count),
+        pwm_sv_chop: registers.pwm_sv_chop,
+        pwm_bbm: registers.pwm_bbm,
+        adc_i0_scale_offset: registers.adc_i0_scale_offset,
+        adc_i1_scale_offset: registers.adc_i1_scale_offset,
+        adc_iux_mean_count: mean_i16(sums.adc_iux, count),
+        adc_iwy_mean_count: mean_i16(sums.adc_iwy, count),
+        pid_flux_mean_count: mean_i16(sums.pid_flux, count),
+        pid_torque_mean_count: mean_i16(sums.pid_torque, count),
     }
 }
 
@@ -428,14 +435,18 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             let evidence = residual_evidence(
                 *stage,
                 *count,
-                *pwm_sv_chop,
-                *pwm_bbm,
-                *adc_i0_scale_offset,
-                *adc_i1_scale_offset,
-                *adc_iux_sum,
-                *adc_iwy_sum,
-                *pid_flux_sum,
-                *pid_torque_sum,
+                ResidualRegisters {
+                    pwm_sv_chop: *pwm_sv_chop,
+                    pwm_bbm: *pwm_bbm,
+                    adc_i0_scale_offset: *adc_i0_scale_offset,
+                    adc_i1_scale_offset: *adc_i1_scale_offset,
+                },
+                ResidualSums {
+                    adc_iux: *adc_iux_sum,
+                    adc_iwy: *adc_iwy_sum,
+                    pid_flux: *pid_flux_sum,
+                    pid_torque: *pid_torque_sum,
+                },
             );
 
             match *stage {
