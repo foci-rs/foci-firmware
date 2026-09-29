@@ -6,13 +6,11 @@ use ankyra::{ScratchOutput, TransportOutput};
 
 /// Board-local USB transmit sink used by [`AnkyraUsbTransport`].
 pub trait UsbTx {
-    /// Write encoded protocol bytes to the USB TX buffer.
     fn write(data: &[u8]);
 }
 
 /// Board-local wake signal used by [`AnkyraUsbTransport`].
 pub trait UsbWake {
-    /// Wake the USB task so it can drain pending TX bytes.
     fn wake();
 }
 

@@ -1,12 +1,6 @@
 //! Board-specific TMC4671 hardware configuration.
 
-/// Return the DSADC MDEC value for a TMC4671 PWM period.
-///
-/// Datasheet section 4.11.2 defines the DSADC sample timing as:
-/// `MDEC = round(tPWM / (3 * 40ns) - 2)`.
-///
-/// `PWM_MAXCNT` counts 10ns ticks, so this is equivalent to:
-/// `round((PWM_MAXCNT + 1) / 12) - 2`.
+/// DSADC MDEC (datasheet 4.11.2): `round((PWM_MAXCNT + 1) / 12) - 2`, floored at 0.
 pub const fn dsadc_mdec_from_pwm_maxcnt(pwm_maxcnt: u16) -> u16 {
     let pwm_ticks = pwm_maxcnt as u32 + 1;
     let rounded_div_12 = (pwm_ticks + 6) / 12;
@@ -19,42 +13,34 @@ pub const fn dsadc_mdec_from_pwm_maxcnt(pwm_maxcnt: u16) -> u16 {
 
 const CURRENT_FILTER_PWM_RATIO: f32 = 0.4;
 
-/// Board-specific TMC4671 hardware configuration.
-///
-/// Constructed as a `const` by each firmware crate. Passed to all
-/// foci-firmware functions that interact with TMC4671 registers.
-/// Changing `pwm_maxcnt` is the only edit needed to switch PWM frequency.
+/// Board-specific TMC4671 hardware configuration, constructed as a `const` by each board crate.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 pub struct TmcConfig {
-    /// PWM_MAXCNT register value.
     pub pwm_maxcnt: u16,
-    /// TMC4671 external oscillator frequency in Hz (typically 25 MHz).
+    /// TMC4671 clock frequency in Hz.
     pub tmc_clock_hz: u32,
-    /// Break-before-make dead-time, high-side (PWM clock cycles, 10ns each).
+    /// High-side break-before-make dead-time in 10 ns cycles.
     pub bbm_h: u8,
-    /// Break-before-make dead-time, low-side (PWM clock cycles, 10ns each).
+    /// Low-side break-before-make dead-time in 10 ns cycles.
     pub bbm_l: u8,
-    /// DSADC decimation parameter for ADC group A.
     pub dsadc_mdec_a: u16,
-    /// DSADC decimation parameter for ADC group B.
     pub dsadc_mdec_b: u16,
-    /// ADC_I_SELECT register value for phase-current routing.
     pub adc_i_select: u32,
-    /// Excitation voltage for R/L measurement (PIDOUT units).
+    /// R/L measurement excitation voltage in PIDOUT units.
     pub excitation_voltage: u16,
-    /// Board-derived effective electrical delay for current-loop synthesis.
+    /// Effective electrical delay for current-loop synthesis.
     pub electrical_model_theta_e_us: u32,
-    /// Maximum encoder movement allowed during flux-axis current validation.
+    /// Max encoder movement during flux-axis current validation.
     pub current_validation_flux_max_encoder_delta_counts: u16,
-    /// Maximum encoder movement allowed during torque-axis current validation.
+    /// Max encoder movement during torque-axis current validation.
     pub current_validation_torque_max_encoder_delta_counts: u16,
     /// Maximum expected resistance-profile current in TMC current counts.
     pub resistance_max_expected_current_count: u16,
-    /// True when board scale metadata is hardware-validated for physical display.
+    /// Whether the scale metadata is hardware-validated for physical display.
     pub resistance_scale_metadata_validated: bool,
-    /// Board-specific milliamps-per-LSB scale for `PID_TORQUE_FLUX_LIMITS`.
+    /// Milliamps per LSB of `PID_TORQUE_FLUX_LIMITS`.
     pub current_scale_ma_per_lsb: f32,
-    /// Board-specific RMS milliamp ceiling for run and homing current.
+    /// RMS milliamp ceiling for run and homing current.
     pub max_run_current_ma: u32,
 }
 
@@ -67,18 +53,11 @@ pub enum FeedbackSource {
     Analog,
 }
 
-/// A channel's steady-state feedback wiring, mirroring the TMC4671's two
-/// independent selection registers (`PHI_E_SELECTION`, `POSITION_SELECTION`).
-///
-/// Describes board wiring, not live register state: commissioning routines
-/// (e.g. electrical identification's open-loop phase) may transiently write a
-/// selection register to a value other than what's declared here. See
-/// `current_loop_actionable_status_mask`'s "Known limitation" doc comment.
+/// A channel's steady-state feedback wiring (`PHI_E_SELECTION`, `POSITION_SELECTION`). Declares
+/// wiring, not live register state; commissioning may transiently write other values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct FeedbackConfig {
-    /// Source driving `PHI_E_SELECTION` (commutation angle) at steady state.
     pub phi_e_source: FeedbackSource,
-    /// Source driving `POSITION_SELECTION` (mechanical position) at steady state.
     pub position_source: FeedbackSource,
 }
 
@@ -89,14 +68,7 @@ impl TmcConfig {
         4 * self.tmc_clock_hz / (self.pwm_maxcnt as u32 + 1)
     }
 
-    /// Default torque/flux target-path filter cutoff in Hz.
-    ///
-    /// A hardware comparison ladder found no measurable difference
-    /// in current-step tracking, saturation, or coefficient quantization
-    /// across 6-10 kHz on the current-loop bandwidths tested, so the cutoff
-    /// no longer tracks bandwidth: it is `0.4 * fPWM`, capped at the torque/flux
-    /// biquad ceiling, a PWM-relative constant that is self-limiting relative
-    /// to Nyquist by construction.
+    /// Default torque/flux filter cutoff in Hz: `0.4 * fPWM`, capped at the ceiling.
     pub fn default_current_filter_hz(&self) -> u16 {
         ((self.pwm_freq_hz() as f32 * CURRENT_FILTER_PWM_RATIO) as u16)
             .min(crate::biquad::CURRENT_CUTOFF_MAX_HZ)
@@ -135,10 +107,6 @@ impl TmcConfig {
 #[cfg(test)]
 impl TmcConfig {
     /// Minimal valid configuration for host-side unit tests.
-    ///
-    /// Uses representative 25 MHz TMC clock and 25 kHz PWM parameters.
-    /// Tests that need different parameters should construct `TmcConfig`
-    /// directly.
     pub fn default_for_test() -> Self {
         Self {
             pwm_maxcnt: 3999,
@@ -225,9 +193,6 @@ mod tests {
 
     #[test]
     fn current_filter_default_has_no_floor_below_nyquist_at_low_pwm_freq() {
-        // At low PWM rates 0.4 * fPWM must stay unfloored -- a floor here
-        // would risk exceeding Nyquist (fPWM / 2) for boards slower than the
-        // two 25 kHz configurations this crate ships today.
         let mut cfg = test_config();
         cfg.pwm_maxcnt = 49_999;
         assert_eq!(cfg.default_current_filter_hz(), 800);

@@ -6,18 +6,9 @@ pub const MAX_STEP_EVENTS_PER_IRQ: usize = 8;
 /// Classification of an observed step deadline against the fatal-lateness policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum StepDeadlineStatus {
-    /// The deadline has not passed.
     OnTimeOrEarly,
-    /// The deadline passed, but remains within the tolerated lateness window.
-    TolerablyLate {
-        /// Observed positive lateness in timer ticks.
-        ticks: u32,
-    },
-    /// The deadline passed by more than the tolerated lateness window.
-    Fatal {
-        /// Observed positive lateness in timer ticks.
-        ticks: u32,
-    },
+    TolerablyLate { ticks: u32 },
+    Fatal { ticks: u32 },
 }
 
 /// Classify actual step deadline lateness using wrap-safe signed timer ordering.
@@ -44,9 +35,7 @@ pub const fn classify_step_deadline(
 /// A selected step event deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct DueStep {
-    /// Board-local channel index.
     pub channel: u8,
-    /// Due clock for the selected event.
     pub clock: u32,
 }
 

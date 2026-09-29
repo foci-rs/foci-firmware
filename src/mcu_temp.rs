@@ -1,26 +1,18 @@
-//! Generic-3950 NTC curve math, used to synthesize a raw ADC reading for
-//! the chip-internal temperature sensor that decodes correctly under
-//! Klipper's stock `sensor_type: Generic 3950` (a three-point
-//! Steinhart-Hart fit, not a beta equation -- verified against
-//! `klippy/extras/thermistor.py` and `temperature_sensors.cfg`).
+//! Synthesizes a raw ADC reading for the internal temperature sensor that decodes correctly
+//! under Klipper's `sensor_type: Generic 3950`.
 
 /// Steinhart-Hart coefficients: `1/T = c1 + c2*ln(R) + c3*ln(R)^3`.
 #[derive(Debug, Clone, Copy)]
 pub struct SteinhartHartCoefficients {
-    /// First Steinhart-Hart coefficient.
     pub c1: f32,
-    /// Second Steinhart-Hart coefficient.
     pub c2: f32,
-    /// Third Steinhart-Hart coefficient.
     pub c3: f32,
 }
 
 const KELVIN_TO_CELSIUS: f32 = -273.15;
 
 /// Coefficients for Klipper's `[thermistor Generic 3950]` preset
-/// (t1=25C/r1=100000, t2=150C/r2=1770, t3=250C/r3=230), computed by
-/// directly importing and calling `klippy/extras/thermistor.py` (see this
-/// task's header for the exact command) -- not re-derived by hand.
+/// (t1=25C/r1=100000, t2=150C/r2=1770, t3=250C/r3=230).
 pub const GENERIC_3950: SteinhartHartCoefficients = SteinhartHartCoefficients {
     c1: 0.000_793_472_15,
     c2: 0.000_200_763_25,
@@ -31,19 +23,8 @@ pub const GENERIC_3950: SteinhartHartCoefficients = SteinhartHartCoefficients {
 /// host config's `pullup_resistor:` for that sensor entry exactly.
 pub const ASSUMED_PULLUP_OHMS: f32 = 4700.0;
 
-/// Synthesize the 0..1 ADC fraction a Generic-3950 divider would produce
-/// at `temp_c`, replicating `thermistor.py`'s `calc_adc` (Cardano's-formula
-/// cubic inverse).
-///
-/// # Arguments
-///
-/// * `coeffs` - Steinhart-Hart coefficients defining the curve
-/// * `pullup_ohms` - Pullup resistor value in ohms
-/// * `temp_c` - Temperature in degrees Celsius
-///
-/// # Returns
-///
-/// ADC fraction in the range (0.0, 1.0) representing the analog reading
+/// ADC fraction in (0, 1) that a Generic-3950 divider with `pullup_ohms` produces at
+/// `temp_c`, matching `thermistor.py`'s `calc_adc`.
 pub fn temperature_to_adc_fraction(
     coeffs: &SteinhartHartCoefficients,
     pullup_ohms: f32,
@@ -70,10 +51,6 @@ mod tests {
         (a - b).abs() < tol
     }
 
-    /// (temp_c, expected_adc_fraction) computed by directly importing and
-    /// calling the real `klippy/extras/thermistor.py` module -- an
-    /// independent oracle, not a Rust
-    /// reimplementation of the same formula being tested.
     const KLIPPER_FIXTURES: [(f32, f32); 7] = [
         (-20.0, 0.994_504_45),
         (0.0, 0.985_007_9),
@@ -102,31 +79,16 @@ mod tests {
     }
 }
 
-/// Two-point factory calibration for a chip's internal temperature
-/// sensor: `(temperature_c, raw_adc_count)` at each of two known
-/// temperatures, read from the chip's documented system-memory
-/// calibration addresses.
+/// Two-point factory calibration of the internal temperature sensor, read from the chip's
+/// system-memory calibration addresses; each point is `(temperature_c, raw_adc_count)`.
 #[derive(Debug, Clone, Copy)]
 pub struct FactoryCalibration {
-    /// Lower calibration point: `(temperature_c, raw_adc_count)`.
     pub cal_low: (f32, u16),
-    /// Higher calibration point: `(temperature_c, raw_adc_count)`.
     pub cal_high: (f32, u16),
 }
 
-/// Convert an internal-sensor raw ADC count to °C via linear interpolation
-/// between two factory calibration points, matching
-/// `temperature_mcu.py`'s `config_stm32f4`/`config_stm32h723` formula.
-///
-/// # Arguments
-///
-/// * `cal` - Factory calibration points for this chip
-/// * `raw` - Raw ADC count sampled from the internal temperature sensor
-/// * `adc_max` - Full-scale ADC count (e.g. 4095.0 for a 12-bit ADC)
-///
-/// # Returns
-///
-/// Interpolated temperature in degrees Celsius.
+/// Convert an internal-sensor raw ADC count to degrees Celsius by linear interpolation between
+/// the calibration points, matching `temperature_mcu.py`. `adc_max` is the full-scale count.
 pub fn internal_sensor_raw_to_celsius(cal: &FactoryCalibration, raw: u16, adc_max: f32) -> f32 {
     let (t_low, raw_low) = cal.cal_low;
     let (t_high, raw_high) = cal.cal_high;
@@ -137,21 +99,8 @@ pub fn internal_sensor_raw_to_celsius(cal: &FactoryCalibration, raw: u16, adc_ma
     t_low + (adc - adc_low) * slope
 }
 
-/// Convert one internal-sensor raw reading into the synthesized raw ADC
-/// count `sample_count` reports of a Generic-3950 divider at that
-/// temperature would sum to (see `analog_in`'s sampling state -- the wire
-/// value is a bounded sum, not an average).
-///
-/// # Arguments
-///
-/// * `cal` - Factory calibration points for this chip
-/// * `raw_internal_sensor` - Raw ADC count from the internal temperature sensor
-/// * `adc_max` - Full-scale ADC count (e.g. 4095.0 for a 12-bit ADC)
-/// * `sample_count` - Number of samples the wire protocol sums together
-///
-/// # Returns
-///
-/// Synthesized summed raw ADC count for the `sample_count` samples.
+/// Raw count that `sample_count` summed samples of a Generic-3950 divider would report for
+/// this internal-sensor reading; the wire value is a sum saturated to `u16`.
 pub fn synthesize_mcu_temp_reading(
     cal: &FactoryCalibration,
     raw_internal_sensor: u16,
@@ -170,9 +119,6 @@ mod calibration_tests {
     use super::*;
 
     fn stm32f4_style_calibration() -> FactoryCalibration {
-        // TS_CAL1 at 30C, TS_CAL2 at 110C, 12-bit raw counts -- representative
-        // values, not the real per-chip bytes (those come from silicon at
-        // runtime; this test only checks the interpolation arithmetic).
         FactoryCalibration {
             cal_low: (30.0, 1500),
             cal_high: (110.0, 1900),
@@ -198,24 +144,6 @@ mod calibration_tests {
         assert_eq!(u32::from(summed_of_eight), u32::from(single) * 8);
     }
 
-    /// End-to-end fixture: `(raw_internal_sensor, expected_quantized_count,
-    /// klipper_decoded_temp_c)` for `stm32f4_style_calibration()`'s
-    /// (30C/1500, 110C/1900) calibration points, `ADC_MAX = 4095`, spanning
-    /// the spec's full -20..200C operating range (`raw_internal` values
-    /// chosen so this calibration maps them exactly onto
-    /// `KLIPPER_FIXTURES`' -20, 0, 25, 60, 100, 150, 200C points). Computed independently by
-    /// importing and calling the real `klippy/extras/thermistor.py` module
-    /// (`calc_adc`/`calc_temp`) with `internal_sensor_raw_to_celsius`'s own
-    /// linear-interpolation formula evaluated in Python at each
-    /// `raw_internal` -- not by calling the Rust code under test in either
-    /// direction. `expected_quantized_count` is
-    /// `round(thermistor.calc_adc(interpolated_temp_c) * 4095)`; this is
-    /// the exact value `synthesize_mcu_temp_reading(..., sample_count=1)`
-    /// must produce. `klipper_decoded_temp_c` is
-    /// `thermistor.calc_temp(expected_quantized_count / 4095)` -- decoding
-    /// the *quantized* count, so it also captures the rounding-to-integer-
-    /// count error, which grows toward the range's extremes (see the
-    /// tolerance test below).
     const END_TO_END_FIXTURES: [(u16, u16, f32); 7] = [
         (1250, 4072, -19.589_466),
         (1350, 4034, -0.135_576_87),

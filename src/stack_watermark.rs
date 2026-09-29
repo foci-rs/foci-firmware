@@ -1,46 +1,12 @@
-//! MSP stack high-water measurement from a boot-time sentinel paint.
-//!
-//! A board paints the unused span of its main stack with
-//! [`STACK_PAINT_SENTINEL`] during startup and registers the span's bounds
-//! here. The stack grows down toward the span, so the surviving sentinel run
-//! starting at the bottom is the headroom the stack never consumed.
-//!
-//! Only the bounds are kept, as plain addresses. The span becomes ordinary
-//! stack again as call depth grows into it, so holding a typed reference to it
-//! would assert an aliasing guarantee the memory does not have; the readout
-//! instead re-derives a raw pointer and reads through it at the moment the host
-//! asks.
-//!
-//! The walk runs inside a critical section, because a preempting handler pushing
-//! a frame into the span would otherwise race the read. Masking is not a
-//! formality: a word an interrupt pushes can hold *any* bit pattern, the
-//! sentinel included, so a racing read can just as easily over-report headroom
-//! as under-report it. To keep the masked window bounded the walk stops after
-//! `MAX_SCAN_WORDS`, reporting a lower bound rather than an exact watermark
-//! when it runs out of window.
-//!
-//! Masking that long is only tolerable while nothing time-critical is running,
-//! so the readout is admitted by a caller-supplied predicate. That predicate
-//! runs inside the same critical section as the walk, ahead of the first read:
-//! checked outside it, an interrupt could start the very work the predicate
-//! screens for after it answered, and the walk would mask straight through it.
+//! MSP stack high-water measurement from a boot-time sentinel paint. Boards register the painted
+//! span's bounds; the readout walks it in a critical section admitted by a caller-supplied predicate.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Word written across the unused stack span at startup.
 pub const STACK_PAINT_SENTINEL: u32 = 0xC0DE_D00D;
 
-/// Upper bound on words read per readout.
-///
-/// This is what bounds the interrupt-masked window, and it is the whole reason
-/// the window has a bound at all: the painted span is the better part of a
-/// board's RAM, so an uncapped walk would mask for milliseconds. 32 KB keeps
-/// twice the headroom the measurement exists to check, at an emitted loop of
-/// roughly ten cycles per word -- on the order of half a millisecond of masked
-/// interrupts on a 168 MHz F407, paid once per host request.
-///
-/// That is long enough to disturb a 10 kHz position tick, which is why the
-/// readout is host-triggered and documented as not for use during motion.
+/// Upper bound on words read per readout; bounds the interrupt-masked window.
 const MAX_SCAN_WORDS: usize = 8 * 1024;
 
 static PAINT_BASE: AtomicUsize = AtomicUsize::new(0);
@@ -51,20 +17,14 @@ static PAINT_LEN_WORDS: AtomicUsize = AtomicUsize::new(0);
 pub struct StackUsage {
     /// Bytes at the bottom of the painted span the stack never reached.
     pub unused_bytes: u32,
-    /// Total span painted at startup.
     pub painted_bytes: u32,
-    /// Whether the walk actually reached the first overwritten word.
-    ///
-    /// False when it ran out of scan window or off the end of the span with
-    /// every word still holding the sentinel, which makes `unused_bytes` a lower
-    /// bound on headroom rather than a measurement of it.
+    /// False when every scanned word still held the sentinel, making `unused_bytes` a lower bound.
     pub watermark_found: bool,
 }
 
 /// Outcome of an admitted readout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum StackScan {
-    /// The span was walked.
     Measured(StackUsage),
     /// The admission predicate declined, so nothing was read.
     Refused,
@@ -76,31 +36,21 @@ pub enum StackScan {
 ///
 /// # Safety
 ///
-/// `base` must be 4-byte aligned and `[base, base + len_words * 4)` must be a
-/// span the caller has just painted with [`STACK_PAINT_SENTINEL`] that stays
-/// readable for the rest of the program's life. Registering any other range
-/// makes [`scan_admitted_by`] read unrelated memory.
+/// `base` must be 4-byte aligned and `[base, base + len_words * 4)` must be just-painted with
+/// [`STACK_PAINT_SENTINEL`] and stay readable for the rest of the program's life.
 pub unsafe fn register_painted_region(base: usize, len_words: usize) {
     PAINT_LEN_WORDS.store(len_words, Ordering::Relaxed);
     PAINT_BASE.store(base, Ordering::Relaxed);
 }
 
-/// Count the leading words that still hold the sentinel.
 fn intact_prefix_words(len_words: usize, mut read_word: impl FnMut(usize) -> u32) -> usize {
     (0..len_words)
         .take_while(|&index| read_word(index) == STACK_PAINT_SENTINEL)
         .count()
 }
 
-/// Measure the registered span, if `admit` allows the masked walk to run.
-///
-/// This is the only way to read the span, and `admit` is how a caller keeps the
-/// walk away from work it must not delay. The predicate is evaluated inside the
-/// critical section that masks the walk and before the first read, so a
-/// predicate over interrupt-driven state stays true for as long as it gates:
-/// there is no window between deciding and masking for an interrupt to slip
-/// through. `admit` therefore runs with interrupts masked and must be short and
-/// non-blocking; see `MAX_SCAN_WORDS` for the window the walk itself holds.
+/// Measure the registered span if `admit` allows it. `admit` runs with interrupts masked, before
+/// the first read, so it must be short and non-blocking.
 pub fn scan_admitted_by(admit: impl FnOnce() -> bool) -> StackScan {
     critical_section::with(|_| {
         if !admit() {
@@ -148,12 +98,6 @@ pub(crate) fn clear_painted_region_for_test() {
     PAINT_LEN_WORDS.store(0, Ordering::Relaxed);
 }
 
-/// Register a host-side array as the painted span.
-///
-/// # Safety
-///
-/// `words` must outlive every later [`scan_admitted_by`] call, so callers pass
-/// a leaked allocation.
 #[cfg(test)]
 pub(crate) unsafe fn set_painted_region_for_test(words: &'static [u32]) {
     unsafe { register_painted_region(words.as_ptr() as usize, words.len()) }
@@ -290,10 +234,6 @@ mod tests {
         assert_eq!(scan_admitted_by(|| false), StackScan::Refused);
     }
 
-    /// The walk must not begin until the predicate has admitted it, or a
-    /// predicate over interrupt-driven state gates nothing. Writing the span
-    /// from inside the predicate makes that ordering observable: the write is
-    /// visible to the scan only if the scan reads after the predicate answers.
     #[test]
     fn the_span_is_read_only_after_the_predicate_admits_the_scan() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();

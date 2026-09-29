@@ -1,42 +1,11 @@
-//! Shutdown-reason enumeration shared across every FOCI firmware.
+//! Shutdown reasons for handlers lifted into `foci-firmware`, which cannot reach the board
+//! crate's `klipper_shutdown!` macros; boards map each variant via `dispatch_shutdown!`.
 //!
-//! # Why an enum?
-//!
-//! The `klipper_shutdown!` / `klipper_shutdown_from!` macros produced by
-//! ankyra expand to a path of the form
-//! `crate::_ankyra_config::static_strings::__ANKYRA_SS_<hash>`. That path
-//! only resolves inside the crate that invokes `ankyra_config!` — in this
-//! workspace that is the board binary (e.g. `openffboard-fw`). Handler
-//! bodies lifted into `foci-firmware` cannot reach
-//! `crate::_ankyra_config` and therefore cannot call the shutdown macros
-//! directly.
-//!
-//! The indirection is this module's [`ShutdownReason`] enum: lifted
-//! handlers pass a variant to
-//! [`ShutdownRecovery::send_shutdown`](crate::context::ShutdownRecovery::send_shutdown),
-//! and the board-side impl maps each variant to the corresponding
-//! `klipper_shutdown_from!` call via the `dispatch_shutdown!` macro.
-//!
-//! # Adding a new shutdown reason
-//!
-//! To add a shutdown reason, edit **all three** parallel lists below:
-//!
-//! 1. The [`ShutdownReason`] enum variant.
-//! 2. The [`ShutdownReason::message`] match arm (same literal).
-//! 3. The `dispatch_shutdown!` match arm (same variant + same literal).
-//! 4. The `foci_ankyra_config!` `static_strings` list entry.
-//!
-//! All four lists are in this single file so a reviewer can check them
-//! at a glance. The literal strings must be byte-identical; they are
-//! FNV-1a-hashed by ankyra and the build fails loudly on any mismatch.
+//! Adding a reason means editing four byte-identical literal lists in this file: the
+//! [`ShutdownReason`] variant, its [`ShutdownReason::message`] arm, the `dispatch_shutdown!`
+//! arm, and the `foci_ankyra_config!` `static_strings` entry.
 
-/// Every shutdown reason a FOCI firmware can emit from a lifted handler.
-///
-/// Cross-board: every binary that pulls in `foci-firmware` accepts the
-/// same set of reasons. A board that needs a board-specific literal
-/// still has the full `::ankyra::klipper_shutdown!` form available from
-/// its own handlers; this enum is only the bridge used by lifted
-/// handlers.
+/// Shutdown reason a lifted handler can raise; every board accepts the same set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownReason {
     ShutdownClearedWhenNotShutdown,
@@ -89,9 +58,7 @@ pub enum ShutdownReason {
 }
 
 impl ShutdownReason {
-    /// Static-string literal for this reason. Matches exactly one entry
-    /// in the binary's `ankyra_config! { static_strings = [...] }` list
-    /// (auto-included via `foci_ankyra_config!`).
+    /// Static-string literal for this reason; must match a `static_strings` entry.
     pub const fn message(self) -> &'static str {
         match self {
             Self::ShutdownClearedWhenNotShutdown => "Shutdown cleared when not shutdown",
@@ -182,11 +149,6 @@ impl ShutdownReason {
 ///     }
 /// }
 /// ```
-///
-/// Each match arm is a `klipper_shutdown_from!(sender, "literal", clock)`
-/// call that ankyra hashes at build time. The literal list here must
-/// match [`ShutdownReason::message`] above and the `static_strings`
-/// list in `foci_ankyra_config!`.
 #[macro_export]
 macro_rules! dispatch_shutdown {
     ($reason:expr, $clock:expr, $sender:expr) => {
@@ -420,11 +382,8 @@ macro_rules! dispatch_shutdown {
     };
 }
 
-/// Foci-flavored wrapper around `::ankyra::ankyra_config!` that bakes in
-/// the full FOCI shutdown-literal list.
-///
-/// The board-specific extras go via the `board_static_strings = [...]`
-/// key; every other `ankyra_config!` key is forwarded verbatim.
+/// Wrapper around `::ankyra::ankyra_config!` that adds the FOCI shutdown literals. Board extras
+/// go in `board_static_strings = [...]`; every other key is forwarded verbatim.
 ///
 /// # Example
 ///
@@ -458,9 +417,6 @@ macro_rules! foci_ankyra_config {
             providers = [ $($provider),* ],
             static_strings = [
                 $($board_lit,)*
-                // FOCI firmware-wide shutdown literals. Keep top-level reasons in sync with
-                // `ShutdownReason::message` and `dispatch_shutdown!`, and include literals
-                // emitted by shared-control board glue.
                 "Shutdown cleared when not shutdown",
                 "config_reset only available when shutdown",
                 "Command request",

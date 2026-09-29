@@ -1,13 +1,6 @@
-//! Canonical TMC4671 safe-state restore primitive.
-//!
-//! State-neutral: writes the well-known safe-state register sequence and
-//! lowers the enable pin via [`crate::commissioning::types::CommissioningBackend`].
-//! Higher-level lifecycle helpers like `tmc_control::lifecycle::disarm_motor`
-//! still own `DispatchState` updates; this helper only touches the chip.
-//!
-//! Best-effort: every write is attempted even if an earlier write fails.
-//! Returns `()` so commissioning failure paths cannot accidentally surface
-//! safe-state SPI errors as the user-visible result.
+//! Canonical TMC4671 safe-state restore: writes the safe-state register sequence and lowers the
+//! enable pin. Best-effort (every write is attempted), returns `()`, and touches only the chip,
+//! not `DispatchState`.
 
 use crate::commissioning::types::CommissioningBackend;
 use crate::tmc_register_values::{MOTION_STOPPED, PWM_CHOP_OFF};
@@ -20,25 +13,15 @@ pub struct SafeStateRestoreReport {
     pub failed_writes: u8,
     /// Address of the first register or sub-register write that failed.
     pub first_failed_register: Option<u8>,
-    /// If the first failure was a PID error-sum clear, its logical
-    /// sub-register selector (4=torque, 5=flux, 6=velocity, 7=position).
-    /// All four sums share the same physical selector/data registers, so
-    /// `first_failed_register` alone cannot distinguish them.
+    /// Logical sub-register selector (4=torque, 5=flux, 6=velocity, 7=position) when the first
+    /// failure was a PID error-sum clear; the four sums share physical registers.
     pub first_failed_sub_addr: Option<u8>,
 }
 
-/// One step of the safe-state register-restore sequence, advanced by
-/// exactly one backend register operation per call so a caller (the
-/// `TerminalRestoreMachine` poll loop) never issues more than one awaited
-/// backend operation per tick. This is the canonical definition of the
-/// sequence; [`restore_safe_state_via_backend_report`] just drives it to
-/// completion in a tight loop for non-poll-driven callers.
-///
-/// Step order: the eight [`safe_state_write`] calls (steps 0-7), then the
-/// four PID error-sum-clear register pairs (steps 8-15, addr-select then
-/// data per pair, one pair per PID sum: torque, flux, velocity, position).
-/// The enable pin is lowered synchronously alongside step 0's write, since
-/// it never yields.
+/// One step of the safe-state restore sequence, advanced by exactly one backend register
+/// operation per call. Steps 0-7 are the eight [`safe_state_write`] calls; steps 8-15 are the four
+/// PID error-sum clears (addr-select then data per pair: torque, flux, velocity, position). The
+/// enable pin is lowered synchronously with step 0.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SafeStateRestoreStep {
     index: u8,
@@ -48,25 +31,18 @@ pub(crate) struct SafeStateRestoreStep {
 const SAFE_STATE_STEP_COUNT: u8 = 16;
 
 impl SafeStateRestoreStep {
-    /// True before any step has run. Callers gate one-time setup (like
-    /// `disarm_motor`'s lifecycle bookkeeping) on this, so it runs once, on
-    /// the first poll of a sequence built around this step.
+    /// True before any step has run.
     pub(crate) const fn is_start(&self) -> bool {
         self.index == 0
     }
 
-    /// The diagnostic report accumulated so far. Meaningful once `advance`
-    /// has returned `false`; callers polling to completion read this to
-    /// surface the same failure summary `restore_safe_state_via_backend`
-    /// emits internally.
+    /// Diagnostic report accumulated so far; final once `advance` has returned `false`.
     pub(crate) const fn report(&self) -> SafeStateRestoreReport {
         self.report
     }
 
-    /// Perform the next backend register operation. Returns `true` while
-    /// steps remain; returns `false` once the sequence is complete, at
-    /// which point the safe-state report has already been recorded via
-    /// `backend.record_safe_state_report`.
+    /// Performs the next backend register operation; `true` while steps remain. On `false` the
+    /// report has been recorded via `backend.record_safe_state_report`.
     pub(crate) async fn advance<B: CommissioningBackend>(&mut self, backend: &mut B) -> bool {
         use foci_tmc4671::registers::*;
 
@@ -166,19 +142,8 @@ impl SafeStateRestoreStep {
     }
 }
 
-/// Restore the TMC4671 to a safe non-energized state via `CommissioningBackend`.
-///
-/// Sequence (each step best-effort):
-/// 1. `set_enable_pin(false)`
-/// 2. `MODE_RAMP_MODE_MOTION = 0`
-/// 3. `PID_TORQUE_FLUX_TARGET = 0`
-/// 4. `PID_TORQUE_FLUX_OFFSET = 0`
-/// 5. `UQ_UD_EXT = 0`
-/// 6. `PHI_E_SELECTION = 0`
-/// 7. `PWM_SV_CHOP = 0`
-/// 8. `PID_VELOCITY_OFFSET = 0`
-/// 9. `PIDOUT_UQ_UD_LIMITS = 1024`
-/// 10. Clear PID error sums
+/// Restore the TMC4671 to a safe non-energized state via `CommissioningBackend`; every step is
+/// best-effort.
 pub async fn restore_safe_state_via_backend<B>(backend: &mut B)
 where
     B: CommissioningBackend,
@@ -430,9 +395,6 @@ mod tests {
     fn restore_identifies_which_pid_sum_failed_when_not_the_first() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
-            // All four sums share PID_ERROR_PID_TORQUE_ERROR_SUM.addr (0x6D) as
-            // their selector register; occurrence 2 (0-indexed) is the third
-            // selector write in iteration order, i.e. velocity's.
             backend.fail_on_write_occurrence =
                 Some((PID_ERROR_PID_TORQUE_ERROR_SUM.addr.addr(), 2));
 
@@ -554,12 +516,6 @@ mod tests {
                 .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
                 .count();
             let outside_delta = total_raw.saturating_sub(attributed_delta);
-            // Exactly one verified-write call: every raw op its retry loop
-            // performed is attributed inside it (measured by length diff),
-            // so nothing may land outside. Zero verified calls: at
-            // most one plain Write or Read (the eight unverified sub-register
-            // writes) counts as "outside". More than one verified call in a
-            // single poll is always a violation.
             let ok = match verified_delta {
                 0 => outside_delta <= 1,
                 1 => outside_delta == 0,

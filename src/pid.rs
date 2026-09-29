@@ -5,31 +5,22 @@ use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 /// Computed PI gains for TMC4671 flux and torque controllers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct InnerLoopGains {
-    /// Flux P gain — raw TMC4671 register value (Q8.8 format).
     pub flux_p: PidPGain,
-    /// Flux I gain — raw TMC4671 register value (Q4.12 format).
     pub flux_i: PidIGain,
-    /// Torque P gain — raw TMC4671 register value (Q8.8 format).
     pub torque_p: PidPGain,
-    /// Torque I gain — raw TMC4671 register value (Q4.12 format).
     pub torque_i: PidIGain,
 }
 
 /// Computed PI gains for TMC4671 position and velocity outer loops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct OuterLoopGains {
-    /// Position P gain — raw TMC4671 register value (Q8.8 format).
     pub position_p: PidPGain,
-    /// Position I gain — raw TMC4671 register value (Q4.12 format).
     pub position_i: PidIGain,
-    /// Velocity P gain — raw TMC4671 register value (Q8.8 format).
     pub velocity_p: PidPGain,
-    /// Velocity I gain — raw TMC4671 register value (Q4.12 format).
     pub velocity_i: PidIGain,
 }
 
-/// Conservative default gains for when no R/L data is available.
-/// These are intentionally low — stable but sluggish.
+/// Conservative default gains for when no R/L data is available: stable but sluggish.
 pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
     flux_p: match PidPGain::new(256) {
         Ok(gain) => gain,
@@ -63,12 +54,8 @@ pub const DEFAULT_OUTER_GAINS: OuterLoopGains = OuterLoopGains {
     velocity_i: PidIGain::ZERO,
 };
 
-/// Pre-commissioning placeholder written by `TmcChannelState::reset()` after
-/// a config reset. Never applied to hardware while armed:
-/// `arm_motor_electrical`'s calibration assert refuses to arm before a
-/// commissioning result exists, and by the time any fresh commission reaches
-/// `ClosedLoopActivation`, the gains actually written come from the
-/// gain-floor measurement — never this value.
+/// Inert pre-commissioning gains written on config reset; arming is refused until commissioning
+/// produces real gains.
 pub const CONFIG_RESET_PLACEHOLDER_GAINS: OuterLoopGains = OuterLoopGains {
     position_p: PidPGain::ZERO,
     position_i: PidIGain::ZERO,
@@ -123,10 +110,7 @@ pub(crate) const fn test_inner_gains(
 }
 
 impl InnerLoopGains {
-    /// Pack gains into TMC4671 register values.
-    ///
-    /// Returns (flux_register, torque_register) ready for
-    /// `PID_FLUX_P_FLUX_I` (0x54) and `PID_TORQUE_P_TORQUE_I` (0x56).
+    /// Packs into `(PID_FLUX_P_FLUX_I, PID_TORQUE_P_TORQUE_I)` register values.
     pub fn to_registers(self) -> (u32, u32) {
         let flux = PidGainPair::new(self.flux_p, self.flux_i).register_value();
         let torque = PidGainPair::new(self.torque_p, self.torque_i).register_value();
@@ -135,10 +119,7 @@ impl InnerLoopGains {
 }
 
 impl OuterLoopGains {
-    /// Pack gains into TMC4671 register values.
-    ///
-    /// Returns `(velocity_register, position_register)` ready for
-    /// `PID_VELOCITY_P_VELOCITY_I` and `PID_POSITION_P_POSITION_I`.
+    /// Packs into `(PID_VELOCITY_P_VELOCITY_I, PID_POSITION_P_POSITION_I)` register values.
     pub fn to_registers(self) -> (u32, u32) {
         let velocity = PidGainPair::new(self.velocity_p, self.velocity_i).register_value();
         let position = PidGainPair::new(self.position_p, self.position_i).register_value();
@@ -197,8 +178,6 @@ mod tests {
 
     #[test]
     fn config_reset_placeholder_gains_are_obviously_inert() {
-        // "Obviously inert": far below any value that could produce meaningful
-        // motion if ever written armed. Zero P gain is the clearest such value.
         assert_eq!(CONFIG_RESET_PLACEHOLDER_GAINS.velocity_p, PidPGain::ZERO);
         assert_eq!(CONFIG_RESET_PLACEHOLDER_GAINS.position_p, PidPGain::ZERO);
         assert_eq!(CONFIG_RESET_PLACEHOLDER_GAINS.velocity_i, PidIGain::ZERO);

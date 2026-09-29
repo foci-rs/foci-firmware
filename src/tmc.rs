@@ -1,22 +1,13 @@
-//! TMC4671 command types and shared logic.
-//!
-//! These functions produce [`TmcRequest`] values that firmware crates
-//! send to their board-specific SPI task. The actual SPI communication
-//! and motor control is handled by the firmware, not this crate.
+//! TMC4671 request types and the constructors that build them for a board's SPI task.
 
 use core::sync::atomic::Ordering;
 
 /// Request type for TMC4671 task communication.
-///
-/// Firmware crates send these to their board-specific SPI task via a
-/// channel (e.g., `heapless::spsc` or `rtic_sync::channel`).
 #[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
 pub struct TmcRequest {
-    /// Board-local TMC4671 channel index.
     pub channel: u8,
     /// Firmware-owned autotune selector; ignored by non-tune requests.
     pub autotune_action: AutotuneAction,
-    /// Requested TMC operation.
     pub kind: TmcRequestKind,
 }
 
@@ -47,9 +38,7 @@ impl TmcRequest {
 /// Runtime acceleration feedforward gains in permille.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct AccelFeedforwardGains {
-    /// Gain applied while step intervals shrink.
     pub accel_permille: u16,
-    /// Gain applied while step intervals grow.
     pub decel_permille: u16,
 }
 
@@ -84,9 +73,7 @@ impl CurrentStepAxis {
 /// Which torque-sample diagnostic produced a `CurrentTorqueSampleReport`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum TorqueSampleKind {
-    /// Open-loop torque/flux current-target sample.
     CurrentTorqueSample,
-    /// Position-mode torque-offset sample.
     PositionTorqueOffset,
 }
 
@@ -110,28 +97,31 @@ pub const CONTROL_PERIOD_ACTIVE_US: u32 = 1_000;
 /// Operation carried by a [`TmcRequest`].
 #[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
 pub enum TmcRequestKind {
-    /// Set motor enable/disable.
     SetEnable(bool),
     /// Run ADC offset calibration, encoder alignment, closed-loop entry.
-    Calibrate { oid: u8 },
+    Calibrate {
+        oid: u8,
+    },
     /// Set motor run current (milliamps to register counts).
-    SetCurrent { run_ma: u32 },
+    SetCurrent {
+        run_ma: u32,
+    },
     /// Configure independent encoder-feedback and planner-motion scales.
     SetMotionScale {
-        /// Host object id used to correlate rejection diagnostics.
         oid: u8,
         /// Encoder pulses per mechanical revolution before quadrature.
         encoder_ppr: u32,
-        /// Logical planner steps per mechanical revolution.
         planner_steps_per_rev: u32,
     },
-    /// Set encoder count direction.
-    SetEncoderDir { invert: bool },
-    /// Trigger TMC4671 self-test diagnostic.
-    SelfTest { oid: u8 },
-    /// Dump all registers via klipper_output protocol.
-    DumpRegisters { oid: u8 },
-    /// Host sends pre-computed PI gains for flux/torque controllers.
+    SetEncoderDir {
+        invert: bool,
+    },
+    SelfTest {
+        oid: u8,
+    },
+    DumpRegisters {
+        oid: u8,
+    },
     SetPidGains {
         flux_p: foci_tmc4671::pid::PidPGain,
         flux_i: foci_tmc4671::pid::PidIGain,
@@ -140,7 +130,10 @@ pub enum TmcRequestKind {
     },
     /// Start commissioning (diagnostics + current tune + closed-loop entry).
     /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
-    Commission { oid: u8, profile: u8 },
+    Commission {
+        oid: u8,
+        profile: u8,
+    },
     /// Start installed tuning (mechanical ID + velocity/position + filters).
     /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
     /// Mode: 0=Unloaded, 1=Nominal, 2=HighInertia.
@@ -152,13 +145,11 @@ pub enum TmcRequestKind {
         theta_e_us: u32,
         /// Current-loop effective bandwidth Hz from inner commissioning.
         current_bandwidth_hz: u32,
-        /// Inner-confidence warning bitfield carried from commissioning.
         inner_warning_flags: u8,
         /// Requested mechanical velocity amplitude in milli-revolutions/s.
         requested_velocity_mrev_s: u32,
         /// Kinematics-derived absolute machine velocity ceiling.
         machine_velocity_ceiling_mrev_s: u32,
-        /// Explicit-versus-defaulted request provenance.
         requested_velocity_source:
             crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource,
         /// Full local displacement window spanning moving and settle.
@@ -176,19 +167,22 @@ pub enum TmcRequestKind {
         /// Machine acceleration, mrev/s^2; the stroke ramp rate.
         max_accel_mrev_s2: u32,
     },
-    /// Set velocity biquad low-pass filter cutoff frequency.
     /// 0 = disabled, 10..1000 Hz = enabled.
-    SetVelocityFilter { filter_hz: u16 },
-    /// Set torque biquad low-pass filter cutoff frequency.
+    SetVelocityFilter {
+        filter_hz: u16,
+    },
     /// 0 = disabled, 10..1000 Hz = enabled.
-    SetTorqueFilter { filter_hz: u16 },
-    /// Set position target biquad low-pass filter cutoff frequency.
+    SetTorqueFilter {
+        filter_hz: u16,
+    },
     /// 0 = disabled, 10..1000 Hz = enabled.
-    SetPositionFilter { filter_hz: u16 },
-    /// Set flux biquad low-pass filter cutoff frequency.
+    SetPositionFilter {
+        filter_hz: u16,
+    },
     /// 0 = disabled, 10..1000 Hz = enabled.
-    SetFluxFilter { filter_hz: u16 },
-    /// Host sends pre-computed PI gains for position/velocity controllers.
+    SetFluxFilter {
+        filter_hz: u16,
+    },
     /// Range: 0..32767 with P in Q8.8 and I in Q4.12.
     SetPositionGains {
         position_p: foci_tmc4671::pid::PidPGain,
@@ -196,7 +190,6 @@ pub enum TmcRequestKind {
         velocity_p: foci_tmc4671::pid::PidPGain,
         velocity_i: foci_tmc4671::pid::PidIGain,
     },
-    /// Enable or disable acceleration feedforward in the 1ms tick loop.
     SetAccelFeedforward {
         enable: bool,
         /// Gain in permille applied while step intervals shrink.
@@ -205,36 +198,32 @@ pub enum TmcRequestKind {
         decel_gain_permille: u16,
     },
     /// Set operational PIDOUT_UQ_UD_LIMITS for authority diagnostics.
-    SetVoltageLimit { voltage_limit: u32 },
+    SetVoltageLimit {
+        voltage_limit: u32,
+    },
     /// Run a bounded current-loop step diagnostic while already enabled.
     CurrentStepTest {
-        /// Object id used by the reply.
         oid: u8,
-        /// Axis driven by the scalar step.
         axis: CurrentStepAxis,
         /// Signed current target in TMC4671 current counts.
         target: i16,
-        /// Hold duration for the applied target.
         duration_ms: u16,
         /// Temporary PIDOUT_UQ_UD_LIMITS value for the diagnostic.
         voltage_limit: u16,
     },
     /// Run a bounded current-vector step diagnostic while already enabled.
     CurrentVectorStepTest {
-        /// Object id used by the reply.
         oid: u8,
         /// Signed torque-current target in TMC4671 current counts.
         torque_target: i16,
         /// Signed flux-current target in TMC4671 current counts.
         flux_target: i16,
-        /// Hold duration for the applied target.
         duration_ms: u16,
         /// Temporary PIDOUT_UQ_UD_LIMITS value for the diagnostic.
         voltage_limit: u16,
     },
     /// Run a bounded torque-current pulse and sample it before the old dwell floor.
     CurrentTorqueSampleTest {
-        /// Object id used by the reply.
         oid: u8,
         /// Signed torque-current target in TMC4671 current counts.
         target: i16,
@@ -247,7 +236,6 @@ pub enum TmcRequestKind {
     },
     /// Run a bounded torque-offset pulse in position mode and sample it.
     PositionTorqueOffsetSampleTest {
-        /// Object id used by the reply.
         oid: u8,
         /// Signed torque offset in TMC4671 current counts.
         target: i16,
@@ -258,7 +246,6 @@ pub enum TmcRequestKind {
     },
     /// Run a bounded open-loop voltage pulse and sample it.
     VoltageStepTest {
-        /// Object id used by the reply.
         oid: u8,
         /// Signed q-axis voltage component for UQ_UD_EXT.
         uq_ext: i16,
@@ -267,37 +254,39 @@ pub enum TmcRequestKind {
         /// Delay between applying the voltage vector and sampling, in milliseconds.
         sample_delay_ms: u16,
     },
-    /// Run the shared resistance-identification sweep over an already-armed
-    /// motor (diagnostic caller of the shared `ResistanceRunMode::ExternallyArmed`
-    /// engine; commissioning state is untouched).
+    /// Run the resistance-identification sweep over an already-armed motor; commissioning state is
+    /// untouched.
     ResistanceTest {
-        /// Object id used by the reply.
         oid: u8,
         /// Reserved verbosity/selector byte for future detail replies.
         detail: u8,
     },
     /// Write a TMC4671 register via SPI (dev-only).
     #[cfg(feature = "dev")]
-    Write { addr: u8, value: u32 },
+    Write {
+        addr: u8,
+        value: u32,
+    },
     /// Read a TMC4671 register via SPI (dev-only).
     #[cfg(feature = "dev")]
-    Read { oid: u8, addr: u8 },
+    Read {
+        oid: u8,
+        addr: u8,
+    },
     /// Trigger TMC4671 initialization sequence (dev-only).
     #[cfg(feature = "dev")]
     Init,
     /// Test motor rotation by sweeping PHI_E_EXT (dev-only).
     #[cfg(feature = "dev")]
-    TestSpin { revolutions: u8 },
+    TestSpin {
+        revolutions: u8,
+    },
 }
 
 pub use crate::commissioning::vocabulary_generated::AutotuneAction;
 
 impl AutotuneAction {
-    /// Return the observation slot order this acquisition requests.
-    ///
-    /// Every surviving action executes the same fixed forward/reverse slot
-    /// schedule about a common start point, so each carries the same
-    /// tail-position confound (see `IntegralSlotOrder::ForwardFirst`).
+    /// Observation slot order this acquisition requests.
     pub const fn slot_order(
         self,
     ) -> crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder {
@@ -318,11 +307,8 @@ pub fn tmc_set_current(channel: u8, run_ma: u32) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::SetCurrent { run_ma })
 }
 
-/// Validate wire inputs and build a complete motion-scale request.
-///
-/// # Errors
-///
-/// Returns [`crate::motion_scale::MotionScaleError`] when either resolution is invalid.
+/// Validate wire inputs and build a motion-scale request; errors with
+/// [`crate::motion_scale::MotionScaleError`] when either resolution is invalid.
 pub fn tmc_set_encoder_hw(
     channel: u8,
     oid: u8,
@@ -628,12 +614,9 @@ pub fn auto_calibrate_on_enable_allowed(channel: u8) -> bool {
         .unwrap_or(false)
 }
 
-/// Compute the signed command-velocity reference used by trace diagnostics.
-///
-/// This uses the same TMC4671 sign convention as `PID_VELOCITY_OFFSET`, but it
-/// intentionally does not apply the runtime feedforward multiplier. The value
-/// is a software reference derived from Klipper STEP/DIR timing, not a TMC
-/// register read.
+/// Signed command-velocity reference for trace diagnostics, in `PID_VELOCITY_OFFSET` sign
+/// convention and without the feedforward multiplier; derived from STEP/DIR timing, not a register
+/// read.
 pub fn compute_planner_command_velocity_reference(
     scale: crate::motion_scale::PlannerVelocityScale,
     step_interval: u32,
@@ -642,11 +625,8 @@ pub fn compute_planner_command_velocity_reference(
     compute_planner_velocity_offset_scaled(scale, step_interval, dir_high, 1)
 }
 
-/// Compute the velocity feedforward offset with a runtime multiplier.
-///
-/// `multiplier == 0` disables the offset. Positive products saturate to
-/// `i32::MAX`; negative products use the same magnitude limit so the value
-/// remains symmetric around zero.
+/// Velocity feedforward offset with a runtime multiplier; `0` disables it. Products saturate
+/// symmetrically at `i32::MAX` magnitude.
 pub fn compute_planner_velocity_offset_scaled(
     scale: crate::motion_scale::PlannerVelocityScale,
     step_interval: u32,
@@ -707,12 +687,8 @@ pub fn compute_planner_velocity_offset_rpm(
     if dir_high { -magnitude } else { magnitude }
 }
 
-/// Compute the signed command-RPM reference the RPM feedforward clamp bounds against.
-///
-/// This is the unity-gain (`gain_permille == 1_000`) case of
-/// `compute_planner_velocity_offset_rpm`, mirroring how
-/// `compute_planner_command_velocity_reference` relates to
-/// `compute_planner_velocity_offset_scaled`.
+/// Unity-gain (`gain_permille == 1_000`) case of `compute_planner_velocity_offset_rpm`: the signed
+/// command-RPM reference the RPM feedforward clamp bounds against.
 pub fn compute_planner_command_rpm_reference(
     scale: crate::motion_scale::PlannerRpmScale,
     step_interval: u32,
@@ -729,7 +705,6 @@ pub const VELOCITY_FF_CLAMP_K: u16 = 3;
 /// Returns the (possibly clamped) offset and whether clamping engaged. A zero
 /// `command_rpm` forces the bound to zero, so any nonzero offset is clamped.
 pub fn clamp_velocity_offset_rpm(offset: i32, command_rpm: i32, k: u16) -> (i32, bool) {
-    // i64/unsigned_abs/saturating_mul avoids overflow when command_rpm == i32::MIN.
     let bound = i64::from(command_rpm)
         .unsigned_abs()
         .saturating_mul(u64::from(k))
@@ -813,17 +788,10 @@ fn product_leq(factors: &[u64], limit: u128) -> bool {
         .is_some()
 }
 
-/// Compute the diagnostic acceleration feedforward torque offset.
-///
-/// The input `interval_add` is Klipper's `queue_step add`: the interval change
-/// in TIM5 ticks per step. A negative add means the step interval is shrinking,
-/// so velocity is increasing along the current TMC STEP/DIR velocity direction.
-///
-/// `gain_permille` is a live diagnostic gain. `1000` applies the raw
-/// acceleration estimate, `500` applies half, and `0` disables the offset.
-/// The result is clamped to `torque_limit` and is intended for the torque field
-/// of `PID_TORQUE_FLUX_OFFSET`.
-/// Compute exact planner-scale acceleration feedforward.
+/// Acceleration feedforward torque offset for the torque field of `PID_TORQUE_FLUX_OFFSET`.
+/// `interval_add` is Klipper's `queue_step add`: interval change in TIM5 ticks per step, negative
+/// while velocity is increasing. `gain_permille` 1000 applies the raw estimate, `0` disables it.
+/// The result is clamped to `torque_limit`.
 pub fn compute_planner_accel_torque_offset(
     scale: crate::motion_scale::PlannerVelocityScale,
     clock_freq: u32,
@@ -954,8 +922,6 @@ mod tests {
 
     #[test]
     fn integral_resume_decodes_and_carries_no_amplitude_order() {
-        // Resuming Integral replays one retained plan, so it selects neither an
-        // amplitude order nor a mirrored slot schedule.
         assert_eq!(
             AutotuneAction::from_u8(8),
             Some(AutotuneAction::IntegralResume)
@@ -972,10 +938,6 @@ mod tests {
         assert_eq!(AutotuneAction::IntegralResume as u8, 8);
         assert_eq!(AutotuneAction::IntegralResume.amplitude_order(), None);
         assert_eq!(AutotuneAction::IntegralResume.amplitude_slot_order(), None);
-        // Retained authority does not carry the acquisition's slot order, so a
-        // resume reconstructs at the default. Every surviving action only ever
-        // selects `ForwardFirst`, so the reconstruction is exact, not merely a
-        // fallback.
         assert_eq!(
             AutotuneAction::IntegralResume.slot_order(),
             crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst
@@ -1216,7 +1178,6 @@ mod tests {
             .unwrap()
             .planner_rpm_scale(84_000_000)
             .unwrap();
-        // 1_575_000 / 2_800 = 562.5 -> 563.
         assert_eq!(
             compute_planner_velocity_offset_rpm(scale, 2_800, false, 1_000),
             563

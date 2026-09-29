@@ -1,20 +1,10 @@
 //! Board-agnostic FOCI firmware library.
-//!
-//! Provides the [`tmc::TmcRequest`] communication type, register [`dump`]
-//! protocol, and autotune / commissioning logic. Board binaries plug in
-//! their hardware directly rather than through a shared trait surface.
 
 #![no_std]
 
-// Host-side `cargo test` always links std; make it available in test modules
-// even though the production crate is no_std.
 #[cfg(test)]
 extern crate std;
 
-// Lets code inside this crate use the crate-absolute path
-// `foci_firmware::...` (needed by __commission_reply_manifest!'s entries,
-// which must resolve the same way whether expanded here or in a board
-// crate that depends on foci-firmware normally) instead of only `crate::...`.
 extern crate self as foci_firmware;
 
 pub mod adc_vm;
@@ -51,10 +41,7 @@ pub mod trace;
 pub mod transport;
 pub mod usb_pump;
 
-/// Backwards-compatibility shim. The implementation lives in
-/// [`commissioning`]; this module exposes the engine and result types
-/// under the legacy `foci_firmware::commission::*` path so existing board
-/// binaries continue to compile through the renaming transition.
+/// Legacy `foci_firmware::commission::*` re-exports of [`commissioning`].
 pub mod commission {
     pub use crate::commissioning::backend::CommissioningBackend;
     pub use crate::commissioning::types::{

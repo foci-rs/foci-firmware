@@ -1,77 +1,21 @@
 //! TMC4671 register dump list.
-//!
-//! The firmware reads these registers via SPI and sends each value
-//! back as a `foci_dump_value` reply. The Python host collects them
-//! and pretty-prints using field definitions from `foci.py`.
 
 use foci_tmc4671::registers::SubRegister;
 
-/// Registers to dump, in address order. Must include every register
-/// referenced by `DUMP_GROUPS` in `klipper-foci/foci.py`.
-///
-/// Register addresses verified against TMC4671 datasheet rev 2.08 and
-/// `foci-tmc4671/src/registers.rs`.
+/// Registers dumped in address order; must cover every register in the host's `DUMP_GROUPS`.
 pub const DUMP_REGISTERS: &[u8] = &[
-    // ADC calibration
-    0x08, // ADC_I1_SCALE_OFFSET
-    0x09, // ADC_I0_SCALE_OFFSET
-    0x0A, // ADC_I_SELECT
-    // PWM
-    0x19, // PWM_BBM_H_BBM_L
-    0x1A, // PWM_SV_CHOP
-    // Motor config
-    0x1B, // MOTOR_TYPE_N_POLE_PAIRS
-    // Encoder
-    0x25, // ABN_DECODER_MODE
-    0x26, // ABN_DECODER_PPR
-    0x27, // ABN_DECODER_COUNT
-    0x29, // ABN_DECODER_PHI_E_PHI_M_OFFSET
-    0x2A, // ABN_DECODER_PHI_E_PHI_M
-    // Selection registers
-    0x50, // VELOCITY_SELECTION
-    0x51, // POSITION_SELECTION
-    0x52, // PHI_E_SELECTION
-    // PID gains
-    0x54, // PID_FLUX_P_FLUX_I
-    0x56, // PID_TORQUE_P_TORQUE_I
-    0x58, // PID_VELOCITY_P_VELOCITY_I
-    0x5A, // PID_POSITION_P_POSITION_I
-    // PID limits
-    0x5D, // PIDOUT_UQ_UD_LIMITS
-    0x5E, // PID_TORQUE_FLUX_LIMITS
-    // PID velocity limit
-    0x60, // PID_VELOCITY_LIMIT
-    // Motion mode
-    0x63, // MODE_RAMP_MODE_MOTION
-    // PID targets and actuals
-    0x64, // PID_TORQUE_FLUX_TARGET
-    0x65, // PID_TORQUE_FLUX_OFFSET
-    0x67, // PID_VELOCITY_OFFSET
-    0x68, // PID_POSITION_TARGET
-    0x69, // PID_TORQUE_FLUX_ACTUAL
-    0x6A, // PID_VELOCITY_ACTUAL
-    0x6B, // PID_POSITION_ACTUAL
-    // ADC limits
-    0x75, // ADC_VM_LIMITS
-    // Status
-    0x7C, // STATUS_FLAGS
+    0x08, 0x09, 0x0A, 0x19, 0x1A, 0x1B, 0x25, 0x26, 0x27, 0x29, 0x2A, 0x50, 0x51, 0x52, 0x54, 0x56,
+    0x58, 0x5A, 0x5D, 0x5E, 0x60, 0x63, 0x64, 0x65, 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x75, 0x7C,
 ];
 
-/// Sub-registers to dump after regular registers.
-///
-/// Each entry is a (synthetic_addr, sub_register) pair. The synthetic
-/// address (0x80+) is sent as `addr` in `foci_dump_value` replies so
-/// the Python host can map them to display names. Regular register
-/// addresses are 0x00-0x7F, so 0x80+ is an unambiguous sub-register
-/// indicator.
+/// `(synthetic_addr, sub_register)` pairs dumped after the regular registers. Synthetic
+/// addresses are 0x80+, disjoint from real register addresses (0x00-0x7F).
 pub const DUMP_SUB_REGISTERS: &[(u8, SubRegister)] = &[
-    // INTERIM: PID cascade internal targets (datasheet page 122)
     (0x80, foci_tmc4671::registers::INTERIM_PIDIN_TARGET_VELOCITY),
     (
         0x81,
         foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_VELOCITY,
     ),
-    // PID_ERROR: integrator state (datasheet page 122)
     (
         0x82,
         foci_tmc4671::registers::PID_ERROR_PID_POSITION_ERROR_SUM,
@@ -85,11 +29,8 @@ pub const DUMP_SUB_REGISTERS: &[(u8, SubRegister)] = &[
         0x85,
         foci_tmc4671::registers::PID_ERROR_PID_VELOCITY_ERROR_SUM,
     ),
-    // CONFIG: advanced PI gain representation bits (datasheet section 7.2)
     (0x86, foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT),
-    // ADC_RAW selector 1: low half is ADC_VM_RAW, high half is ADC_AGPI_A_RAW.
     (0x87, foci_tmc4671::registers::ADC_AGPI_A_RAW_ADC_VM_RAW),
-    // CONFIG: position (X) biquad filter enable.
     (0x8A, foci_tmc4671::registers::CONFIG_BIQUAD_X_ENABLE),
 ];
 

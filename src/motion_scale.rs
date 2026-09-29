@@ -9,13 +9,9 @@ pub(crate) const POSITION_UNITS_PER_REV: u64 = 65_536;
 /// Errors returned when constructing a [`MotionScale`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum MotionScaleError {
-    /// The encoder pulses-per-revolution value was zero.
     ZeroEncoderPpr,
-    /// The quadrature encoder count overflowed `u32`.
     EncoderCountsPerRevOverflow,
-    /// The planner steps-per-revolution value was zero.
     ZeroPlannerStepsPerRev,
-    /// The planner steps-per-revolution value exceeded the supported bound.
     PlannerStepsPerRevTooLarge,
 }
 
@@ -23,31 +19,18 @@ pub enum MotionScaleError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum MotionScaleRejection {
-    /// Encoder pulses per revolution was zero.
     EncoderPprZero = 1,
-    /// Encoder quadrature counts would overflow `u32`.
     EncoderPprTooLarge = 2,
-    /// Planner steps per revolution was zero.
     PlannerStepsPerRevZero = 3,
-    /// Planner steps per revolution exceeded the mapper bound.
     PlannerStepsPerRevTooLarge = 4,
-    /// The P1 motor runtime still considered the motor enabled.
     RuntimeEnabled = 5,
-    /// The shared armed-state mirror was set.
     MotorArmed = 6,
-    /// The physical step queue was not empty.
     QueueNotEmpty = 7,
-    /// The physical step timer was active.
     TimerActive = 8,
-    /// The board could not install the validated mapper.
     MapperInstallFailed = 9,
-    /// The encoder-count register write failed.
     EncoderRegisterWriteFailed = 10,
-    /// The physical step-width register write failed.
     StepWidthRegisterWriteFailed = 11,
-    /// The P2-to-P1 request queue was full.
     RequestQueueFull = 12,
-    /// The board-local channel was unavailable.
     InvalidChannel = 13,
 }
 
@@ -83,12 +66,8 @@ pub struct MotionScale {
 }
 
 impl MotionScale {
-    /// Constructs independent encoder and planner scales.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for zero or overflowing encoder resolution and for a
-    /// planner resolution outside the bounds enforced by [`PulseMapperConfig`].
+    /// Errors: zero or overflowing encoder resolution, or planner resolution outside the bounds
+    /// enforced by [`PulseMapperConfig`].
     pub fn new(encoder_ppr: u32, planner_steps_per_rev: u32) -> Result<Self, MotionScaleError> {
         if encoder_ppr == 0 {
             return Err(MotionScaleError::ZeroEncoderPpr);
@@ -143,9 +122,7 @@ impl MotionScale {
         self.pulse_mapper.position_error_bound_half_units()
     }
 
-    /// Builds the exact planner-timing velocity ratio for a control loop.
-    ///
-    /// Returns `None` when either supplied frequency is zero.
+    /// Exact planner-timing velocity ratio for a control loop; `None` when either frequency is zero.
     pub fn planner_velocity_scale(
         &self,
         step_timer_hz: u32,
@@ -154,9 +131,8 @@ impl MotionScale {
         PlannerVelocityScale::new(self.planner_steps_per_rev(), step_timer_hz, f_pwm_hz)
     }
 
-    /// Builds the exact planner-timing mechanical-RPM ratio for velocity feedforward.
-    ///
-    /// Returns `None` when `step_timer_hz` is zero.
+    /// Exact planner-timing mechanical-RPM ratio for velocity feedforward; `None` when
+    /// `step_timer_hz` is zero.
     pub fn planner_rpm_scale(&self, step_timer_hz: u32) -> Option<PlannerRpmScale> {
         PlannerRpmScale::new(self.planner_steps_per_rev(), step_timer_hz)
     }
@@ -206,12 +182,8 @@ impl PlannerVelocityScale {
     }
 }
 
-/// Reduced exact ratio for converting planner step timing to mechanical RPM.
-///
-/// A planner step every `denominator` step-timer ticks corresponds to one
-/// full mechanical revolution every `denominator * planner_steps_per_rev`
-/// ticks, so RPM is `60 * step_timer_hz / planner_steps_per_rev` — independent
-/// of the PWM frequency and of position units.
+/// Reduced exact ratio `60 * step_timer_hz / planner_steps_per_rev` converting planner step
+/// timing to mechanical RPM; independent of PWM frequency and position units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PlannerRpmScale {
     numerator: u64,
@@ -240,12 +212,10 @@ impl PlannerRpmScale {
         }
     }
 
-    /// Returns the reduced `60 * step_timer_hz` factor.
     pub const fn numerator(&self) -> u64 {
         self.numerator
     }
 
-    /// Returns the reduced `planner_steps_per_rev` factor.
     pub const fn denominator(&self) -> u64 {
         self.denominator
     }
@@ -332,7 +302,6 @@ mod tests {
     #[test]
     fn planner_rpm_scale_is_reduced_and_coprime() {
         let scale = MotionScale::new(1_000, 3_200).unwrap();
-        // 60*84_000_000 = 5_040_000_000; gcd(5_040_000_000, 3_200) = 3_200.
         let rpm = scale.planner_rpm_scale(84_000_000).unwrap();
         assert_eq!(rpm.numerator(), 1_575_000);
         assert_eq!(rpm.denominator(), 1);
@@ -350,8 +319,6 @@ mod tests {
 
     #[test]
     fn planner_rpm_equals_pos_per_pwm_times_exact_factor() {
-        // Exact-rational cross-check (no truncation):
-        // rpm.num * ppwm.den * 65536 == ppwm.num * rpm.den * 60 * 25000.
         let scale = MotionScale::new(1_000, 3_200).unwrap();
         let rpm = scale.planner_rpm_scale(84_000_000).unwrap();
         let ppwm = scale.planner_velocity_scale(84_000_000, 25_000).unwrap();
@@ -371,11 +338,6 @@ mod tests {
         assert_eq!(scale.position_error_bound_half_units() / 2, 8);
     }
 
-    /// Drift guard (green on arrival, not a red TDD test): pins the host-side
-    /// `derived_exec_stats` formulas in `klipper-foci/diagnostics/stepper_scale.py` to the
-    /// firmware constants they mirror. It exists to fail if `StepPulseTiming` or
-    /// `PulseMapperConfig` ever change a formula the host duplicates, since the host cannot see
-    /// those firmware types directly.
     #[test]
     fn host_exec_stats_derivations_match_firmware_formulas() {
         use crate::step_pulse::StepPulseTiming;

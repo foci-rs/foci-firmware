@@ -1,8 +1,4 @@
 //! Idle-residency CPU-load accounting for the Klipper `stats` message.
-//!
-//! The board `idle` task times each `wfi` sleep in `CLOCK_FREQ`-domain
-//! ticks and reports it here; `take` converts a stats window's accumulated
-//! idle time into the busy figure Klipper's host derives load from.
 
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
@@ -17,13 +13,8 @@ pub struct StatsSample {
     pub sumsq: u32,
 }
 
-/// Derive the `stats` fields from one window's totals.
-///
-/// `sum` is busy ticks (`wall - idle`, saturating: a lap that straddles the
-/// stats boundary can push idle past wall). `count` is the idle-lap count
-/// floored at 1 so the host never divides by zero. `sumsq` is 0: idle
-/// bracketing yields no per-pass busy series, and feeding idle variance to a
-/// host formula that expects busy variance would misreport stddev.
+/// `sum` is busy ticks (`wall - idle`, saturating); `count` is `laps` floored at 1 (host
+/// divides by it); `sumsq` is always 0.
 pub fn accumulate(wall: u32, idle: u32, laps: u32) -> StatsSample {
     StatsSample {
         count: laps.max(1),
@@ -59,15 +50,12 @@ mod tests {
 
     #[test]
     fn idle_exceeding_wall_saturates_to_zero_busy() {
-        // A lap can straddle the stats boundary, so idle may exceed wall.
         let s = accumulate(1_000, 1_500, 3);
         assert_eq!(s.sum, 0);
     }
 
     #[test]
     fn zero_laps_reports_count_one() {
-        // Fully saturated window: idle never reached. count must stay >= 1
-        // so the host's `1/(count*freq)` never divides by zero.
         let s = accumulate(1_300_000_000, 0, 0);
         assert_eq!(s.count, 1);
         assert_eq!(s.sum, 1_300_000_000);
@@ -81,18 +69,12 @@ mod tests {
 
     #[test]
     fn take_partitions_windows_and_resets() {
-        // Sole test that touches the module's global accumulators; it runs the
-        // whole record/take sequence itself so nothing else races it (the
-        // other tests call only the pure `accumulate`). Asserts each window
-        // reports only the laps recorded before its `take`, and that `take`
-        // resets the accumulators.
         record_idle_lap(300_000);
         record_idle_lap(200_000);
         let w1 = take(1_000_000);
         assert_eq!(w1.count, 2);
-        assert_eq!(w1.sum, 500_000); // 1_000_000 - (300_000 + 200_000)
+        assert_eq!(w1.sum, 500_000);
 
-        // A lap recorded only after the first take lands in the next window.
         record_idle_lap(100_000);
         let w2 = take(1_000_000);
         assert_eq!(w2.count, 1);

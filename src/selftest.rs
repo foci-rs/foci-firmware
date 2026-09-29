@@ -5,7 +5,6 @@
 pub struct SelftestStageValue {
     /// 0 = PASS, 1 = FAIL, 2 = SKIP.
     pub status: u8,
-    /// Stage-specific encoded value.
     pub value: u32,
 }
 
@@ -15,17 +14,12 @@ pub const COMMISSION_DIAGNOSTIC_CAPACITY: usize = 16;
 /// Structured commissioning diagnostic event streamed to the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, defmt::Format)]
 pub struct CommissionDiagnostic {
-    /// Commissioning phase identifier.
     pub phase: u8,
-    /// Phase-local diagnostic code.
     pub code: u8,
     /// Diagnostic status (0 = measurement, 1 = rejection/failure, 2 = warning).
     pub status: u8,
-    /// First code-specific value.
     pub value0: u32,
-    /// Second code-specific value.
     pub value1: u32,
-    /// Third code-specific value.
     pub value2: u32,
 }
 
@@ -57,13 +51,8 @@ impl SelftestStageValue {
         }
     }
 
-    /// Coil current measurement for [`SelftestStage::CoilA`] and
-    /// [`SelftestStage::CoilB`].
-    ///
-    /// The i16 is bit-reinterpreted as u16 (two's-complement bit pattern
-    /// preserved), then zero-extended to u32. The host decoder must treat
-    /// bit 15 of the lower 16 bits as the sign bit to recover negative
-    /// values (values >= 0x8000 in the low 16 bits represent negative i16).
+    /// Coil current for `CoilA`/`CoilB`: the i16's two's-complement bits zero-extended to u32;
+    /// the host must treat bit 15 as the sign.
     pub fn coil_current(current: i16) -> Self {
         Self {
             status: 0,
@@ -71,8 +60,7 @@ impl SelftestStageValue {
         }
     }
 
-    /// Constructor for a failed stage. `value` may carry an error code or
-    /// zero if no detail is available.
+    /// Failed stage; `value` may carry an error code.
     pub fn fail(value: u32) -> Self {
         Self { status: 1, value }
     }
@@ -92,21 +80,14 @@ impl SelftestStageValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum SelftestStage {
-    /// ADC zero-current offsets for both current channels.
     AdcCalibration = 1,
-    /// Coil A presence and current measurement.
     CoilA = 2,
-    /// Coil B presence and current measurement.
     CoilB = 3,
-    /// Phase wiring check across both coils.
     PhaseWiring = 4,
-    /// Encoder count delta across the alignment sweep.
     Encoder = 5,
     /// Encoder direction relative to PHI_E (0 = forward, 1 = reversed).
     EncoderDirection = 6,
-    /// Resistance-model evidence from electrical identification.
     RModelEvidence = 7,
-    /// Inductance control-model evidence from electrical identification.
     LModelEvidence = 8,
 }
 
@@ -133,10 +114,7 @@ impl SelftestStage {
     }
 }
 
-/// Per-stage results collected during a selftest run.
-///
-/// Stages are populated in phase order as they complete; `None` means
-/// the stage was skipped or aborted before running.
+/// Per-stage results; `None` means the stage was skipped or aborted before running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, defmt::Format)]
 pub struct SelftestResults {
     stages: [Option<SelftestStageValue>; SelftestStage::ALL.len()],

@@ -1,4 +1,4 @@
-//! Structured diagnostic codes emitted before fatal shutdowns when transport is usable.
+//! Diagnostic codes and counters reported to the host, plus persisted last-boot fault records.
 
 use core::ptr::{addr_of, addr_of_mut};
 use core::sync::atomic::Ordering::Relaxed;
@@ -9,95 +9,52 @@ const BREAKAWAY_BREADCRUMB_MAGIC_MASK: u32 = 0xffff_ff00;
 const BREAKAWAY_BREADCRUMB_COMPLETED: u32 = 1 << 7;
 const BREAKAWAY_BREADCRUMB_CHECKPOINT_MASK: u32 = 0x7f;
 
-/// A bounded breakaway-campaign lifecycle boundary retained across warm reset.
+/// Breakaway-campaign lifecycle boundary retained across warm reset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum BreakawayCheckpoint {
-    /// The admitted campaign was installed in the commissioning runtime.
     CampaignInstalled = 1,
-    /// The campaign is configuring its independent outer-safety envelope.
     SafetyConfigured = 2,
-    /// A campaign phase is about to program its proportional gain.
     GainProgramming = 3,
-    /// A campaign stroke is about to command its nonzero velocity target.
     TargetCommand = 4,
-    /// A campaign stroke has entered its bounded capture window.
     Capture = 5,
-    /// One campaign evidence record is being routed to the host.
     EventRouting = 6,
-    /// A non-accepting campaign terminal was handled by the outer engine.
     CampaignTerminalHandled = 7,
-    /// An accepted campaign was handed off to Integral.
     IntegralHandedOff = 8,
-    /// The probe is reading the encoder used to seed its safety baseline.
     ProbeSafetyEncoderRead = 9,
-    /// The probe is writing the proportional gain for its next observation.
     ProbeGainWrite = 10,
-    /// The probe is selecting the outer-velocity ramp mode.
     ProbeRampModeWrite = 11,
-    /// The probe is clearing the velocity integrator after programming gain.
     ProbeGainIntegratorClear = 12,
-    /// The probe is reading the encoder baseline immediately before a stroke.
     ProbeTargetBaselineRead = 13,
-    /// The probe is installing its verified temporary current clamp.
     ProbeClampInstall = 14,
-    /// The probe is clearing and checking status before a signed stroke.
     ProbeCurrentPrimitiveStart = 15,
-    /// The probe is writing its signed velocity target.
     ProbeTargetWrite = 16,
-    /// The probe is reading one moving-window encoder sample.
     ProbeMovingEncoderSample = 17,
-    /// The probe is reading one moving-window velocity-PID input sample.
     ProbeMovingCurrentInputSample = 18,
-    /// The probe is reading one moving-window velocity-PID output sample.
     ProbeMovingCurrentOutputSample = 19,
-    /// The probe is reading status at the moving-window boundary.
     ProbeMovingBoundary = 20,
-    /// The probe is writing zero velocity after its moving window.
     ProbeZeroTargetWrite = 21,
-    /// The probe is clearing the velocity integrator after commanding zero.
     ProbeZeroIntegratorClear = 22,
-    /// The probe is reading the encoder baseline for its settle window.
     ProbeSettleBaselineRead = 23,
-    /// The probe is reading one settle-window encoder sample.
     ProbeSettleEncoderSample = 24,
-    /// The probe is reading one settle-window velocity-PID input sample.
     ProbeSettleCurrentInputSample = 25,
-    /// The probe is reading one settle-window velocity-PID output sample.
     ProbeSettleCurrentOutputSample = 26,
-    /// The probe is reading status after confirmed zero-target rest.
     ProbeZeroBoundary = 27,
-    /// Origin recovery is writing its proportional gain.
     RecoveryGainWrite = 28,
-    /// Origin recovery is clearing the integrator before moving.
     RecoveryMovingIntegratorClear = 29,
-    /// Origin recovery is clearing and checking status before moving.
     RecoveryCurrentPrimitiveStart = 30,
-    /// Origin recovery is writing its return velocity target.
     RecoveryTargetWrite = 31,
-    /// Origin recovery is running one moving safety sample.
     RecoveryMovingSafetySample = 32,
-    /// Origin recovery is reading one moving velocity-PID input sample.
     RecoveryMovingCurrentInputSample = 33,
-    /// Origin recovery is reading one moving velocity-PID output sample.
     RecoveryMovingCurrentOutputSample = 34,
-    /// Origin recovery is reading status at its moving boundary.
     RecoveryMovingBoundary = 35,
-    /// Origin recovery is writing zero velocity.
     RecoveryZeroTargetWrite = 36,
-    /// Origin recovery is clearing the integrator for settle.
     RecoverySettleIntegratorClear = 37,
-    /// Origin recovery is running one zero-target safety sample.
     RecoverySettleSafetySample = 38,
-    /// Origin recovery is reading one settle velocity-PID input sample.
     RecoverySettleCurrentInputSample = 39,
-    /// Origin recovery is reading one settle velocity-PID output sample.
     RecoverySettleCurrentOutputSample = 40,
-    /// Origin recovery is reading status after confirmed rest.
     RecoveryZeroBoundary = 41,
-    /// Probe capture timing failed its frozen interval contract.
     ProbeExcursionIntervalInvalid = 42,
-    /// Probe excursion arithmetic or representation was invalid.
     ProbeExcursionArithmeticInvalid = 43,
 }
 
@@ -152,12 +109,10 @@ impl BreakawayCheckpoint {
     }
 }
 
-/// Decoded breakaway-campaign state recovered from persistent CCMRAM.
+/// Checkpoint recovered from persistent CCMRAM; `interrupted` means reset hit an active campaign.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayBreadcrumb {
-    /// Last validated campaign lifecycle boundary.
     pub checkpoint: BreakawayCheckpoint,
-    /// True when reset interrupted an active campaign at this boundary.
     pub interrupted: bool,
 }
 
@@ -265,11 +220,8 @@ fn store_persistent_breakaway_breadcrumb(checkpoint: BreakawayCheckpoint, comple
         .with(|word| word.set(encode_breakaway_breadcrumb(checkpoint, completed)));
 }
 
-/// Snapshot the persistent breakaway breadcrumb into current-boot runtime state.
-///
-/// Boards call this once during early startup, before any current-boot campaign
-/// can update the persistent word. The persistent record is deliberately left
-/// intact across a possible host-requested second restart.
+/// Snapshots the persistent breadcrumb for this boot; call once at early startup, before any
+/// campaign updates it. The persistent word is left intact.
 pub fn recover_last_boot_breakaway_breadcrumb() {
     let raw = persistent_breakaway_breadcrumb();
     let recovered = if decode_breakaway_breadcrumb(raw).is_some() {
@@ -280,7 +232,7 @@ pub fn recover_last_boot_breakaway_breadcrumb() {
     LAST_BOOT_BREAKAWAY_BREADCRUMB.store(recovered, Ordering::Release);
 }
 
-/// Consume the validated last-boot breakaway breadcrumb at most once this boot.
+/// Takes the validated last-boot breadcrumb, at most once per boot.
 pub fn take_last_boot_breakaway_breadcrumb() -> Option<BreakawayBreadcrumb> {
     decode_breakaway_breadcrumb(LAST_BOOT_BREAKAWAY_BREADCRUMB.swap(0, Ordering::AcqRel))
 }
@@ -295,7 +247,7 @@ pub fn checkpoint_breakaway_campaign(checkpoint: BreakawayCheckpoint) {
     store_persistent_breakaway_breadcrumb(checkpoint, false);
 }
 
-/// Return the current active campaign checkpoint, excluding completed records.
+/// Current checkpoint of an active (not completed) campaign.
 pub fn active_breakaway_checkpoint() -> Option<BreakawayCheckpoint> {
     let breadcrumb = decode_breakaway_breadcrumb(persistent_breakaway_breadcrumb())?;
     if breadcrumb.interrupted {
@@ -305,10 +257,8 @@ pub fn active_breakaway_checkpoint() -> Option<BreakawayCheckpoint> {
     }
 }
 
-/// Record a checkpoint only when a breakaway campaign is already active.
-///
-/// Shared motion primitives use this form so their use by another workflow
-/// cannot manufacture a breakaway breadcrumb.
+/// Records a checkpoint only if a campaign is already active, so shared primitives cannot
+/// create a breadcrumb for another workflow.
 pub fn checkpoint_active_breakaway_campaign(checkpoint: BreakawayCheckpoint) {
     if active_breakaway_checkpoint().is_some() {
         store_persistent_breakaway_breadcrumb(checkpoint, false);
@@ -344,39 +294,25 @@ pub(crate) fn panic_after_breakaway_completion_for_test() {
 
 /// Origin of a persisted last-boot fault record.
 pub mod last_panic_kind {
-    /// A Rust `panic!` (index, arithmetic, `expect`, explicit) captured by the
-    /// board panic handler. `line` and `file_hash` locate it.
+    /// Rust panic; `line` and `file_hash` locate it.
     pub const RUST_PANIC: u8 = 1;
-    /// A CPU HardFault (bus fault, usage fault, or a stack overflow that
-    /// escalated) captured by the board exception handler. `pc` locates it.
+    /// CPU HardFault; `pc` locates it.
     pub const HARD_FAULT: u8 = 2;
 }
 
-/// One board-persisted fault record from the previous boot, copied out of
-/// no-init RAM at startup so the connect-time register dump can surface it to
-/// the host without a debug probe. For a [`last_panic_kind::RUST_PANIC`] the
-/// `line` plus `file_hash` (FNV-1a of the source path) pin the panic site; for
-/// a [`last_panic_kind::HARD_FAULT`] the `pc` locates the faulting instruction.
+/// Previous-boot fault record recovered from no-init RAM. `line` and `file_hash` (FNV-1a of the
+/// source path) locate a [`last_panic_kind::RUST_PANIC`]; `pc` locates a
+/// [`last_panic_kind::HARD_FAULT`]. Unavailable fields are 0; `kind` is one of [`last_panic_kind`].
 #[derive(Clone, Copy, Debug, defmt::Format)]
 pub struct LastPanic {
-    /// One of [`last_panic_kind`].
     pub kind: u8,
-    /// Source line of a captured Rust panic, or 0 when unavailable.
     pub line: u32,
-    /// Faulting program counter of a captured HardFault, or 0 when unavailable.
     pub pc: u32,
-    /// FNV-1a hash of the panic's source file path, or 0. Match against hashes
-    /// of candidate source paths to name the file without shipping the string.
     pub file_hash: u32,
 }
 
-/// True while [`LAST_PANIC_RECORD`] holds an unread record. Publishes/consumes
-/// the record with acquire/release ordering.
 static LAST_PANIC_PRESENT: AtomicBool = AtomicBool::new(false);
 
-/// Backing store for the recovered record. Written once at startup and read
-/// once by the connect-time dump; the atomic flag serialises the two, so no
-/// lock is needed. `LastPanic` is `Copy`, so reads and writes are whole-value.
 static mut LAST_PANIC_RECORD: LastPanic = LastPanic {
     kind: 0,
     line: 0,
@@ -384,8 +320,7 @@ static mut LAST_PANIC_RECORD: LastPanic = LastPanic {
     file_hash: 0,
 };
 
-/// Store the last-boot fault record recovered from no-init RAM. Called once
-/// during board startup before the command transport is up.
+/// Stores the recovered last-boot fault record; call once at startup, before the transport is up.
 pub fn set_last_panic(record: LastPanic) {
     // SAFETY: startup is single-threaded and runs before any reader; the
     // release store below publishes the write to a later acquiring reader.
@@ -395,8 +330,7 @@ pub fn set_last_panic(record: LastPanic) {
     LAST_PANIC_PRESENT.store(true, Ordering::Release);
 }
 
-/// Take (clear) the stored last-boot fault record, if any. The connect-time
-/// register dump calls this so a recovered panic is reported exactly once.
+/// Takes and clears the stored last-boot fault record, so it is reported once.
 pub fn take_last_panic() -> Option<LastPanic> {
     if LAST_PANIC_PRESENT.swap(false, Ordering::AcqRel) {
         // SAFETY: the acquire above pairs with the release in `set_last_panic`,
@@ -407,17 +341,13 @@ pub fn take_last_panic() -> Option<LastPanic> {
     }
 }
 
-/// Fatal fault class carried by `foci_diagnostic`.
+/// Fault class carried by `foci_diagnostic`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum FaultClass {
-    /// A queue could not accept an operation.
     QueueFull = 1,
-    /// A command referenced an unknown OID.
     UnknownOid = 2,
-    /// A reset was requested while a channel was active.
     ActiveReset = 3,
-    /// A command referenced an invalid channel.
     InvalidChannel = 4,
 }
 
@@ -427,11 +357,11 @@ pub mod operation {
     pub const QUEUE_STEP: u8 = 1;
     /// `set_next_step_dir`.
     pub const SET_NEXT_STEP_DIR: u8 = 2;
-    /// Reserved: `reset_step_clock`. No diagnostic reports it; never reassign.
+    /// Reserved (`reset_step_clock`); never reassign.
     pub const RESET_STEP_CLOCK: u8 = 3;
     /// `tmc_control`.
     pub const TMC_CONTROL: u8 = 4;
-    /// Reserved: `stepper_stop`. No diagnostic reports it; never reassign.
+    /// Reserved (`stepper_stop`); never reassign.
     pub const STEPPER_STOP: u8 = 5;
     /// Stepper OID/channel lookup before a motion command.
     pub const STEPPER_LOOKUP: u8 = 6;
@@ -441,24 +371,17 @@ pub mod operation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum StepperEventReason {
-    /// Step timer found no more queued moves and disarmed itself.
     QueueEmpty = 1,
-    /// First step of a newly loaded segment missed the deadline window.
     MissedDeadlineLoad = 2,
-    /// A step/unstep event inside an active segment missed the deadline window.
     MissedDeadlineStep = 3,
-    /// A TrSync trigger stopped the physical stepper.
     TrsyncStop = 4,
-    /// P1 control code stopped the physical stepper.
     P1Stop = 5,
-    /// Host reset the step-clock epoch.
     ResetStepClock = 6,
-    /// TMC fault/disable signal stopped the motor.
     TmcDisableSignal = 7,
 }
 
 impl StepperEventReason {
-    /// Stable short name for host log formatting.
+    /// Short name for host log formatting.
     pub const fn name(self) -> &'static str {
         match self {
             Self::QueueEmpty => "queue_empty",
@@ -472,14 +395,11 @@ impl StepperEventReason {
     }
 }
 
-/// Snapshot sent to the host when a bounded stepper runtime event occurs.
+/// Stepper runtime event reported to the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StepperDiagnosticEvent {
-    /// Event reason.
     pub reason: StepperEventReason,
-    /// Board-local stepper channel.
     pub channel: u8,
-    /// Firmware step counter at event time.
     pub position: i32,
     /// TIM5/Klipper clock at event time.
     pub clock: u32,
@@ -487,7 +407,6 @@ pub struct StepperDiagnosticEvent {
     pub timer_active: bool,
     /// Board-local queue length, or `u16::MAX` if unknown at the call site.
     pub queue_len: u16,
-    /// Current direction state.
     pub direction: bool,
     /// Reason-specific value.
     pub data0: u32,
@@ -495,12 +414,10 @@ pub struct StepperDiagnosticEvent {
     pub data1: u32,
 }
 
-/// Snapshot of board-local step queue and execution counters.
+/// Board-local step queue and execution counters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StepperExecutionSnapshot {
-    /// Board-local stepper channel.
     pub channel: u8,
-    /// Firmware step counter at query time.
     pub position: i32,
     /// Accepted `queue_step` segments since boot.
     pub queued_segments: u32,
@@ -518,15 +435,12 @@ pub struct StepperExecutionSnapshot {
     pub physical_pos_pulses: u32,
     /// Negative-direction physical STEP pulses emitted since boot.
     pub physical_neg_pulses: u32,
-    /// Number of times the board armed the step timer.
     pub activation_count: u32,
     /// TIM5 clock when the step timer was most recently armed.
     pub last_activation_clock: u32,
     /// TIM5 clock when the first segment of the last activation loaded.
     pub first_load_now: u32,
-    /// Scheduled first-step clock from the first loaded segment.
     pub first_load_scheduled: u32,
-    /// Compare clock selected for the first loaded segment.
     pub first_load_compare: u32,
     /// `first_load_scheduled - first_load_now`, interpreted as signed ticks.
     pub first_load_lead_ticks: i32,
@@ -536,21 +450,15 @@ pub struct StepperExecutionSnapshot {
     pub first_step_clock: u32,
     /// `first_step_clock - last_activation_clock`, interpreted as signed ticks.
     pub first_step_delay_ticks: i32,
-    /// Segments discarded because the stepper awaited `reset_step_clock`.
     pub discarded_segments: u32,
-    /// Motor steps discarded because the stepper awaited `reset_step_clock`.
     pub discarded_steps: u32,
-    /// Times the step timer went idle because the queue was empty.
     pub queue_empty_count: u32,
-    /// Combined missed-deadline count from segment-load and in-segment checks.
     pub missed_deadline_count: u32,
-    /// Physical stepper stop count from TrSync or P1 stop paths.
     pub stop_count: u32,
     /// Queued segments drained by physical stop paths since boot.
     pub stop_drained_segments: u32,
     /// Queued motor steps drained by physical stop paths since boot.
     pub stop_drained_steps: u32,
-    /// Accepted `reset_step_clock` count.
     pub reset_count: u32,
     /// Queued segments drained by `reset_step_clock` since boot.
     pub reset_drained_segments: u32,
@@ -558,17 +466,11 @@ pub struct StepperExecutionSnapshot {
     pub reset_drained_steps: u32,
     /// [`StepperEventReason`] code for the most recent physical stop.
     pub last_stop_reason: u8,
-    /// Active timer events remaining at the most recent physical stop.
     pub last_stop_remaining_events: u32,
-    /// Queue length observed at the most recent physical stop.
     pub last_stop_queue_len: u16,
-    /// Queued segments drained by the most recent physical stop.
     pub last_stop_drained_segments: u32,
-    /// Queued motor steps drained by the most recent physical stop.
     pub last_stop_drained_steps: u32,
-    /// Non-zero when the board believes the step timer is active.
     pub timer_active: bool,
-    /// Current board-local queue length.
     pub queue_len: u16,
 }
 
@@ -650,17 +552,12 @@ impl StepperExecutionCounters {
     }
 }
 
-/// Shared board-agnostic step queue and execution counters.
-///
-/// The counters are diagnostic best-effort views over relaxed atomics. Snapshot
-/// callers may observe fields from different instants while P3 is updating
-/// them; this avoids adding locks or critical sections to the stepper hot path.
+/// Step queue and execution counters over relaxed atomics; a snapshot may mix instants.
 pub struct StepperExecutionStats<const CHANNELS: usize> {
     counters: [StepperExecutionCounters; CHANNELS],
 }
 
 impl<const CHANNELS: usize> StepperExecutionStats<CHANNELS> {
-    /// Create zeroed execution counters for `CHANNELS` stepper channels.
     pub const fn new() -> Self {
         Self {
             counters: [const { StepperExecutionCounters::new() }; CHANNELS],
@@ -729,12 +626,7 @@ impl<const CHANNELS: usize> StepperExecutionStats<CHANNELS> {
         }
     }
 
-    /// Record one executed logical motor step, its physical pulses, and first-step timing.
-    ///
-    /// Logical-step and physical-pulse totals are since-boot diagnostics. They
-    /// use explicit wrapping `u32` addition, remain unchanged by timer
-    /// activation and `reset_step_clock`, and return to zero only when firmware
-    /// constructs fresh statistics after reset.
+    /// Totals are since-boot wrapping `u32`s, unaffected by timer activation and `reset_step_clock`.
     pub fn record_executed_step(
         &self,
         channel: u8,
@@ -891,16 +783,12 @@ impl<const CHANNELS: usize> Default for StepperExecutionStats<CHANNELS> {
     }
 }
 
-/// Bounded FIFO diagnostic queue with oldest-drop overflow policy.
-///
-/// This type owns only pure queue behavior. Board crates own the static
-/// storage, critical sections, task spawning, and reply emission around it.
+/// Bounded FIFO queue that drops the oldest entry on overflow.
 pub struct StepperDiagnosticQueue<T, const N: usize> {
     queue: heapless::Deque<T, N>,
 }
 
 impl<T, const N: usize> StepperDiagnosticQueue<T, N> {
-    /// Create an empty queue.
     pub const fn new() -> Self {
         Self {
             queue: heapless::Deque::new(),
@@ -937,17 +825,8 @@ impl<T, const N: usize> Default for StepperDiagnosticQueue<T, N> {
     }
 }
 
-/// Diagnostic counter for the suspected P1/P2 reply
-/// reordering race.
-///
-/// `tmc_control` (P1) brackets its terminal-reply construction window with
-/// `mark_p1_start`/`mark_p1_end`; a `usb_task` (P2) reply call site checks
-/// `record_p2_send` at its own point of send. A nonzero `overlap_count` is
-/// direct evidence P2 sent a reply while P1's window was open -- the
-/// suspected preemption actually occurring, not just theoretically
-/// possible. Counters only: never `defmt::info!` at these call sites, since
-/// logging at a preemption-prone boundary risks the reentrant
-/// `RttEncoder::acquire` panic already documented as a known issue.
+/// Nonzero `overlap_count` means a P2 reply was sent inside P1's reply-construction window.
+/// Counters only: never log at these call sites (reentrant defmt-rtt panic).
 struct ReplyOverlapCounters {
     p1_in_flight: AtomicBool,
     overlap_count: AtomicU32,
@@ -998,8 +877,7 @@ pub fn record_p2_reply_send() {
     REPLY_OVERLAP.record_p2_send();
 }
 
-/// Current count of P2 reply sends observed inside P1's reply-construction
-/// window.
+/// Count of P2 reply sends observed inside P1's reply-construction window.
 pub fn p1_p2_reply_overlap_count() -> u32 {
     REPLY_OVERLAP.overlap_count()
 }

@@ -6,9 +6,7 @@ const HALF_PERIOD_DENOMINATOR_HZ: u32 = 2 * MAX_STEP_RISING_EDGE_HZ;
 /// Errors returned while deriving a board's immutable pulse-timing budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum StepPulseTimingError {
-    /// The step-timer frequency was zero.
     ZeroTimerFrequency,
-    /// A derived waveform timing value could not be represented in timer ticks.
     BudgetOverflow,
 }
 
@@ -22,13 +20,7 @@ pub struct StepPulseTiming {
 }
 
 impl StepPulseTiming {
-    /// Derive immutable pulse spacing and waveform costs.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StepPulseTimingError::ZeroTimerFrequency`] for a zero timer frequency and
-    /// [`StepPulseTimingError::BudgetOverflow`] when a derived timing value cannot be represented
-    /// in `u32` ticks.
+    /// Derives immutable pulse spacing and waveform costs from the step-timer frequency.
     pub fn new(step_timer_hz: u32) -> Result<Self, StepPulseTimingError> {
         if step_timer_hz == 0 {
             return Err(StepPulseTimingError::ZeroTimerFrequency);

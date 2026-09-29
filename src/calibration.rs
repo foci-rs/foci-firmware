@@ -1,32 +1,20 @@
-//! Calibration-sequence error type shared between the board binaries
-//! and the foci-firmware commissioning engine.
+//! Calibration-sequence error type.
 
-/// Errors that can occur during the TMC4671 calibration sequence.
+/// Calibration failure; `status_code` gives the wire code.
 #[derive(Debug, defmt::Format)]
 pub enum CalibrationError {
     /// SPI communication or register verification failed. Code 1.
     SpiError,
-    /// Sentinel register mismatch at arm time. Channel must be
-    /// re-commissioned. Code 2.
+    /// Sentinel mismatch at arm time; channel must be re-commissioned. Code 2.
     ChipResetDetected,
-    /// Motor already enabled (calibration not needed).
     AlreadyEnabled,
-    /// Internal firmware error (queue full, channel not initialized,
-    /// etc.).
     InternalError,
-    /// Required configuration (e.g., `tmc_set_motion_scale`) has not been
-    /// issued by the host before calibration. Most commonly this means
-    /// STEP_WIDTH has not been computed, so the TMC4671 hardware step
-    /// input would not advance the position target — the motor would
-    /// calibrate successfully but silently not respond to step pulses.
+    /// Host has not issued required configuration (e.g. `tmc_set_motion_scale`).
     ConfigFault,
-    /// Encoder presence, movement, or alignment validation failed.
     EncoderFault,
-    /// Closed-loop entry position hold was unstable (runaway or excess
-    /// drift) after exhausting the bounded-drift retry budget. Code 9.
+    /// Closed-loop entry position hold unstable after the drift retry budget. Code 9.
     ClosedLoopActivationUnstable,
-    /// Operator-requested cancel reached GPIO-first safe-state gracefully
-    /// during calibration; the MCU stays running. Code 10.
+    /// Operator cancel reached safe-state; MCU stays running. Code 10.
     Cancelled,
     /// ADC calibration produced offsets outside the expected range. Code 11.
     AdcFault,
@@ -36,33 +24,26 @@ pub enum CalibrationError {
     PhaseFault,
     /// No current was detected in the motor windings during the coil check. Code 14.
     NoCurrent,
-    /// Closed-loop entry gains were unavailable because retained gain storage
-    /// was corrupt. Code 15.
+    /// Retained gain storage was corrupt at closed-loop entry. Code 15.
     CurrentValidationFailed,
     /// A calibration state returned an invalid or unrepresentable deadline. Code 16.
     InvalidSchedule,
-    /// Sustained current-loop hold validation failed during closed-loop
-    /// activation. Code 17.
+    /// Current-loop hold validation failed at closed-loop activation. Code 17.
     CurrentHoldFailed,
-    /// A fault was latched or the STATUS pin was asserted at an interlock
-    /// check, so a `STATUS_FLAGS` clear or an enable-pin assertion was
-    /// refused. Code 18.
+    /// Latched fault or asserted STATUS pin refused a `STATUS_FLAGS` clear or enable. Code 18.
     FaultInterlock,
     /// Hardware shutdown was requested (M112 / e-stop) while calibrating. Code 19.
     Shutdown,
-    /// The most recent safe-state restore pass had one or more write
-    /// failures; arming refuses until a subsequent restore pass completes
-    /// with zero failures. Code 20.
+    /// Last safe-state restore had write failures; arming refuses until one passes cleanly. Code 20.
     SafeStateIncomplete,
 }
 
 impl CalibrationError {
-    /// Map to a numeric status code for `foci_calibrate_result`.
+    /// Numeric status code for `foci_calibrate_result`.
     pub fn status_code(&self) -> u8 {
         match self {
             Self::SpiError => 1,
             Self::ChipResetDetected => 2,
-            // Code 4 was PidFault (removed with tmc_enter_closedloop).
             Self::AlreadyEnabled => 5,
             Self::InternalError => 6,
             Self::ConfigFault => 7,

@@ -4,10 +4,7 @@ use embedded_hal_async::spi::SpiDevice;
 use foci_tmc4671::registers::{ADC_AGPI_A_RAW_ADC_VM_RAW, ADC_RAW_ADDR, DS_ANALOG_INPUT_STAGE_CFG};
 use foci_tmc4671::spi::Tmc4671Spi;
 
-/// ADC_VM input-stage mode that routes the internal VDD/2 reference.
-///
-/// TMC4671-LA Rev 1, 02/2024, `DS_ANALOG_INPUT_STAGE_CFG.ADC_VM`
-/// bits 11:8: mode 5 is `VDD/2`.
+/// `DS_ANALOG_INPUT_STAGE_CFG.ADC_VM` (bits 11:8) mode routing the internal VDD/2 reference.
 pub const ADC_VM_STAGE_MODE_VDD_HALF: u8 = 5;
 /// Number of mode-5 ADC_VM samples folded into the cached offset.
 pub const ADC_VM_OFFSET_SAMPLE_COUNT: u8 = 8;
@@ -20,9 +17,7 @@ const ADC_VM_STAGE_MASK: u32 = 0x0f << ADC_VM_STAGE_SHIFT;
 /// Captured ADC_VM mode-5 offset evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct AdcVmOffsetCapture {
-    /// Averaged raw ADC_VM count.
     pub offset_raw: u16,
-    /// Number of samples folded into `offset_raw`.
     pub sample_count: u8,
 }
 
@@ -31,7 +26,7 @@ pub const fn adc_vm_stage_cfg_with_mode(stage_cfg: u32, mode: u8) -> u32 {
     (stage_cfg & !ADC_VM_STAGE_MASK) | (((mode as u32) << ADC_VM_STAGE_SHIFT) & ADC_VM_STAGE_MASK)
 }
 
-/// Capture the ADC_VM mode-5 startup offset and restore the ADC mux registers.
+/// Averages VDD/2 samples as the ADC_VM offset, restoring the input-stage and ADC mux registers.
 pub async fn capture_adc_vm_offset<Spi>(tmc: &mut Tmc4671Spi<Spi>) -> Result<AdcVmOffsetCapture, ()>
 where
     Spi: SpiDevice<u8>,
