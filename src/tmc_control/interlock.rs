@@ -28,7 +28,7 @@ pub fn fault_interlock_tripped(tmc: &TmcChannelState) -> bool {
 ///
 /// `Err(())` when the interlock is tripped (nothing is written) or the write
 /// fails.
-pub async fn clear_status_flags<S>(
+pub(crate) async fn clear_status_flags<S>(
     tmc: &mut Tmc4671Spi<S>,
     tmc_state: &TmcChannelState,
 ) -> Result<(), ()>

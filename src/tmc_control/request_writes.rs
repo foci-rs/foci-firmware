@@ -90,7 +90,7 @@ where
 ///
 /// Returns `Err(())` if `voltage_limit` is outside the accepted diagnostic
 /// window or if the SPI write fails.
-pub async fn apply_set_voltage_limit<B>(
+pub(crate) async fn apply_set_voltage_limit<B>(
     tmc: &mut Tmc4671Spi<B>,
     tmc_state: &TmcChannelState,
     voltage_limit: u32,
@@ -167,7 +167,7 @@ where
 /// # Errors
 ///
 /// Returns `Err(())` if the SPI write fails.
-pub async fn apply_set_encoder_dir<B>(
+pub(crate) async fn apply_set_encoder_dir<B>(
     tmc: &mut Tmc4671Spi<B>,
     tmc_state: &TmcChannelState,
     invert: bool,

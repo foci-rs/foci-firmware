@@ -104,7 +104,7 @@ fn store_filter_hz(tmc_state: &TmcChannelState, target: BiquadFilterTarget, filt
 /// # Errors
 ///
 /// Returns `Err(())` if the cutoff is invalid or if any SPI write fails.
-pub async fn apply_live_filter<B>(
+pub(crate) async fn apply_live_filter<B>(
     tmc: &mut Tmc4671Spi<B>,
     tmc_state: &TmcChannelState,
     target: BiquadFilterTarget,

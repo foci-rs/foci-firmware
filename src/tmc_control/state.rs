@@ -870,7 +870,7 @@ impl TmcControlRuntime {
     ///
     /// The acceleration offset runs only when `slow_control_tick` is true. Active feedforward
     /// SPI failures are best-effort; failed inactive-offset clears are propagated so the clear is retried.
-    pub async fn apply_feedforward_tick<B>(
+    pub(crate) async fn apply_feedforward_tick<B>(
         &mut self,
         tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
         refs: TmcControlStateRefs<'_>,

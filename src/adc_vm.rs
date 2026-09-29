@@ -27,7 +27,9 @@ pub const fn adc_vm_stage_cfg_with_mode(stage_cfg: u32, mode: u8) -> u32 {
 }
 
 /// Averages VDD/2 samples as the ADC_VM offset, restoring the input-stage and ADC mux registers.
-pub async fn capture_adc_vm_offset<Spi>(tmc: &mut Tmc4671Spi<Spi>) -> Result<AdcVmOffsetCapture, ()>
+pub(crate) async fn capture_adc_vm_offset<Spi>(
+    tmc: &mut Tmc4671Spi<Spi>,
+) -> Result<AdcVmOffsetCapture, ()>
 where
     Spi: SpiDevice<u8>,
 {

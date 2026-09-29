@@ -12,7 +12,7 @@ pub const HOLD_SETTLE_DEADBAND_COUNTS: u32 = 5;
 /// Clear TMC4671 PID error accumulators.
 ///
 /// Configured gains and the active position target are unchanged.
-pub async fn clear_pid_error_sums<B>(tmc: &mut Tmc4671Spi<B>) -> Result<(), ()>
+pub(crate) async fn clear_pid_error_sums<B>(tmc: &mut Tmc4671Spi<B>) -> Result<(), ()>
 where
     B: SpiDevice<u8>,
 {
@@ -43,7 +43,7 @@ where
 ///
 /// `Err(())` when the motion scale is unconfigured, a transaction fails, or
 /// the fault interlock is tripped at the `STATUS_FLAGS` clear.
-pub async fn settle_hold_and_clear_pid_errors<B>(
+pub(crate) async fn settle_hold_and_clear_pid_errors<B>(
     tmc: &mut Tmc4671Spi<B>,
     tmc_state: &TmcChannelState,
 ) -> Result<(), ()>
