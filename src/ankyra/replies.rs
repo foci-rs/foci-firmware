@@ -1525,7 +1525,7 @@ mod tune_result_reply_wire_tests {
         let reply = FociTuneResult {
             oid: 1,
             report_seq: 0,
-            status: 12,
+            status: crate::autotune::CommissionError::PositionTuneFailed.status_code(),
             velocity_p: 0,
             velocity_i: 0,
             position_p: 0,
@@ -1538,7 +1538,8 @@ mod tune_result_reply_wire_tests {
             predicted_start_p: 0,
             rungs_measured: 3,
             stimulus_feedforward_paths: 0,
-            position_tune_outcome_code: 8,
+            position_tune_outcome_code: crate::autotune::PositionTuneOutcome::Conflict
+                .to_wire_code(),
         };
         let evidence = FociTunePositionEvidence {
             oid: 1,
