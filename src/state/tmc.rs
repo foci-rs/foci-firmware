@@ -286,7 +286,7 @@ pub struct TmcChannelState {
     /// timer; `stimulus_stop` puts it back. Owned by the stimulus facet.
     pub stimulus_prior_motor_armed: AtomicBool,
     /// Whether `stimulus_prior_motor_armed` already holds this stimulus
-    /// session's captured value. Guards `stimulus_capture_motor_armed_once`
+    /// session's captured value. Guards `stimulus_save_motor_armed`
     /// against a second `commission_stimulus_arm` call (no intervening
     /// `commission_stimulus_stop`) clobbering the real pre-session value
     /// with whatever `motor_armed` reads back after the first call armed
@@ -756,7 +756,7 @@ impl TmcChannelState {
     /// will): only the first call's `motor_armed` reading is the real
     /// pre-session value, since by the second call `motor_armed` reads back
     /// whatever the first call itself set.
-    pub fn stimulus_capture_motor_armed_once(&self) -> bool {
+    pub fn stimulus_save_motor_armed(&self) -> bool {
         if self
             .stimulus_prior_motor_armed_captured
             .swap(true, Ordering::Relaxed)
@@ -769,9 +769,9 @@ impl TmcChannelState {
         }
     }
 
-    /// Restore `motor_armed` to the value `stimulus_capture_motor_armed_once`
+    /// Restore `motor_armed` to the value `stimulus_save_motor_armed`
     /// captured, and close the stimulus session so the next
-    /// `stimulus_capture_motor_armed_once` call captures fresh. Idempotent
+    /// `stimulus_save_motor_armed` call captures fresh. Idempotent
     /// and safe to call defensively before any capture has happened this
     /// session (e.g. the spec's stop-before-first-arm admission step): with
     /// no session open, `stimulus_prior_motor_armed` holds a stale value
@@ -1172,33 +1172,33 @@ mod tests {
     }
 
     #[test]
-    fn stimulus_capture_motor_armed_once_captures_only_the_first_call() {
+    fn stimulus_save_motor_armed_captures_only_the_first_call() {
         let channel = TmcChannelState::new();
         channel.motor_armed.store(false, Relaxed);
 
-        assert!(channel.stimulus_capture_motor_armed_once());
+        assert!(channel.stimulus_save_motor_armed());
         assert!(!channel.stimulus_prior_motor_armed.load(Relaxed));
 
         // A caller arms the channel between the first capture and a
         // redundant second call; the guard must keep the captured value
         // from being overwritten by the now-armed `motor_armed` reading.
         channel.motor_armed.store(true, Relaxed);
-        assert!(!channel.stimulus_capture_motor_armed_once());
+        assert!(!channel.stimulus_save_motor_armed());
         assert!(!channel.stimulus_prior_motor_armed.load(Relaxed));
     }
 
     #[test]
-    fn stimulus_capture_motor_armed_once_captures_a_true_prior_value() {
+    fn stimulus_save_motor_armed_captures_a_true_prior_value() {
         let channel = TmcChannelState::new();
         // A prior commissioning run's ArmPreservePosition post-action, or
         // any other non-stimulus path, left the channel armed before this
         // stimulus session ever touches it.
         channel.motor_armed.store(true, Relaxed);
 
-        assert!(channel.stimulus_capture_motor_armed_once());
+        assert!(channel.stimulus_save_motor_armed());
         assert!(channel.stimulus_prior_motor_armed.load(Relaxed));
 
-        assert!(!channel.stimulus_capture_motor_armed_once());
+        assert!(!channel.stimulus_save_motor_armed());
         assert!(channel.stimulus_prior_motor_armed.load(Relaxed));
     }
 
@@ -1206,7 +1206,7 @@ mod tests {
     fn stimulus_restore_motor_armed_restores_and_reopens_capture() {
         let channel = TmcChannelState::new();
         channel.motor_armed.store(true, Relaxed);
-        assert!(channel.stimulus_capture_motor_armed_once());
+        assert!(channel.stimulus_save_motor_armed());
 
         channel.motor_armed.store(false, Relaxed);
         channel.stimulus_restore_motor_armed();
@@ -1215,7 +1215,7 @@ mod tests {
         // The session is closed, so a later stimulus session captures
         // fresh instead of silently reusing the prior session's value.
         channel.motor_armed.store(false, Relaxed);
-        assert!(channel.stimulus_capture_motor_armed_once());
+        assert!(channel.stimulus_save_motor_armed());
         assert!(!channel.stimulus_prior_motor_armed.load(Relaxed));
     }
 
@@ -1226,7 +1226,7 @@ mod tests {
         // Session N: capture a `false` prior, arm, then close the session.
         // `stimulus_prior_motor_armed` is left holding that stale `false`.
         channel.motor_armed.store(false, Relaxed);
-        assert!(channel.stimulus_capture_motor_armed_once());
+        assert!(channel.stimulus_save_motor_armed());
         channel.motor_armed.store(true, Relaxed);
         channel.stimulus_restore_motor_armed();
         assert!(!channel.motor_armed.load(Relaxed));
