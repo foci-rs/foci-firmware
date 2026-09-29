@@ -1617,29 +1617,9 @@ impl CommissioningEngine {
                     )
                     .await
                 }
-                EngineMode::Outer {
-                    phase,
-                    profile,
-                    mode,
-                    inner_lambda_us,
-                    theta_e_us,
-                    current_bandwidth_hz,
-                    inner_warning_flags,
-                    ..
-                } => {
-                    outer::step_outer_with_trace(
-                        phase,
-                        &mut self.buf,
-                        *profile,
-                        *mode,
-                        *inner_lambda_us,
-                        *theta_e_us,
-                        *current_bandwidth_hz,
-                        *inner_warning_flags,
-                        trace_summary_seqs,
-                        backend,
-                    )
-                    .await
+                EngineMode::Outer { phase, .. } => {
+                    outer::step_outer_with_trace(phase, &mut self.buf, trace_summary_seqs, backend)
+                        .await
                 }
             };
             if let StepResult::PhaseChanged(phase) = &result {

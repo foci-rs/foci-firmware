@@ -898,7 +898,7 @@ mod tests {
     };
 
     const OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS: usize = 1;
-    use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
+    use crate::autotune::{CommissionError, TransientBuffer};
     use crate::commission_dispatch::test_support::MockBackend;
     use crate::commissioning::outer::velocity::integral_reproduction::{
         AcceptancePoint, FixedGainAmplitudeProgress, IntegralPlanIdentity,
@@ -973,19 +973,9 @@ mod tests {
             backend.elapsed_us_value = 1_000;
             backend.mechanical_encoder_position_counts_value = 4;
 
-            let result = step_outer_with_trace(
-                &mut phase,
-                &mut buf,
-                CommissionProfile::Balanced,
-                OperatingMode::Nominal,
-                0,
-                0,
-                0,
-                0,
-                &mut trace_summary_seqs,
-                &mut backend,
-            )
-            .await;
+            let result =
+                step_outer_with_trace(&mut phase, &mut buf, &mut trace_summary_seqs, &mut backend)
+                    .await;
 
             assert!(matches!(result, StepResult::At(2_000)));
             assert!(matches!(

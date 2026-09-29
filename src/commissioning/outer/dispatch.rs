@@ -1,6 +1,6 @@
 //! Outer commissioning phase dispatcher.
 
-use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
+use crate::autotune::{CommissionError, TransientBuffer};
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::types::{OuterSafetyFault, PositionTuneProvenance, StepResult};
 use crate::tmc_register_values::MOTION_STOPPED;
@@ -145,16 +145,9 @@ fn velocity_timing_context(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     buf: &mut TransientBuffer,
-    _profile: CommissionProfile,
-    _mode: OperatingMode,
-    _inner_lambda_us: u32,
-    _theta_e_us: u32,
-    _current_bandwidth_hz: u32,
-    _inner_warning_flags: u8,
     trace_summary_seqs: &mut TraceSummarySeqs,
     backend: &mut B,
 ) -> StepResult {

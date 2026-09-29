@@ -3660,12 +3660,6 @@ fn dispatch_campaign_tick(phase: &mut OuterPhase, backend: &mut MockBackend) -> 
     pollster::block_on(crate::commissioning::outer::step_outer_with_trace(
         phase,
         &mut buffer,
-        crate::autotune::CommissionProfile::Balanced,
-        crate::autotune::OperatingMode::Nominal,
-        0,
-        0,
-        0,
-        0,
         &mut trace_summary_seqs,
         backend,
     ))

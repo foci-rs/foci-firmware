@@ -1510,12 +1510,6 @@ mod tests {
             let result = pollster::block_on(crate::commissioning::outer::step_outer_with_trace(
                 &mut phase,
                 &mut workspace,
-                CommissionProfile::Balanced,
-                crate::autotune::OperatingMode::Nominal,
-                0,
-                0,
-                0,
-                0,
                 &mut trace_summary_seqs,
                 &mut backend,
             ));
