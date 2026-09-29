@@ -929,6 +929,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
     }
 }
 
+#[allow(clippy::result_large_err)]
 async fn sample_one_tick<B: CommissioningBackend>(
     workspace: &mut BreakawayProbeWorkspace,
     safety: &mut OuterSafetyLimits,

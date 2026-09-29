@@ -1276,6 +1276,7 @@ fn enter_origin_recovery<B: CommissioningBackend>(
     }
 }
 
+#[allow(clippy::result_large_err)]
 async fn begin_capture<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     workspace: &mut RobustnessReversalWorkspace,
@@ -1484,6 +1485,7 @@ fn apply_held_route(state: &mut RobustnessReversalState, session: &mut Robustnes
     }
 }
 
+#[allow(clippy::result_large_err)]
 async fn open_zero_window<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     workspace: &mut RobustnessReversalWorkspace,
