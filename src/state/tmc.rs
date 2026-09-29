@@ -448,6 +448,33 @@ impl TmcChannelState {
         self.pending_run_limit.store(limit.raw(), Ordering::Release);
     }
 
+    /// Return whether a run limit is pending.
+    pub fn has_pending_run_limit(&self) -> bool {
+        self.peek_pending_run_limit().is_some()
+    }
+
+    /// Return the pending run limit without taking it.
+    pub fn peek_pending_run_limit(&self) -> Option<PidTorqueFluxLimit> {
+        let raw = self.pending_run_limit.load(Ordering::Acquire);
+        if raw == NO_PENDING_RUN_LIMIT {
+            return None;
+        }
+        Some(
+            PidTorqueFluxLimit::new(u32::from(raw))
+                .expect("pending run limit storage accepts only validated values"),
+        )
+    }
+
+    /// Clear the pending run limit if it is still `limit`, leaving a newer request in place.
+    pub fn retire_pending_run_limit(&self, limit: PidTorqueFluxLimit) {
+        let _ = self.pending_run_limit.compare_exchange(
+            limit.raw(),
+            NO_PENDING_RUN_LIMIT,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
     /// Take the pending run limit, leaving none pending.
     pub fn take_pending_run_limit(&self) -> Option<PidTorqueFluxLimit> {
         let raw = self

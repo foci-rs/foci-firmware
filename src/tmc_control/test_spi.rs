@@ -29,6 +29,7 @@ pub(crate) struct RuntimeMockSpi {
     pub(crate) last_read_request: Option<u8>,
     pub(crate) written: std::collections::BTreeMap<u8, u32>,
     pub(crate) pending_config_race: Option<(u8, std::boxed::Box<dyn Fn()>)>,
+    pub(crate) write_observer: Option<std::boxed::Box<dyn Fn(u8, u32)>>,
 }
 
 impl RuntimeMockSpi {
@@ -72,6 +73,11 @@ impl RuntimeMockSpi {
         self.pending_config_race = Some((addr, std::boxed::Box::new(handler)));
         self
     }
+
+    pub(crate) fn observe_writes(mut self, observer: impl Fn(u8, u32) + 'static) -> Self {
+        self.write_observer = Some(std::boxed::Box::new(observer));
+        self
+    }
 }
 
 impl ErrorType for RuntimeMockSpi {
@@ -99,6 +105,9 @@ impl SpiDevice<u8> for RuntimeMockSpi {
                     }
                     self.writes.push((addr, value));
                     self.written.insert(addr, value);
+                    if let Some(observer) = &self.write_observer {
+                        observer(addr, value);
+                    }
                 }
                 Operation::Write(buf) if buf.len() == 1 => {
                     let addr = buf[0] & 0x7f;
@@ -177,6 +186,44 @@ impl embedded_hal::spi::SpiDevice<u8> for RuntimeMockSpi {
             }
         }
         Ok(())
+    }
+}
+
+/// Replay an ordered write log from limit `committed_limit` and offset 0, asserting after every
+/// write to `PID_TORQUE_FLUX_LIMITS` or `PID_TORQUE_FLUX_OFFSET` that the applied limit plus the
+/// magnitude of the applied torque offset stays within `committed_limit`.
+pub(crate) fn assert_limit_plus_offset_within(writes: &[(u8, u32)], committed_limit: u32) {
+    assert_limit_plus_offset_within_schedule(writes, committed_limit, &[]);
+}
+
+/// Like [`assert_limit_plus_offset_within`], with the committed limit replaced by `new_limit`
+/// just before the write at `write_index` for each `(write_index, new_limit)` in `schedule`.
+pub(crate) fn assert_limit_plus_offset_within_schedule(
+    writes: &[(u8, u32)],
+    committed_limit: u32,
+    schedule: &[(usize, u32)],
+) {
+    use foci_tmc4671::registers::{PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET};
+
+    let mut committed = committed_limit;
+    let mut limit = committed_limit;
+    let mut offset = 0u32;
+    for (index, &(addr, value)) in writes.iter().enumerate() {
+        if let Some(&(_, next)) = schedule.iter().find(|(at, _)| *at == index) {
+            committed = next;
+        }
+        if addr == PID_TORQUE_FLUX_LIMITS.addr() {
+            limit = value & 0xffff;
+        } else if addr == PID_TORQUE_FLUX_OFFSET.addr() {
+            offset = u32::from(((value >> 16) as u16 as i16).unsigned_abs());
+        } else {
+            continue;
+        }
+        assert!(
+            limit + offset <= committed,
+            "write {index} ({addr:#04x} = {value:#010x}) leaves limit {limit} + |offset| \
+             {offset} above committed limit {committed}: {writes:?}"
+        );
     }
 }
 

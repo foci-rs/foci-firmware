@@ -113,6 +113,23 @@ pub fn homing_clamp_due(window: HomingClockWindow, clock_freq: u32) -> bool {
     (window.now.wrapping_sub(opens) as i32) >= 0
 }
 
+/// Where the torque/flux limit stands relative to the acceleration-offset headroom reservation.
+///
+/// The torque offset written by the feedforward tick is non-zero only in [`Self::Held`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum OffsetHeadroomPhase {
+    /// The reservation flag is clear and the limit runs at the committed value.
+    Released,
+    /// The reservation flag is set; the reduced limit write has not yet succeeded.
+    Engaging,
+    /// The reduced limit is applied; the offset may use the reserved headroom.
+    Held,
+    /// Returning to the committed limit: offset zero, then the limit write, then flag clear, each
+    /// retried until it succeeds. A pending lower limit is committed after its write succeeds and a
+    /// pending higher limit before it is written.
+    Releasing,
+}
+
 /// Long-lived board-agnostic TMC control state.
 pub struct TmcControlRuntime {
     channel: u8,
@@ -126,6 +143,7 @@ pub struct TmcControlRuntime {
     planner_rpm_scale: Option<crate::motion_scale::PlannerRpmScale>,
     feedforward_was_active: bool,
     torque_flux_offset_was_active: bool,
+    offset_headroom: OffsetHeadroomPhase,
     applied_velocity_offset: Option<u32>,
     applied_torque_flux_offset: Option<u32>,
     pid_error_clear_countdown_ms: u8,
@@ -151,6 +169,7 @@ impl TmcControlRuntime {
             planner_rpm_scale: None,
             feedforward_was_active: false,
             torque_flux_offset_was_active: false,
+            offset_headroom: OffsetHeadroomPhase::Released,
             applied_velocity_offset: None,
             applied_torque_flux_offset: None,
             pid_error_clear_countdown_ms: 0,
@@ -173,6 +192,7 @@ impl TmcControlRuntime {
             && self.restore_machine.is_none()
             && !self.feedforward_was_active
             && !self.torque_flux_offset_was_active
+            && matches!(self.offset_headroom, OffsetHeadroomPhase::Released)
             && self.stall_detector.is_none()
             && self.homing_state_1_retries == 0
             && self.homing_state_3_retries == 0
@@ -254,6 +274,7 @@ impl TmcControlRuntime {
         self.planner_rpm_scale = None;
         self.feedforward_was_active = false;
         self.torque_flux_offset_was_active = false;
+        self.offset_headroom = OffsetHeadroomPhase::Released;
         self.applied_velocity_offset = None;
         self.applied_torque_flux_offset = None;
         self.pid_error_clear_countdown_ms = 0;
@@ -375,7 +396,133 @@ impl TmcControlRuntime {
     }
 
     pub(crate) fn feedforward_restoration_pending(&self) -> bool {
-        self.feedforward_was_active || self.torque_flux_offset_was_active
+        self.feedforward_was_active
+            || self.torque_flux_offset_was_active
+            || self.offset_headroom_engaged()
+    }
+
+    /// Return whether the offset-headroom reservation is anywhere but released.
+    pub const fn offset_headroom_engaged(&self) -> bool {
+        !matches!(self.offset_headroom, OffsetHeadroomPhase::Released)
+    }
+
+    /// Force the offset-headroom reservation onto its release path.
+    ///
+    /// Sets the reservation flag so every operational-limit writer keeps the reduced limit, then
+    /// lets the next slow feedforward tick write the offset to zero, commit any pending run
+    /// limit, write the committed limit, and clear the flag, retrying each step until it
+    /// succeeds.
+    pub fn request_offset_headroom_release(&mut self, tmc_state: &TmcChannelState) {
+        tmc_state.set_offset_headroom_reserved(true, Relaxed);
+        self.offset_headroom = OffsetHeadroomPhase::Releasing;
+    }
+
+    fn offset_headroom_eligible(
+        &self,
+        refs: TmcControlStateRefs<'_>,
+        homing_active: bool,
+        reset: bool,
+    ) -> bool {
+        self.motor_enabled
+            && self.planner_velocity_scale.is_some()
+            && refs.tmc.accel_feedforward.load(Relaxed)
+            && (refs.tmc.accel_feedforward_accel_gain_permille.load(Relaxed) != 0
+                || refs.tmc.accel_feedforward_decel_gain_permille.load(Relaxed) != 0)
+            && self.commission_engine.is_none()
+            && self.restore_machine.is_none()
+            && !homing_active
+            && !refs.tmc.homing_clamp_active.load(Relaxed)
+            && !reset
+            && !refs.tmc.has_pending_run_limit()
+    }
+
+    async fn advance_offset_headroom<B>(
+        &mut self,
+        tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
+        refs: TmcControlStateRefs<'_>,
+        eligible: bool,
+    ) -> Result<(), ()>
+    where
+        B: embedded_hal_async::spi::SpiDevice<u8>,
+    {
+        use OffsetHeadroomPhase::{Engaging, Held, Released, Releasing};
+        match (self.offset_headroom, eligible) {
+            (Released, false) | (Held, true) => Ok(()),
+            (Released | Engaging, true) => {
+                refs.tmc.set_offset_headroom_reserved(true, Relaxed);
+                self.offset_headroom = Engaging;
+                let reserved = crate::tmc_control::current_limit::reserved_limit(
+                    refs.tmc.load_current_limit(Relaxed),
+                );
+                if tmc_spi
+                    .write_register(
+                        foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS,
+                        reserved.register_value(),
+                    )
+                    .await
+                    .is_ok()
+                {
+                    self.offset_headroom = Held;
+                }
+                Ok(())
+            }
+            (Engaging | Held, false) | (Releasing, _) => {
+                self.offset_headroom = Releasing;
+                self.release_offset_headroom_step(tmc_spi, refs).await
+            }
+        }
+    }
+
+    async fn release_offset_headroom_step<B>(
+        &mut self,
+        tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
+        refs: TmcControlStateRefs<'_>,
+    ) -> Result<(), ()>
+    where
+        B: embedded_hal_async::spi::SpiDevice<u8>,
+    {
+        if self.applied_torque_flux_offset != Some(0) {
+            tmc_spi
+                .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, 0)
+                .await
+                .map_err(|_| ())?;
+            self.applied_torque_flux_offset = Some(0);
+            self.torque_flux_offset_was_active = false;
+            self.clear_accel_trace();
+        }
+        let committed = refs.tmc.load_current_limit(Relaxed);
+        let pending = refs.tmc.peek_pending_run_limit();
+        let target = pending.unwrap_or(committed);
+        if target.raw() > committed.raw() {
+            refs.tmc.store_current_limit(target, Relaxed);
+        }
+        tmc_spi
+            .write_register(
+                foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS,
+                target.register_value(),
+            )
+            .await
+            .map_err(|_| ())?;
+        refs.tmc.store_current_limit(target, Relaxed);
+        if let Some(limit) = pending {
+            refs.tmc.retire_pending_run_limit(limit);
+        }
+        if refs.tmc.has_pending_run_limit() {
+            return Ok(());
+        }
+        refs.tmc.set_offset_headroom_reserved(false, Relaxed);
+        self.offset_headroom = OffsetHeadroomPhase::Released;
+        Ok(())
+    }
+
+    fn clear_accel_trace(&mut self) {
+        #[cfg(feature = "trace")]
+        {
+            let trace = self.trace_state_mut();
+            trace.cached_accel_torque_offset = 0;
+            trace.cached_accel_gain_permille = 0;
+            trace.cached_accel_flags = 0;
+        }
     }
 
     pub(super) fn publish_feedforward_surfaces_idle(&self, refs: TmcControlStateRefs<'_>) {
@@ -868,8 +1015,10 @@ impl TmcControlRuntime {
 
     /// Apply velocity and acceleration feedforward.
     ///
-    /// The acceleration offset runs only when `slow_control_tick` is true. Active feedforward
-    /// SPI failures are best-effort; failed inactive-offset clears are propagated so the clear is retried.
+    /// The acceleration offset runs only when `slow_control_tick` is true, and is non-zero only
+    /// while the offset-headroom reservation holds the torque/flux limit at the reduced value.
+    /// Active feedforward SPI failures are best-effort; failed inactive-offset clears and failed
+    /// reservation-release writes are propagated so they are retried.
     pub(crate) async fn apply_feedforward_tick<B>(
         &mut self,
         tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
@@ -952,6 +1101,11 @@ impl TmcControlRuntime {
             return Ok(());
         }
 
+        let eligible = self.offset_headroom_eligible(refs, homing_active, reset);
+        self.advance_offset_headroom(tmc_spi, refs, eligible)
+            .await?;
+        let offset_allowed = self.offset_headroom == OffsetHeadroomPhase::Held;
+
         if accel_ff_active {
             let accel_gain_permille = refs.tmc.accel_feedforward_accel_gain_permille.load(Relaxed);
             let decel_gain_permille = refs.tmc.accel_feedforward_decel_gain_permille.load(Relaxed);
@@ -972,7 +1126,7 @@ impl TmcControlRuntime {
             } else {
                 0
             };
-            let offset = if homing_active || reset {
+            let offset = if !offset_allowed {
                 0i16
             } else {
                 let forward = refs.stepper.direction.load(Relaxed);
@@ -992,7 +1146,7 @@ impl TmcControlRuntime {
             };
             #[cfg(feature = "trace")]
             {
-                let mut flags = if homing_active || reset {
+                let mut flags = if !offset_allowed {
                     0
                 } else {
                     crate::trace::stream::ACCEL_FF_FLAG_ENABLED
@@ -1006,7 +1160,7 @@ impl TmcControlRuntime {
                 }
                 let trace = self.trace_state_mut();
                 trace.cached_accel_torque_offset = offset as i32;
-                trace.cached_accel_gain_permille = if homing_active || reset {
+                trace.cached_accel_gain_permille = if !offset_allowed {
                     0
                 } else {
                     selected_gain_permille
@@ -1026,13 +1180,7 @@ impl TmcControlRuntime {
                 .await
                 .map_err(|_| ())?;
             self.applied_torque_flux_offset = Some(0);
-            #[cfg(feature = "trace")]
-            {
-                let trace = self.trace_state_mut();
-                trace.cached_accel_torque_offset = 0;
-                trace.cached_accel_gain_permille = 0;
-                trace.cached_accel_flags = 0;
-            }
+            self.clear_accel_trace();
         }
         self.torque_flux_offset_was_active = accel_ff_active;
 
@@ -1063,6 +1211,9 @@ impl TmcControlRuntime {
             1 => {
                 if !homing_clamp_due(window, config.clock_freq) {
                     return HomingMaintenanceResult::Deferred;
+                }
+                if self.offset_headroom_engaged() {
+                    return self.retry_homing_state_1();
                 }
                 let gains = match refs.tmc.load_outer_gains(Relaxed) {
                     Ok(gains) => gains,
@@ -1368,6 +1519,11 @@ impl TmcControlRuntime {
                 return action;
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn offset_headroom_phase_for_test(&self) -> OffsetHeadroomPhase {
+        self.offset_headroom
     }
 
     #[cfg(test)]

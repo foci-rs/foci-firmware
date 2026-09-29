@@ -23,7 +23,9 @@ use crate::tmc_control::state::{
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Relaxed;
 
-use crate::tmc_control::test_spi::RuntimeMockSpi;
+use crate::tmc_control::test_spi::{
+    RuntimeMockSpi, assert_limit_plus_offset_within, assert_limit_plus_offset_within_schedule,
+};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use foci_tmc4671::registers::{
@@ -2188,11 +2190,34 @@ fn shutdown_quiesce_clears_torque_flux_offset_activity() {
             Ok(())
         );
 
+        assert_eq!(
+            inactive_tmc.into_inner().writes,
+            std::vec![
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+                (PID_TORQUE_FLUX_LIMITS.addr(), 10_000)
+            ],
+            "the held reservation is released once, offset first"
+        );
+        let mut idle_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut idle_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(())
+        );
+
         assert!(
-            !inactive_tmc
+            !idle_tmc
                 .into_inner()
                 .attempted_write_to(PID_TORQUE_FLUX_OFFSET),
-            "shutdown quiesce should clear the offset-active latch so the next inactive tick does not emit a cleanup write"
+            "shutdown quiesce should clear the offset-active latch so later inactive ticks do not emit a cleanup write"
         );
     });
 }
@@ -2639,7 +2664,7 @@ fn clearing_the_stimulus_opt_in_restores_the_velocity_offset_and_raises_the_idle
 }
 
 #[test]
-fn torque_flux_offset_runs_under_stimulus_and_restores_after_the_opt_in_clears() {
+fn torque_flux_offset_stays_zero_under_stimulus_and_clears_after_the_opt_in_clears() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
@@ -2677,11 +2702,12 @@ fn torque_flux_offset_runs_under_stimulus_and_restores_after_the_opt_in_clears()
             .unwrap();
 
         let writes = tmc.into_inner().writes;
-        assert_eq!(
-            writes.first().map(|w| w.0),
-            Some(PID_TORQUE_FLUX_OFFSET.addr())
+        assert!(
+            writes
+                .iter()
+                .all(|write| *write == (PID_TORQUE_FLUX_OFFSET.addr(), 0)),
+            "commissioning keeps the accel offset at zero and never reserves: {writes:?}"
         );
-        assert_ne!(writes.first().map(|w| w.1), Some(0));
         assert_eq!(writes.last(), Some(&(PID_TORQUE_FLUX_OFFSET.addr(), 0)));
         assert!(!runtime.torque_flux_offset_was_active_for_test());
         assert!(!runtime.feedforward_restoration_pending());
@@ -2945,9 +2971,10 @@ fn feedforward_tick_retries_failed_torque_flux_offset_clear() {
             Ok(())
         );
         let active_writes = active_tmc.into_inner().writes;
-        assert_eq!(active_writes.len(), 1);
-        assert_eq!(active_writes[0].0, PID_TORQUE_FLUX_OFFSET.addr());
-        let active_offset = ((active_writes[0].1 >> 16) as u16) as i16 as i32;
+        assert_eq!(active_writes.len(), 2);
+        assert_eq!(active_writes[0].0, PID_TORQUE_FLUX_LIMITS.addr());
+        assert_eq!(active_writes[1].0, PID_TORQUE_FLUX_OFFSET.addr());
+        let active_offset = ((active_writes[1].1 >> 16) as u16) as i16 as i32;
         assert_ne!(active_offset, 0);
         assert!(runtime.torque_flux_offset_was_active_for_test());
         #[cfg(feature = "trace")]
@@ -3006,7 +3033,10 @@ fn feedforward_tick_retries_failed_torque_flux_offset_clear() {
         );
         assert_eq!(
             retry_tmc.into_inner().writes,
-            std::vec![(PID_TORQUE_FLUX_OFFSET.addr(), 0)]
+            std::vec![
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+                (PID_TORQUE_FLUX_LIMITS.addr(), 10_000)
+            ]
         );
         assert!(!runtime.torque_flux_offset_was_active_for_test());
         #[cfg(feature = "trace")]
@@ -3197,7 +3227,15 @@ fn feedforward_tick_skips_unchanged_torque_flux_offset_write() {
                 .await,
             Ok(())
         );
-        assert_eq!(first_tmc.into_inner().writes.len(), 1);
+        assert_eq!(
+            first_tmc
+                .into_inner()
+                .writes
+                .iter()
+                .filter(|(addr, _)| *addr == PID_TORQUE_FLUX_OFFSET.addr())
+                .count(),
+            1
+        );
 
         let mut second_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         assert_eq!(
@@ -3251,7 +3289,13 @@ fn feedforward_tick_retries_torque_flux_offset_after_a_failed_change() {
             )
             .await
             .expect("first tick applies the initial offset");
-        let first_offset = first_tmc.into_inner().writes[0].1;
+        let first_offset = first_tmc
+            .into_inner()
+            .writes
+            .iter()
+            .find(|(addr, _)| *addr == PID_TORQUE_FLUX_OFFSET.addr())
+            .expect("the first tick writes an offset")
+            .1;
 
         stepper_state.interval_add.store(10, Relaxed);
         let mut failed_tmc = Tmc4671Spi::new(
@@ -4147,5 +4191,818 @@ fn accel_offset_is_zero_when_headroom_is_zero() {
         let offset = last_accel_offset_written(1, -90).await;
 
         assert_eq!(offset.unwrap_or(0), 0);
+    });
+}
+
+struct ReservationRig {
+    runtime: TmcControlRuntime,
+    tmc_state: &'static crate::state::tmc::TmcChannelState,
+    stepper_state: &'static crate::state::stepper::StepperChannelState,
+    config: TmcControlConfig,
+    log: std::vec::Vec<(u8, u32)>,
+    initial_limit: u32,
+    committed_at_write: std::rc::Rc<std::cell::RefCell<std::vec::Vec<u32>>>,
+}
+
+impl ReservationRig {
+    fn eligible(limit_raw: u32) -> Self {
+        let tmc_state: &'static _ = std::boxed::Box::leak(std::boxed::Box::new(
+            crate::state::tmc::TmcChannelState::new(),
+        ));
+        let stepper_state: &'static _ = std::boxed::Box::leak(std::boxed::Box::new(
+            crate::state::stepper::StepperChannelState::new(),
+        ));
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
+        tmc_state.accel_feedforward.store(true, Relaxed);
+        tmc_state
+            .accel_feedforward_accel_gain_permille
+            .store(1_000, Relaxed);
+        tmc_state
+            .accel_feedforward_decel_gain_permille
+            .store(1_000, Relaxed);
+        tmc_state.store_current_limit(current_limit(limit_raw), Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        stepper_state.interval_add.store(-90, Relaxed);
+        Self {
+            runtime,
+            tmc_state,
+            stepper_state,
+            config: homing_runtime_config(),
+            log: std::vec::Vec::new(),
+            initial_limit: limit_raw,
+            committed_at_write: std::rc::Rc::default(),
+        }
+    }
+
+    fn observed(&self, spi: RuntimeMockSpi) -> RuntimeMockSpi {
+        let committed_at_write = self.committed_at_write.clone();
+        let tmc_state = self.tmc_state;
+        spi.observe_writes(move |_, _| {
+            committed_at_write
+                .borrow_mut()
+                .push(tmc_state.load_current_limit(Relaxed).register_value());
+        })
+    }
+
+    fn record(&mut self, spi: RuntimeMockSpi) {
+        self.log.extend(spi.writes);
+        let (limit, offset) = applied_pair(&self.log, self.initial_limit);
+        assert!(
+            limit + offset <= self.committed(),
+            "applied limit {limit} + |offset| {offset} exceeds committed limit {} between ticks: \
+             {:?}",
+            self.committed(),
+            self.log
+        );
+    }
+
+    fn assert_observed_invariant(&self) {
+        let committed_at_write = self.committed_at_write.borrow();
+        let mut previous = self.initial_limit;
+        let schedule: std::vec::Vec<(usize, u32)> = committed_at_write
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &committed)| {
+                let changed = committed != previous;
+                previous = committed;
+                changed.then_some((index, committed))
+            })
+            .collect();
+        assert_limit_plus_offset_within_schedule(&self.log, self.initial_limit, &schedule);
+    }
+
+    fn refs(&self) -> TmcControlStateRefs<'static> {
+        TmcControlStateRefs::new(self.tmc_state, self.stepper_state)
+    }
+
+    async fn tick_on(
+        &mut self,
+        spi: RuntimeMockSpi,
+        homing_active: bool,
+        reset: bool,
+    ) -> Result<(), ()> {
+        let mut tmc = Tmc4671Spi::new(self.observed(spi));
+        let refs = self.refs();
+        let result = self
+            .runtime
+            .apply_feedforward_tick(&mut tmc, refs, &self.config, homing_active, reset, true)
+            .await;
+        self.record(tmc.into_inner());
+        result
+    }
+
+    async fn tick(&mut self) -> Result<(), ()> {
+        self.tick_on(RuntimeMockSpi::default(), false, false).await
+    }
+
+    async fn maintenance_unit(
+        &mut self,
+        spi: RuntimeMockSpi,
+        homing_snapshot: u8,
+    ) -> HomingMaintenanceResult {
+        let mut tmc = Tmc4671Spi::new(self.observed(spi));
+        let refs = self.refs();
+        let _ = self
+            .runtime
+            .apply_feedforward_tick(
+                &mut tmc,
+                refs,
+                &self.config,
+                homing_snapshot != 0,
+                false,
+                true,
+            )
+            .await;
+        let result = self
+            .runtime
+            .apply_slow_channel_maintenance_tick(
+                &mut tmc,
+                refs,
+                &self.config,
+                homing_snapshot,
+                due_homing_window(),
+            )
+            .await;
+        self.record(tmc.into_inner());
+        result
+    }
+
+    fn committed(&self) -> u32 {
+        self.tmc_state.load_current_limit(Relaxed).register_value()
+    }
+
+    fn phase(&self) -> crate::tmc_control::state::OffsetHeadroomPhase {
+        self.runtime.offset_headroom_phase_for_test()
+    }
+
+    fn reserved_for(limit_raw: u32) -> u32 {
+        crate::tmc_control::current_limit::reserved_limit(current_limit(limit_raw)).register_value()
+    }
+}
+
+fn applied_pair(log: &[(u8, u32)], initial_limit: u32) -> (u32, u32) {
+    log.iter()
+        .fold((initial_limit, 0), |(limit, offset), &(addr, value)| {
+            if addr == PID_TORQUE_FLUX_LIMITS.addr() {
+                (value & 0xffff, offset)
+            } else if addr == PID_TORQUE_FLUX_OFFSET.addr() {
+                (limit, u32::from(torque_offset_of(value).unsigned_abs()))
+            } else {
+                (limit, offset)
+            }
+        })
+}
+
+fn limit_offset_writes(log: &[(u8, u32)]) -> std::vec::Vec<(u8, u32)> {
+    log.iter()
+        .copied()
+        .filter(|(addr, _)| {
+            *addr == PID_TORQUE_FLUX_LIMITS.addr() || *addr == PID_TORQUE_FLUX_OFFSET.addr()
+        })
+        .collect()
+}
+
+fn torque_offset_of(value: u32) -> i16 {
+    (value >> 16) as u16 as i16
+}
+
+fn is_nonzero_offset(write: &(u8, u32)) -> bool {
+    write.0 == PID_TORQUE_FLUX_OFFSET.addr() && torque_offset_of(write.1) != 0
+}
+
+fn position_of(log: &[(u8, u32)], write: (u8, u32)) -> usize {
+    log.iter()
+        .position(|entry| *entry == write)
+        .unwrap_or_else(|| panic!("expected write {write:?} in {log:?}"))
+}
+
+#[test]
+fn engage_lowers_the_limit_before_any_nonzero_offset() {
+    pollster::block_on(async {
+        let mut rig = ReservationRig::eligible(1_000);
+
+        rig.tick().await.unwrap();
+
+        let first_limit = rig
+            .log
+            .iter()
+            .position(|(addr, _)| *addr == PID_TORQUE_FLUX_LIMITS.addr())
+            .expect("engage writes the reserved limit");
+        assert_eq!(rig.log[first_limit].1, ReservationRig::reserved_for(1_000));
+        let first_nonzero = rig
+            .log
+            .iter()
+            .position(is_nonzero_offset)
+            .expect("a held reservation applies the accel offset");
+        assert!(first_limit < first_nonzero, "{:?}", rig.log);
+        assert!(rig.tmc_state.offset_headroom_reserved(Relaxed));
+        assert_limit_plus_offset_within(&rig.log, 1_000);
+    });
+}
+
+#[test]
+fn engage_limit_write_failure_keeps_the_offset_zero() {
+    pollster::block_on(async {
+        let mut rig = ReservationRig::eligible(1_000);
+
+        for _ in 0..3 {
+            let failing = RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr());
+            let _ = rig.tick_on(failing, false, false).await;
+        }
+
+        assert!(!rig.log.iter().any(is_nonzero_offset), "{:?}", rig.log);
+        assert!(rig.tmc_state.offset_headroom_reserved(Relaxed));
+
+        rig.tick().await.unwrap();
+
+        assert!(rig.log.contains(&(
+            PID_TORQUE_FLUX_LIMITS.addr(),
+            ReservationRig::reserved_for(1_000)
+        )));
+        assert!(rig.log.iter().any(is_nonzero_offset), "{:?}", rig.log);
+        assert_limit_plus_offset_within(&rig.log, 1_000);
+    });
+}
+
+#[test]
+fn disengage_clears_the_offset_before_restoring_the_limit() {
+    type Trigger = fn(&mut ReservationRig) -> bool;
+    let triggers: [(&str, Trigger); 4] = [
+        ("gains to zero", |rig| {
+            rig.tmc_state
+                .accel_feedforward_accel_gain_permille
+                .store(0, Relaxed);
+            rig.tmc_state
+                .accel_feedforward_decel_gain_permille
+                .store(0, Relaxed);
+            false
+        }),
+        ("flag off", |rig| {
+            rig.tmc_state.accel_feedforward.store(false, Relaxed);
+            false
+        }),
+        ("motor disabled", |rig| {
+            rig.runtime.set_motor_enabled_for_test(false);
+            false
+        }),
+        ("reset", |_| true),
+    ];
+    for (name, trigger) in triggers {
+        pollster::block_on(async {
+            let mut rig = ReservationRig::eligible(1_000);
+            rig.tick().await.unwrap();
+            let held_len = rig.log.len();
+
+            let reset = trigger(&mut rig);
+            rig.tick_on(RuntimeMockSpi::default(), false, reset)
+                .await
+                .unwrap();
+
+            let release = limit_offset_writes(&rig.log[held_len..]);
+            assert_eq!(
+                release,
+                std::vec![
+                    (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+                    (PID_TORQUE_FLUX_LIMITS.addr(), 1_000)
+                ],
+                "{name}"
+            );
+            assert!(!rig.tmc_state.offset_headroom_reserved(Relaxed), "{name}");
+            assert_limit_plus_offset_within(&rig.log, 1_000);
+        });
+    }
+}
+
+#[test]
+fn disengage_offset_write_failure_never_raises_the_limit() {
+    pollster::block_on(async {
+        let mut rig = ReservationRig::eligible(1_000);
+        rig.tick().await.unwrap();
+        rig.tmc_state.accel_feedforward.store(false, Relaxed);
+
+        for _ in 0..3 {
+            let failing = RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_OFFSET.addr());
+            assert_eq!(rig.tick_on(failing, false, false).await, Err(()));
+        }
+
+        let reserved = ReservationRig::reserved_for(1_000);
+        assert!(
+            !rig.log
+                .iter()
+                .any(|(addr, value)| *addr == PID_TORQUE_FLUX_LIMITS.addr() && *value > reserved),
+            "{:?}",
+            rig.log
+        );
+        assert!(rig.tmc_state.offset_headroom_reserved(Relaxed));
+
+        rig.tick().await.unwrap();
+
+        let zero = position_of(&rig.log, (PID_TORQUE_FLUX_OFFSET.addr(), 0));
+        let full = position_of(&rig.log, (PID_TORQUE_FLUX_LIMITS.addr(), 1_000));
+        assert!(zero < full);
+        assert_limit_plus_offset_within(&rig.log, 1_000);
+    });
+}
+
+#[test]
+fn disengage_limit_write_failure_is_retried() {
+    pollster::block_on(async {
+        let mut rig = ReservationRig::eligible(1_000);
+        rig.tick().await.unwrap();
+        rig.tmc_state.accel_feedforward.store(false, Relaxed);
+
+        let failing = RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr());
+        assert_eq!(rig.tick_on(failing, false, false).await, Err(()));
+        assert!(rig.tmc_state.offset_headroom_reserved(Relaxed));
+        assert!(rig.runtime.offset_headroom_engaged());
+
+        let retry_start = rig.log.len();
+        rig.tick().await.unwrap();
+
+        assert_eq!(
+            limit_offset_writes(&rig.log[retry_start..]),
+            std::vec![(PID_TORQUE_FLUX_LIMITS.addr(), 1_000)]
+        );
+        assert!(!rig.tmc_state.offset_headroom_reserved(Relaxed));
+        assert!(!rig.runtime.offset_headroom_engaged());
+        assert_limit_plus_offset_within(&rig.log, 1_000);
+    });
+}
+
+#[test]
+fn back_emf_only_mode_never_touches_the_limit() {
+    pollster::block_on(async {
+        let mut rig = ReservationRig::eligible(1_000);
+        rig.tmc_state
+            .accel_feedforward_accel_gain_permille
+            .store(0, Relaxed);
+        rig.tmc_state
+            .accel_feedforward_decel_gain_permille
+            .store(0, Relaxed);
+
+        for _ in 0..4 {
+            rig.tick().await.unwrap();
+        }
+
+        assert!(
+            !rig.log
+                .iter()
+                .any(|(addr, _)| *addr == PID_TORQUE_FLUX_LIMITS.addr()),
+            "{:?}",
+            rig.log
+        );
+        assert!(!rig.tmc_state.offset_headroom_reserved(Relaxed));
+        assert_limit_plus_offset_within(&rig.log, 1_000);
+    });
+}
+
+#[test]
+fn decel_gain_alone_reserves() {
+    pollster::block_on(async {
+        let mut rig = ReservationRig::eligible(1_000);
+        rig.tmc_state
+            .accel_feedforward_accel_gain_permille
+            .store(0, Relaxed);
+        rig.stepper_state.interval_add.store(90, Relaxed);
+
+        rig.tick().await.unwrap();
+
+        assert!(rig.tmc_state.offset_headroom_reserved(Relaxed));
+        assert!(rig.log.contains(&(
+            PID_TORQUE_FLUX_LIMITS.addr(),
+            ReservationRig::reserved_for(1_000)
+        )));
+        assert!(rig.log.iter().any(is_nonzero_offset), "{:?}", rig.log);
+        assert_limit_plus_offset_within(&rig.log, 1_000);
+    });
+}
+
+#[test]
+fn tiny_limit_has_no_headroom_and_no_error() {
+    pollster::block_on(async {
+        let mut rig = ReservationRig::eligible(1);
+
+        for _ in 0..3 {
+            assert_eq!(rig.tick().await, Ok(()));
+        }
+
+        assert!(!rig.log.iter().any(is_nonzero_offset), "{:?}", rig.log);
+        assert_limit_plus_offset_within(&rig.log, 1);
+    });
+}
+
+#[test]
+fn downward_current_change_from_a_full_reservation_stays_within_bounds() {
+    pollster::block_on(async {
+        let mut rig = ReservationRig::eligible(1_000);
+        rig.tick().await.unwrap();
+        assert!(rig.log.contains(&(
+            PID_TORQUE_FLUX_LIMITS.addr(),
+            ReservationRig::reserved_for(1_000)
+        )));
+        assert!(
+            rig.log
+                .iter()
+                .any(|write| write.0 == PID_TORQUE_FLUX_OFFSET.addr()
+                    && torque_offset_of(write.1).unsigned_abs() == 500),
+            "{:?}",
+            rig.log
+        );
+        let change_start = rig.log.len();
+
+        rig.tmc_state.store_pending_run_limit(current_limit(600));
+        rig.tick().await.unwrap();
+
+        let change = limit_offset_writes(&rig.log[change_start..]);
+        assert_eq!(
+            change,
+            std::vec![
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+                (PID_TORQUE_FLUX_LIMITS.addr(), 600)
+            ]
+        );
+        assert_eq!(rig.committed(), 600);
+        let commit_at = position_of(&rig.log, (PID_TORQUE_FLUX_LIMITS.addr(), 600));
+
+        rig.tick().await.unwrap();
+
+        let reserved = ReservationRig::reserved_for(600);
+        assert_eq!(reserved, 300);
+        assert_eq!(
+            rig.log.last().map(|write| write.0),
+            Some(PID_TORQUE_FLUX_OFFSET.addr())
+        );
+        assert!(position_of(&rig.log, (PID_TORQUE_FLUX_LIMITS.addr(), reserved)) > commit_at);
+        assert_eq!(
+            rig.log
+                .last()
+                .map(|write| torque_offset_of(write.1).unsigned_abs()),
+            Some(300)
+        );
+        rig.assert_observed_invariant();
+    });
+}
+
+fn configure_homing(rig: &mut ReservationRig) {
+    let tmc_state = rig.tmc_state;
+    tmc_state.store_outer_gains(crate::pid::test_outer_gains(123, 0, 1152, 0), Relaxed);
+    tmc_state.homing_current_ma.store(700, Relaxed);
+    tmc_state.stall_ceiling_units.store(100, Relaxed);
+    tmc_state.stall_margin_units.store(99, Relaxed);
+    tmc_state.stall_persistence.store(2, Relaxed);
+    tmc_state
+        .configure_motion_scale(
+            &crate::state::stepper::StepperChannelState::new(),
+            1_000,
+            3_200,
+        )
+        .unwrap();
+    rig.runtime.set_calibrated_for_test(true);
+}
+
+#[test]
+fn homing_snapshot_releases_before_the_clamp() {
+    pollster::block_on(async {
+        let run_limit = homing_limit_for(2300).register_value();
+        let clamp = homing_limit_for(700).register_value();
+        let mut rig = ReservationRig::eligible(run_limit);
+        configure_homing(&mut rig);
+        rig.tick().await.unwrap();
+        assert!(rig.runtime.offset_headroom_engaged());
+        let held_len = rig.log.len();
+
+        let result = rig.maintenance_unit(RuntimeMockSpi::default(), 1).await;
+
+        assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
+        assert_eq!(
+            limit_offset_writes(&rig.log[held_len..]),
+            std::vec![
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+                (PID_TORQUE_FLUX_LIMITS.addr(), run_limit),
+                (PID_TORQUE_FLUX_LIMITS.addr(), clamp),
+            ]
+        );
+        assert!(!rig.tmc_state.offset_headroom_reserved(Relaxed));
+        assert_limit_plus_offset_within(&rig.log, run_limit);
+    });
+}
+
+#[test]
+fn homing_clamp_entry_waits_for_a_pending_release() {
+    pollster::block_on(async {
+        let run_limit = homing_limit_for(2300).register_value();
+        let clamp = homing_limit_for(700).register_value();
+        let mut rig = ReservationRig::eligible(run_limit);
+        configure_homing(&mut rig);
+        rig.tick().await.unwrap();
+        let held_len = rig.log.len();
+
+        let failing = RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_OFFSET.addr());
+        let blocked = rig.maintenance_unit(failing, 1).await;
+
+        assert_eq!(blocked, HomingMaintenanceResult::RetryCurrentState);
+        assert!(
+            limit_offset_writes(&rig.log[held_len..]).is_empty(),
+            "{:?}",
+            rig.log
+        );
+        assert!(!rig.tmc_state.homing_clamp_active.load(Relaxed));
+
+        let result = rig.maintenance_unit(RuntimeMockSpi::default(), 1).await;
+
+        assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
+        assert_eq!(
+            limit_offset_writes(&rig.log[held_len..]),
+            std::vec![
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+                (PID_TORQUE_FLUX_LIMITS.addr(), run_limit),
+                (PID_TORQUE_FLUX_LIMITS.addr(), clamp),
+            ]
+        );
+        assert_limit_plus_offset_within(&rig.log, run_limit);
+    });
+}
+
+#[test]
+fn no_engagement_while_homing_clamp_is_active() {
+    pollster::block_on(async {
+        let mut rig = ReservationRig::eligible(1_000);
+        rig.tmc_state.homing_clamp_active.store(true, Relaxed);
+
+        for _ in 0..3 {
+            rig.tick().await.unwrap();
+        }
+
+        assert!(
+            !rig.log
+                .iter()
+                .any(|(addr, _)| *addr == PID_TORQUE_FLUX_LIMITS.addr()),
+            "{:?}",
+            rig.log
+        );
+        assert!(!rig.log.iter().any(is_nonzero_offset), "{:?}", rig.log);
+        assert!(!rig.tmc_state.offset_headroom_reserved(Relaxed));
+
+        rig.tmc_state.homing_clamp_active.store(false, Relaxed);
+        rig.tick().await.unwrap();
+
+        assert!(rig.runtime.offset_headroom_engaged());
+        assert!(rig.log.iter().any(is_nonzero_offset), "{:?}", rig.log);
+        assert_limit_plus_offset_within(&rig.log, 1_000);
+    });
+}
+
+#[test]
+fn no_engagement_while_a_commissioning_engine_or_restore_is_pending() {
+    type Setup = fn(&mut ReservationRig);
+    let setups: [(&str, Setup); 2] = [
+        ("commissioning engine", |rig| {
+            rig.runtime
+                .set_commission_engine(breakaway_campaign_engine());
+            rig.tmc_state
+                .commission_stimulus_active
+                .store(true, Relaxed);
+        }),
+        ("restore pending", |rig| {
+            let config = rig.config;
+            rig.runtime.begin_commissioning_terminal(
+                crate::commissioning::schedule::CommissionTerminal::CalibrateDone(
+                    zero_cal_result(),
+                ),
+                &config,
+            );
+        }),
+    ];
+    for (name, setup) in setups {
+        pollster::block_on(async {
+            let mut rig = ReservationRig::eligible(1_000);
+            setup(&mut rig);
+
+            for _ in 0..3 {
+                rig.tick().await.unwrap();
+            }
+
+            assert!(
+                !rig.log
+                    .iter()
+                    .any(|(addr, _)| *addr == PID_TORQUE_FLUX_LIMITS.addr()),
+                "{name}: {:?}",
+                rig.log
+            );
+            assert!(
+                !rig.log.iter().any(is_nonzero_offset),
+                "{name}: {:?}",
+                rig.log
+            );
+            assert!(!rig.runtime.offset_headroom_engaged(), "{name}");
+            assert_limit_plus_offset_within(&rig.log, 1_000);
+        });
+    }
+}
+
+#[test]
+fn set_current_arriving_during_a_transition_write_is_neither_lost_nor_unsafe() {
+    pollster::block_on(async {
+        let mut rig = ReservationRig::eligible(1_000);
+        let tmc_state = rig.tmc_state;
+
+        let engage_race = RuntimeMockSpi::default().race_pending_config_on_write(
+            PID_TORQUE_FLUX_LIMITS.addr(),
+            move || {
+                tmc_state.store_pending_run_limit(current_limit(600));
+            },
+        );
+        rig.tick_on(engage_race, false, false).await.unwrap();
+        assert_eq!(rig.committed(), 1_000);
+        rig.tick().await.unwrap();
+        assert_eq!(rig.committed(), 600);
+        let first_write = position_of(&rig.log, (PID_TORQUE_FLUX_LIMITS.addr(), 600));
+        rig.tick().await.unwrap();
+        assert!(rig.runtime.offset_headroom_engaged());
+
+        rig.tmc_state.accel_feedforward.store(false, Relaxed);
+        let release_race = RuntimeMockSpi::default().race_pending_config_on_write(
+            PID_TORQUE_FLUX_LIMITS.addr(),
+            move || {
+                tmc_state.store_pending_run_limit(current_limit(800));
+            },
+        );
+        let _ = rig.tick_on(release_race, false, false).await;
+        for _ in 0..2 {
+            rig.tick().await.unwrap();
+        }
+
+        assert_eq!(rig.committed(), 800);
+        assert!(!rig.tmc_state.offset_headroom_reserved(Relaxed));
+        assert_eq!(rig.tmc_state.take_pending_run_limit(), None);
+        let second_write = position_of(&rig.log, (PID_TORQUE_FLUX_LIMITS.addr(), 800));
+        for write in [first_write, second_write] {
+            let last_offset = rig.log[..write]
+                .iter()
+                .rev()
+                .find(|(addr, _)| *addr == PID_TORQUE_FLUX_OFFSET.addr())
+                .map(|write| write.1);
+            assert_eq!(last_offset, Some(0), "{:?}", rig.log);
+        }
+        assert_eq!(
+            rig.log.last(),
+            Some(&(PID_TORQUE_FLUX_LIMITS.addr(), 800)),
+            "{:?}",
+            rig.log
+        );
+        rig.assert_observed_invariant();
+    });
+}
+
+#[test]
+fn reservation_obligation_keeps_maintenance_alive() {
+    pollster::block_on(async {
+        let mut rig = ReservationRig::eligible(1_000);
+        rig.tick().await.unwrap();
+        rig.runtime.set_motor_enabled_for_test(false);
+        let failing = RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr());
+        let _ = rig.tick_on(failing, false, false).await;
+
+        assert!(!rig.runtime.maintenance_obligations_clear());
+        assert!(rig.runtime.feedforward_restoration_pending());
+
+        rig.tick().await.unwrap();
+
+        assert!(rig.runtime.maintenance_obligations_clear());
+        assert!(!rig.runtime.feedforward_restoration_pending());
+        assert_limit_plus_offset_within(&rig.log, 1_000);
+    });
+}
+
+#[test]
+fn requested_release_completes_from_a_held_reservation() {
+    pollster::block_on(async {
+        let mut rig = ReservationRig::eligible(1_000);
+        rig.tick().await.unwrap();
+        let held_len = rig.log.len();
+
+        let tmc_state = rig.tmc_state;
+        rig.runtime.request_offset_headroom_release(tmc_state);
+        assert!(rig.runtime.offset_headroom_engaged());
+        rig.tick().await.unwrap();
+
+        assert_eq!(
+            limit_offset_writes(&rig.log[held_len..]),
+            std::vec![
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+                (PID_TORQUE_FLUX_LIMITS.addr(), 1_000)
+            ]
+        );
+        assert!(!rig.tmc_state.offset_headroom_reserved(Relaxed));
+        assert_eq!(
+            rig.phase(),
+            crate::tmc_control::state::OffsetHeadroomPhase::Released
+        );
+        assert_limit_plus_offset_within(&rig.log, 1_000);
+    });
+}
+
+fn held_rig(limit_raw: u32) -> ReservationRig {
+    let mut rig = ReservationRig::eligible(limit_raw);
+    pollster::block_on(rig.tick()).unwrap();
+    assert_eq!(
+        rig.phase(),
+        crate::tmc_control::state::OffsetHeadroomPhase::Held
+    );
+    rig
+}
+
+#[test]
+fn downward_pending_limit_is_committed_only_once_the_chip_holds_it() {
+    pollster::block_on(async {
+        let mut rig = held_rig(1_000);
+        rig.tmc_state.store_pending_run_limit(current_limit(300));
+
+        let failing = RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr());
+        assert_eq!(rig.tick_on(failing, false, false).await, Err(()));
+
+        assert_eq!(rig.committed(), 1_000);
+        assert!(rig.tmc_state.has_pending_run_limit());
+
+        rig.tick().await.unwrap();
+
+        assert_eq!(rig.committed(), 300);
+        assert_eq!(applied_pair(&rig.log, 1_000), (300, 0));
+        assert!(!rig.tmc_state.has_pending_run_limit());
+        rig.assert_observed_invariant();
+    });
+}
+
+#[test]
+fn upward_pending_limit_is_committed_before_it_is_written() {
+    pollster::block_on(async {
+        let mut rig = held_rig(1_000);
+        let held_len = rig.log.len();
+        rig.tmc_state.store_pending_run_limit(current_limit(1_200));
+
+        rig.tick().await.unwrap();
+
+        assert_eq!(
+            limit_offset_writes(&rig.log[held_len..]),
+            std::vec![
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+                (PID_TORQUE_FLUX_LIMITS.addr(), 1_200)
+            ]
+        );
+        let write = position_of(&rig.log, (PID_TORQUE_FLUX_LIMITS.addr(), 1_200));
+        assert_eq!(rig.committed_at_write.borrow()[write], 1_200);
+        assert_eq!(rig.committed(), 1_200);
+        rig.assert_observed_invariant();
+    });
+}
+
+#[test]
+fn pending_limit_arriving_during_the_release_write_waits_for_the_next_tick() {
+    pollster::block_on(async {
+        let mut rig = held_rig(1_000);
+        let tmc_state = rig.tmc_state;
+        rig.tmc_state.accel_feedforward.store(false, Relaxed);
+        let race = RuntimeMockSpi::default()
+            .race_pending_config_on_write(PID_TORQUE_FLUX_LIMITS.addr(), move || {
+                tmc_state.store_pending_run_limit(current_limit(300))
+            });
+
+        rig.tick_on(race, false, false).await.unwrap();
+
+        assert_eq!(rig.committed(), 1_000);
+        assert_eq!(
+            rig.phase(),
+            crate::tmc_control::state::OffsetHeadroomPhase::Releasing
+        );
+        assert!(rig.tmc_state.offset_headroom_reserved(Relaxed));
+
+        rig.tick().await.unwrap();
+
+        assert_eq!(rig.committed(), 300);
+        assert_eq!(applied_pair(&rig.log, 1_000), (300, 0));
+        assert!(!rig.tmc_state.offset_headroom_reserved(Relaxed));
+        rig.assert_observed_invariant();
+    });
+}
+
+#[test]
+fn failed_pending_limit_write_keeps_the_request() {
+    pollster::block_on(async {
+        let mut rig = held_rig(1_000);
+        rig.tmc_state.store_pending_run_limit(current_limit(1_200));
+
+        let failing = RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr());
+        assert_eq!(rig.tick_on(failing, false, false).await, Err(()));
+
+        assert!(rig.tmc_state.has_pending_run_limit());
+
+        rig.tick().await.unwrap();
+
+        assert_eq!(rig.committed(), 1_200);
+        assert_eq!(applied_pair(&rig.log, 1_000), (1_200, 0));
+        assert!(!rig.tmc_state.has_pending_run_limit());
+        rig.assert_observed_invariant();
     });
 }
