@@ -1,5 +1,14 @@
 //! Board-specific TMC4671 hardware configuration.
 
+/// ADC_I_SELECT routing UX=I0, WY=I1, V=I2 with ADC_I0/ADC_I1 taken from the sigma-delta inputs.
+pub const ADC_I_SELECT_UX_I0_V_I2_WY_I1: u32 = foci_tmc4671::registers::AdcISelect::new()
+    .with_i0_select(0)
+    .with_i1_select(1)
+    .with_ux_select(0)
+    .with_v_select(2)
+    .with_wy_select(1)
+    .into_bits();
+
 /// DSADC MDEC (datasheet 4.11.2): `round((PWM_MAXCNT + 1) / 12) - 2`, floored at 0.
 pub const fn dsadc_mdec_from_pwm_maxcnt(pwm_maxcnt: u16) -> u16 {
     let pwm_ticks = pwm_maxcnt as u32 + 1;
@@ -115,7 +124,7 @@ impl TmcConfig {
             bbm_l: 10,
             dsadc_mdec_a: 331,
             dsadc_mdec_b: 331,
-            adc_i_select: 0x1800_0100,
+            adc_i_select: ADC_I_SELECT_UX_I0_V_I2_WY_I1,
             excitation_voltage: 512,
             electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
@@ -151,7 +160,7 @@ mod tests {
             bbm_l: 10,
             dsadc_mdec_a: 331,
             dsadc_mdec_b: 331,
-            adc_i_select: 0x1800_0100,
+            adc_i_select: ADC_I_SELECT_UX_I0_V_I2_WY_I1,
             excitation_voltage: 512,
             electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
@@ -219,7 +228,7 @@ mod tests {
             bbm_l: 40,
             dsadc_mdec_a: 660,
             dsadc_mdec_b: 331,
-            adc_i_select: 0x1800_0100,
+            adc_i_select: ADC_I_SELECT_UX_I0_V_I2_WY_I1,
             excitation_voltage: 512,
             electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
@@ -241,7 +250,7 @@ mod tests {
             bbm_l: 10,
             dsadc_mdec_a: 331,
             dsadc_mdec_b: 331,
-            adc_i_select: 0x1800_0100,
+            adc_i_select: ADC_I_SELECT_UX_I0_V_I2_WY_I1,
             excitation_voltage: 512,
             electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,
@@ -263,7 +272,7 @@ mod tests {
             bbm_l: 10,
             dsadc_mdec_a: 331,
             dsadc_mdec_b: 331,
-            adc_i_select: 0x1800_0100,
+            adc_i_select: ADC_I_SELECT_UX_I0_V_I2_WY_I1,
             excitation_voltage: 512,
             electrical_model_theta_e_us: 160,
             current_validation_flux_max_encoder_delta_counts: 4,

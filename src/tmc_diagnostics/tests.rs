@@ -158,7 +158,7 @@ static TEST_TMC_CONFIG: crate::config::TmcConfig = crate::config::TmcConfig {
     bbm_l: 9,
     dsadc_mdec_a: 331,
     dsadc_mdec_b: 331,
-    adc_i_select: 0x1800_0100,
+    adc_i_select: crate::config::ADC_I_SELECT_UX_I0_V_I2_WY_I1,
     excitation_voltage: 512,
     electrical_model_theta_e_us: 160,
     current_validation_flux_max_encoder_delta_counts: 4,
