@@ -3,10 +3,10 @@ use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
 use super::sweep_plan::{RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep};
 use super::velocity_clamp::{
-    VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
-    VelocityCurrentObserver, VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability,
-    begin_velocity_current_primitive, classify_phase_evidence, derive_probe_limit,
-    finish_velocity_current_moving_phase, restart_velocity_current_primitive,
+    PhaseObservation, VelocityCurrentClampSession, VelocityCurrentContact,
+    VelocityCurrentGuardError, VelocityCurrentObserver, VelocityCurrentZeroPhase,
+    VelocityLimitEvidenceCapability, begin_velocity_current_primitive, classify_phase_evidence,
+    derive_probe_limit, finish_velocity_current_moving_phase, restart_velocity_current_primitive,
 };
 use crate::commission_dispatch::test_support::{
     MockBackend, SpiOp, breakaway_confirmation_for_test,
@@ -28,12 +28,16 @@ fn velocity_current_guard_contract() {
     assert!(
         classify_phase_evidence(
             PidTorqueFluxLimit::ZERO,
-            0,
-            0,
-            0,
-            0,
+            PhaseObservation {
+                pid_output_peak: 0,
+                status_flags: 0
+            },
+            PhaseObservation {
+                pid_output_peak: 0,
+                status_flags: 0
+            },
             VelocityLimitEvidenceCapability::BestEffortPolling,
-            VelocityCurrentZeroPhase::Braking,
+            VelocityCurrentZeroPhase::Braking
         )
         .is_err()
     );
@@ -41,10 +45,14 @@ fn velocity_current_guard_contract() {
     let moving_flags = PID_V_OUTPUT_LIMIT | (1 << 3) | (1 << 26);
     let moving = classify_phase_evidence(
         PidTorqueFluxLimit::new(2_534).unwrap(),
-        2_533,
-        0,
-        moving_flags,
-        0,
+        PhaseObservation {
+            pid_output_peak: 2_533,
+            status_flags: moving_flags,
+        },
+        PhaseObservation {
+            pid_output_peak: 0,
+            status_flags: 0,
+        },
         VelocityLimitEvidenceCapability::LatchedFlag,
         VelocityCurrentZeroPhase::Braking,
     )
@@ -57,10 +65,14 @@ fn velocity_current_guard_contract() {
     let zero_flags = PID_V_OUTPUT_LIMIT | (1 << 15) | (1 << 26);
     let braking = classify_phase_evidence(
         PidTorqueFluxLimit::new(2_534).unwrap(),
-        2_533,
-        2_534,
-        1 << 3,
-        zero_flags,
+        PhaseObservation {
+            pid_output_peak: 2_533,
+            status_flags: 1 << 3,
+        },
+        PhaseObservation {
+            pid_output_peak: 2_534,
+            status_flags: zero_flags,
+        },
         VelocityLimitEvidenceCapability::LatchedFlag,
         VelocityCurrentZeroPhase::Braking,
     )
@@ -72,10 +84,14 @@ fn velocity_current_guard_contract() {
 
     let recovery = classify_phase_evidence(
         PidTorqueFluxLimit::new(2_534).unwrap(),
-        2_000,
-        2_534,
-        0,
-        PID_V_OUTPUT_LIMIT,
+        PhaseObservation {
+            pid_output_peak: 2_000,
+            status_flags: 0,
+        },
+        PhaseObservation {
+            pid_output_peak: 2_534,
+            status_flags: PID_V_OUTPUT_LIMIT,
+        },
         VelocityLimitEvidenceCapability::LatchedFlag,
         VelocityCurrentZeroPhase::Recovery,
     )
@@ -84,10 +100,14 @@ fn velocity_current_guard_contract() {
 
     let best_effort = classify_phase_evidence(
         PidTorqueFluxLimit::new(2_534).unwrap(),
-        2_533,
-        2_000,
-        0,
-        0,
+        PhaseObservation {
+            pid_output_peak: 2_533,
+            status_flags: 0,
+        },
+        PhaseObservation {
+            pid_output_peak: 2_000,
+            status_flags: 0,
+        },
         VelocityLimitEvidenceCapability::BestEffortPolling,
         VelocityCurrentZeroPhase::Braking,
     )
@@ -106,10 +126,14 @@ fn velocity_current_guard_contract() {
 
     let latched_quantized = classify_phase_evidence(
         PidTorqueFluxLimit::new(1_592).unwrap(),
-        1_591,
-        0,
-        PID_V_OUTPUT_LIMIT,
-        0,
+        PhaseObservation {
+            pid_output_peak: 1_591,
+            status_flags: PID_V_OUTPUT_LIMIT,
+        },
+        PhaseObservation {
+            pid_output_peak: 0,
+            status_flags: 0,
+        },
         VelocityLimitEvidenceCapability::LatchedFlag,
         VelocityCurrentZeroPhase::Braking,
     )
@@ -118,10 +142,14 @@ fn velocity_current_guard_contract() {
 
     let polled_quantized = classify_phase_evidence(
         PidTorqueFluxLimit::new(1_592).unwrap(),
-        1_591,
-        0,
-        0,
-        0,
+        PhaseObservation {
+            pid_output_peak: 1_591,
+            status_flags: 0,
+        },
+        PhaseObservation {
+            pid_output_peak: 0,
+            status_flags: 0,
+        },
         VelocityLimitEvidenceCapability::BestEffortPolling,
         VelocityCurrentZeroPhase::Braking,
     )
@@ -252,10 +280,14 @@ fn velocity_current_prevention_configuration_matrix() {
 
                                 let below = classify_phase_evidence(
                                     probe,
-                                    probe.raw() - 1,
-                                    0,
-                                    0,
-                                    0,
+                                    PhaseObservation {
+                                        pid_output_peak: probe.raw() - 1,
+                                        status_flags: 0,
+                                    },
+                                    PhaseObservation {
+                                        pid_output_peak: 0,
+                                        status_flags: 0,
+                                    },
                                     VelocityLimitEvidenceCapability::LatchedFlag,
                                     VelocityCurrentZeroPhase::Braking,
                                 )
@@ -265,10 +297,14 @@ fn velocity_current_prevention_configuration_matrix() {
 
                                 let at_boundary = classify_phase_evidence(
                                     probe,
-                                    probe.raw(),
-                                    0,
-                                    0,
-                                    0,
+                                    PhaseObservation {
+                                        pid_output_peak: probe.raw(),
+                                        status_flags: 0,
+                                    },
+                                    PhaseObservation {
+                                        pid_output_peak: 0,
+                                        status_flags: 0,
+                                    },
                                     VelocityLimitEvidenceCapability::LatchedFlag,
                                     VelocityCurrentZeroPhase::Braking,
                                 )
@@ -292,10 +328,14 @@ fn velocity_current_prevention_configuration_matrix() {
                                 };
                                 let quantized = classify_phase_evidence(
                                     probe,
-                                    sampled_peak,
-                                    0,
-                                    flags,
-                                    0,
+                                    PhaseObservation {
+                                        pid_output_peak: sampled_peak,
+                                        status_flags: flags,
+                                    },
+                                    PhaseObservation {
+                                        pid_output_peak: 0,
+                                        status_flags: 0,
+                                    },
                                     VelocityLimitEvidenceCapability::LatchedFlag,
                                     VelocityCurrentZeroPhase::Braking,
                                 )

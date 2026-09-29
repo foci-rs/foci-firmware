@@ -210,10 +210,14 @@ impl VelocityCurrentObserver {
         classify_phase_evidence(
             PidTorqueFluxLimit::new(u32::from(self.clamp_limit))
                 .map_err(|_| VelocityCurrentGuardError::InvalidLimit)?,
-            self.moving_pid_output_peak,
-            self.zero_pid_output_peak,
-            self.moving_status_flags,
-            self.zero_status_flags,
+            PhaseObservation {
+                pid_output_peak: self.moving_pid_output_peak,
+                status_flags: self.moving_status_flags,
+            },
+            PhaseObservation {
+                pid_output_peak: self.zero_pid_output_peak,
+                status_flags: self.zero_status_flags,
+            },
             self.capability,
             zero_phase,
         )
@@ -318,14 +322,18 @@ impl VelocityCurrentClampSession {
     }
 }
 
+/// Peak PID output and raw status flags observed during one phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PhaseObservation {
+    pub(crate) pid_output_peak: u16,
+    pub(crate) status_flags: u32,
+}
+
 /// Classify current-limit evidence without changing the underlying raw flags.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn classify_phase_evidence(
     clamp_limit: PidTorqueFluxLimit,
-    moving_pid_output_peak: u16,
-    zero_pid_output_peak: u16,
-    moving_status_flags: u32,
-    zero_status_flags: u32,
+    moving: PhaseObservation,
+    zero: PhaseObservation,
     capability: VelocityLimitEvidenceCapability,
     zero_phase: VelocityCurrentZeroPhase,
 ) -> Result<VelocityCurrentPhaseEvidence, VelocityCurrentGuardError> {
@@ -333,10 +341,10 @@ pub(crate) fn classify_phase_evidence(
         return Err(VelocityCurrentGuardError::InvalidLimit);
     }
 
-    let moving_contact = moving_pid_output_peak >= clamp_limit.raw()
-        || StatusFlags::from(moving_status_flags).pid_v_output_limit();
-    let zero_contact = zero_pid_output_peak >= clamp_limit.raw()
-        || StatusFlags::from(zero_status_flags).pid_v_output_limit();
+    let moving_contact = moving.pid_output_peak >= clamp_limit.raw()
+        || StatusFlags::from(moving.status_flags).pid_v_output_limit();
+    let zero_contact = zero.pid_output_peak >= clamp_limit.raw()
+        || StatusFlags::from(zero.status_flags).pid_v_output_limit();
     let contact = if moving_contact {
         VelocityCurrentContact::Moving
     } else if zero_contact {
@@ -350,10 +358,10 @@ pub(crate) fn classify_phase_evidence(
 
     Ok(VelocityCurrentPhaseEvidence {
         clamp_limit: clamp_limit.raw(),
-        moving_pid_output_peak,
-        zero_pid_output_peak,
-        moving_status_flags,
-        zero_status_flags,
+        moving_pid_output_peak: moving.pid_output_peak,
+        zero_pid_output_peak: zero.pid_output_peak,
+        moving_status_flags: moving.status_flags,
+        zero_status_flags: zero.status_flags,
         capability,
         contact,
     })
