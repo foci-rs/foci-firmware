@@ -148,12 +148,8 @@ fn copy_hold_metrics(inner: &mut InnerResult, metrics: HoldGateMetrics) {
     inner.current_hold_actionable_status_count = saturating_u8(metrics.actionable_status_count);
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "closed-loop terminal result mirrors the carried state fields"
-)]
-fn finish_commission(
-    inner: InnerResult,
+#[derive(Clone, Copy)]
+struct FallbackTerminalState {
     velocity_p: PidPGain,
     velocity_i: PidIGain,
     position_p: PidPGain,
@@ -163,54 +159,33 @@ fn finish_commission(
     torque_filter_hz: u16,
     position_filter_hz: u16,
     flux_filter_hz: u16,
-) -> StepResult {
+}
+
+fn finish_commission(inner: InnerResult, terminal: FallbackTerminalState) -> StepResult {
     StepResult::CommissionDone(CommissionResult {
         inner,
-        fallback_velocity_p: velocity_p.raw(),
-        fallback_velocity_i: velocity_i.raw(),
-        fallback_position_p: position_p.raw(),
-        fallback_position_i: position_i.raw(),
-        fallback_velocity_limit: velocity_limit,
-        velocity_filter_hz,
-        torque_filter_hz,
-        position_filter_hz,
-        flux_filter_hz,
+        fallback_velocity_p: terminal.velocity_p.raw(),
+        fallback_velocity_i: terminal.velocity_i.raw(),
+        fallback_position_p: terminal.position_p.raw(),
+        fallback_position_i: terminal.position_i.raw(),
+        fallback_velocity_limit: terminal.velocity_limit,
+        velocity_filter_hz: terminal.velocity_filter_hz,
+        torque_filter_hz: terminal.torque_filter_hz,
+        position_filter_hz: terminal.position_filter_hz,
+        flux_filter_hz: terminal.flux_filter_hz,
     })
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "failure helper preserves the same terminal state as success"
-)]
 async fn fail_sustained_hold<B: CommissioningBackend>(
     mut inner: InnerResult,
     backend: &mut B,
     failure_reason: u8,
-    velocity_p: PidPGain,
-    velocity_i: PidIGain,
-    position_p: PidPGain,
-    position_i: PidIGain,
-    velocity_limit: u32,
-    velocity_filter_hz: u16,
-    torque_filter_hz: u16,
-    position_filter_hz: u16,
-    flux_filter_hz: u16,
+    terminal: FallbackTerminalState,
 ) -> StepResult {
     crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
     inner.status = CommissionStatus::Failed(CommissionError::CurrentHoldFailed);
     inner.current_loop_failure_reason = failure_reason;
-    finish_commission(
-        inner,
-        velocity_p,
-        velocity_i,
-        position_p,
-        position_i,
-        velocity_limit,
-        velocity_filter_hz,
-        torque_filter_hz,
-        position_filter_hz,
-        flux_filter_hz,
-    )
+    finish_commission(inner, terminal)
 }
 
 fn copy_closed_loop_activation_metrics(
@@ -230,27 +205,19 @@ fn copy_closed_loop_activation_metrics(
     inner.closed_loop_activation_runaway = u8::from(runaway);
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "failure helper preserves the same terminal state as success"
-)]
-async fn fail_closed_loop_activation<B: CommissioningBackend>(
-    inner_result: &mut Option<InnerResult>,
-    backend: &mut B,
+struct ActivationFailureMetrics {
     entry_status: u8,
     position_1: i32,
     position_2: i32,
     drift: u32,
     runaway: bool,
-    velocity_p: PidPGain,
-    velocity_i: PidIGain,
-    position_p: PidPGain,
-    position_i: PidIGain,
-    velocity_limit: u32,
-    velocity_filter_hz: u16,
-    torque_filter_hz: u16,
-    position_filter_hz: u16,
-    flux_filter_hz: u16,
+}
+
+async fn fail_closed_loop_activation<B: CommissioningBackend>(
+    inner_result: &mut Option<InnerResult>,
+    backend: &mut B,
+    metrics: ActivationFailureMetrics,
+    terminal: FallbackTerminalState,
 ) -> Option<StepResult> {
     let mut inner = inner_result.take()?;
 
@@ -260,24 +227,13 @@ async fn fail_closed_loop_activation<B: CommissioningBackend>(
         crate::autotune::CURRENT_LOOP_FAILURE_CLOSED_LOOP_ACTIVATION;
     copy_closed_loop_activation_metrics(
         &mut inner,
-        entry_status,
-        position_1,
-        position_2,
-        drift,
-        runaway,
+        metrics.entry_status,
+        metrics.position_1,
+        metrics.position_2,
+        metrics.drift,
+        metrics.runaway,
     );
-    Some(finish_commission(
-        inner,
-        velocity_p,
-        velocity_i,
-        position_p,
-        position_i,
-        velocity_limit,
-        velocity_filter_hz,
-        torque_filter_hz,
-        position_filter_hz,
-        flux_filter_hz,
-    ))
+    Some(finish_commission(inner, terminal))
 }
 
 pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
@@ -763,20 +719,24 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                     && let Some(result) = fail_closed_loop_activation(
                         inner_result,
                         backend,
-                        CLOSED_LOOP_ACTIVATION_STATUS_FAIL_RUNAWAY,
-                        *position_1,
-                        pos2,
-                        drift,
-                        true,
-                        velocity_p,
-                        velocity_i,
-                        position_p,
-                        position_i,
-                        velocity_limit,
-                        velocity_filter_hz,
-                        torque_filter_hz,
-                        position_filter_hz,
-                        flux_filter_hz,
+                        ActivationFailureMetrics {
+                            entry_status: CLOSED_LOOP_ACTIVATION_STATUS_FAIL_RUNAWAY,
+                            position_1: *position_1,
+                            position_2: pos2,
+                            drift,
+                            runaway: true,
+                        },
+                        FallbackTerminalState {
+                            velocity_p,
+                            velocity_i,
+                            position_p,
+                            position_i,
+                            velocity_limit,
+                            velocity_filter_hz,
+                            torque_filter_hz,
+                            position_filter_hz,
+                            flux_filter_hz,
+                        },
                     )
                     .await
                 {
@@ -847,20 +807,24 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                     && let Some(result) = fail_closed_loop_activation(
                         inner_result,
                         backend,
-                        CLOSED_LOOP_ACTIVATION_STATUS_FAIL_DRIFT,
-                        *position_1,
-                        pos2,
-                        drift,
-                        false,
-                        velocity_p,
-                        velocity_i,
-                        position_p,
-                        position_i,
-                        velocity_limit,
-                        velocity_filter_hz,
-                        torque_filter_hz,
-                        position_filter_hz,
-                        flux_filter_hz,
+                        ActivationFailureMetrics {
+                            entry_status: CLOSED_LOOP_ACTIVATION_STATUS_FAIL_DRIFT,
+                            position_1: *position_1,
+                            position_2: pos2,
+                            drift,
+                            runaway: false,
+                        },
+                        FallbackTerminalState {
+                            velocity_p,
+                            velocity_i,
+                            position_p,
+                            position_i,
+                            velocity_limit,
+                            velocity_filter_hz,
+                            torque_filter_hz,
+                            position_filter_hz,
+                            flux_filter_hz,
+                        },
                     )
                     .await
                 {
@@ -1009,6 +973,24 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                     inner,
                     backend,
                     failure_reason,
+                    FallbackTerminalState {
+                        velocity_p,
+                        velocity_i,
+                        position_p,
+                        position_i,
+                        velocity_limit,
+                        velocity_filter_hz,
+                        torque_filter_hz,
+                        position_filter_hz,
+                        flux_filter_hz,
+                    },
+                )
+                .await;
+            }
+
+            finish_commission(
+                inner,
+                FallbackTerminalState {
                     velocity_p,
                     velocity_i,
                     position_p,
@@ -1018,21 +1000,7 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                     torque_filter_hz,
                     position_filter_hz,
                     flux_filter_hz,
-                )
-                .await;
-            }
-
-            finish_commission(
-                inner,
-                velocity_p,
-                velocity_i,
-                position_p,
-                position_i,
-                velocity_limit,
-                velocity_filter_hz,
-                torque_filter_hz,
-                position_filter_hz,
-                flux_filter_hz,
+                },
             )
         }
     }
