@@ -24,7 +24,7 @@ pub enum CalibrationError {
     PhaseFault,
     /// No current was detected in the motor windings during the coil check. Code 14.
     NoCurrent,
-    /// Retained gain storage was corrupt at closed-loop entry. Code 15.
+    /// Current-loop step-response validation failed after retry. Code 15.
     CurrentValidationFailed,
     /// A calibration state returned an invalid or unrepresentable deadline. Code 16.
     InvalidSchedule,
