@@ -687,9 +687,6 @@ fn clear_motor_sentinel() {
         .store(0, core::sync::atomic::Ordering::Relaxed);
 }
 
-/// Seeds a mock clock schedule that crosses each of the five stability
-/// samples' `OUTER_RESTORE_STABILITY_INTERVAL_US`-spaced deadlines, so a
-/// `PositionStabilityStep`-driven restore converges instead of hanging.
 fn seed_stability_clock(backend: &mut MockBackend) {
     backend.set_elapsed_us_sequence(&[
         0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
@@ -699,7 +696,6 @@ fn seed_stability_clock(backend: &mut MockBackend) {
 
 #[fixture_test]
 async fn selftest_done_zero_stages_emits_done_only() {
-    // Reset the in-flight guard to a known state before the test.
     tmc_state()
         .commission_in_flight
         .store(true, core::sync::atomic::Ordering::Relaxed);
@@ -731,7 +727,7 @@ async fn selftest_done_zero_stages_emits_done_only() {
         }
         _ => panic!("expected Terminal"),
     }
-    assert!(engine.is_none()); // consumed
+    assert!(engine.is_none());
     assert!(
         !tmc_state()
             .commission_in_flight
@@ -794,9 +790,7 @@ async fn inner_failed_commission_emits_phase_reply() {
         }
         _ => panic!("expected Terminal"),
     }
-    // restore_safe_state_via_backend cleared enable_pin via backend.set_enable_pin(false).
     assert!(!backend.enable_pin);
-    // engine consumed
     assert!(engine.is_none());
     assert!(
         !tmc_state()
@@ -1122,13 +1116,10 @@ async fn calibrate_done_preserves_step_epoch_after_gain_restore() {
     )
     .await;
 
-    // Motor electrically enabled; board owns stepper arming.
     assert!(backend.enable_pin);
     assert!(*state.motor_enabled);
     assert!(*state.calibrated);
     assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-    // Calibrate runs after M84 and before homing, so it must not create a
-    // new MCU step-position origin behind Klipper's cached position.
     assert_eq!(stepper_state().position.load(Ordering::Relaxed), 42);
 
     match outcome {
@@ -1154,7 +1145,6 @@ async fn calibrate_done_preserves_step_epoch_after_gain_restore() {
         _ => panic!("expected Terminal"),
     }
 
-    // Cleanup statics for downstream tests.
     tmc_state().motor_armed.store(false, Ordering::Relaxed);
     stepper_state().position.store(0, Ordering::Relaxed);
     clear_motor_sentinel();
@@ -1612,10 +1602,7 @@ async fn commission_done_finalize_path() {
     assert!(*state.calibrated);
     assert!(backend.enable_pin);
     assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-    // Dispatch must not mutate the firmware step epoch; the returned board
-    // action arms for steps and preserves the host-visible count.
     assert_eq!(stepper_state().position.load(Ordering::Relaxed), 99);
-    // PID_TORQUE_FLUX_LIMITS write expected: current limit re-apply.
     let writes: heapless::Vec<u8, 32> = backend
         .spi_log
         .iter()
@@ -1645,7 +1632,6 @@ async fn commission_done_finalize_path() {
         }
         _ => panic!("expected CommissionResult"),
     }
-    // Cleanup
     tmc_state().motor_armed.store(false, Ordering::Relaxed);
     store_published_controller_cache(&mut state, original);
     stepper_state().position.store(0, Ordering::Relaxed);
@@ -1844,7 +1830,7 @@ async fn outer_failed_safety_envelope_violation_full_disarm() {
     let mut backend = MockBackend::new();
     let (_, _, mut gains) = fresh_state_locals();
     let mut cal = true;
-    let mut en = true; // simulate motor was previously armed
+    let mut en = true;
     tmc_state().motor_armed.store(true, Ordering::Relaxed);
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
     let mut engine = Some(robustness_reversal_engine());
@@ -1863,7 +1849,6 @@ async fn outer_failed_safety_envelope_violation_full_disarm() {
     assert!(!*state.motor_enabled);
     assert!(!backend.enable_pin);
     assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-    // Safety fault skips stability check — no delays.
     assert!(backend.delay_us_log.is_empty());
 
     match outcome {
@@ -1884,10 +1869,6 @@ async fn position_tune_failure_reports_its_specific_outcome_on_the_wire() {
     use crate::autotune::PositionTuneOutcome;
 
     let mut backend = MockBackend::new();
-    // `MockBackend::new()` leaves `PID_VELOCITY_P_VELOCITY_I` unset, so
-    // `predict` reads a zero velocity P and `compute_k` rejects it before
-    // anything is commanded, failing with `ConfigurationInvalid` -- a real
-    // failure path, not an injected one.
     let (_, _, mut gains) = fresh_state_locals();
     let mut cal = true;
     let mut en = true;
@@ -1904,8 +1885,6 @@ async fn position_tune_failure_reports_its_specific_outcome_on_the_wire() {
     seed_motor_sentinel(&mut backend).await;
     seed_stability_clock(&mut backend);
 
-    // The engine announces the phase before it runs, so the failing tick is
-    // not the first one.
     let mut step = StepResult::ReadyNow;
     for _ in 0..16 {
         step = engine
@@ -1924,9 +1903,6 @@ async fn position_tune_failure_reports_its_specific_outcome_on_the_wire() {
 
     let outcome = drive_commission_result(step, &mut engine, &mut backend, &mut state, 4095).await;
 
-    // The generic `PositionTuneFailed` status tells the host only *that* the
-    // phase failed; the outcome code is the only channel carrying *which*
-    // failure it was, and the failure restore path must not zero it.
     match outcome {
         CommissionOutcome::Terminal {
             reply: ReplyPayload::TuneResult { status, result, .. },
@@ -1941,11 +1917,6 @@ async fn position_tune_failure_reports_its_specific_outcome_on_the_wire() {
                 PositionTuneOutcome::ConfigurationInvalid.to_wire_code()
             );
             assert_ne!(result.position_tune_outcome_code, 0);
-            // `predict` fails before it ever refreshes the phase's
-            // provenance, so the restore path's `position_tune_failure_provenance()`
-            // read carries the same all-default block a legacy failure did --
-            // this pins that the read happens at all, not just that it's
-            // nonzero in the cases that reach a rung.
             assert_eq!(
                 result.position_tune,
                 crate::commissioning::types::PositionTuneProvenance::default()
@@ -1989,9 +1960,6 @@ async fn position_tune_failure_carries_real_rung_evidence_through_the_dispatch_p
     );
     seed_motor_sentinel(&mut backend).await;
 
-    // Trips the quarter-turn encoder-aliasing safety guard on the second
-    // rung's stroke, so the terminal carries the first rung's completed
-    // evidence, not a zeroed block.
     let mut clock_us = backend.elapsed_us_value;
     let mut step = StepResult::ReadyNow;
     let mut start_raw: Option<u16> = None;
@@ -2049,11 +2017,6 @@ async fn position_tune_failure_carries_real_rung_evidence_through_the_dispatch_p
     );
     let start_raw = start_raw.expect("at least one rung must have been driven");
 
-    // `seed_stability_clock` installs a scripted `elapsed_us()` sequence
-    // that a bare read consumes ahead of `elapsed_us_value` -- installing
-    // it before the sweep loop above starved every timing computation the
-    // sweep itself makes. The restore machinery is the thing that actually
-    // needs it, so it's seeded here, right before driving the restore.
     seed_stability_clock(&mut backend);
     let outcome = drive_commission_result(step, &mut engine, &mut backend, &mut state, 4095).await;
     match outcome {
@@ -2082,7 +2045,7 @@ async fn outer_failed_safety_envelope_restores_entry_gains() {
     let mut backend = MockBackend::new();
     let (_, _, mut gains) = fresh_state_locals();
     let mut cal = true;
-    let mut en = true; // simulate motor was previously armed
+    let mut en = true;
     tmc_state().motor_armed.store(true, Ordering::Relaxed);
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
     let mut engine = Some(robustness_reversal_engine());
@@ -2098,13 +2061,9 @@ async fn outer_failed_safety_envelope_restores_entry_gains() {
     )
     .await;
 
-    // The motor is still fully disarmed after a safety-envelope fault ...
     assert!(!*state.motor_enabled);
     assert!(!backend.enable_pin);
     assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-    // ... but the operational velocity gains and voltage limit ARE reloaded, so
-    // the next enable/homing does not inherit the tune's mid-ladder gains
-    // (velocity I=0) left in the TMC.
     assert!(
         backend.spi_log.iter().any(
             |op| matches!(op, SpiOp::Write(addr, _) if *addr == PID_VELOCITY_P_VELOCITY_I.addr())
@@ -2133,7 +2092,6 @@ async fn outer_failed_soft_failure_holds_motor() {
     stepper_state().position.store(99, Ordering::Relaxed);
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
     let mut engine = Some(robustness_reversal_engine());
-    // NoCurrent is not a safety-fault variant.
     let err = crate::autotune::CommissionError::NoCurrent;
     seed_motor_sentinel(&mut backend).await;
 
@@ -2148,10 +2106,8 @@ async fn outer_failed_soft_failure_holds_motor() {
     )
     .await;
 
-    // Motor still armed (soft failure, stable).
     assert!(*state.calibrated);
     assert!(backend.enable_pin);
-    // Stepper position NOT zeroed (motor held position).
     assert_eq!(stepper_state().position.load(Ordering::Relaxed), 99);
 
     match outcome {
@@ -2174,7 +2130,6 @@ async fn outer_failed_soft_failure_holds_motor() {
 async fn outer_failed_unstable_drift_preserves_upstream_error() {
     use core::sync::atomic::Ordering;
     let mut backend = MockBackend::new();
-    // Pre-load drifting position values (drift > 2 => unstable).
     backend.read_position_actual_sequence.push(100).unwrap();
     backend.read_position_actual_sequence.push(120).unwrap();
 
@@ -2201,10 +2156,6 @@ async fn outer_failed_unstable_drift_preserves_upstream_error() {
             reply: ReplyPayload::TuneResult { status, .. },
             ..
         } => {
-            // Drift > 2 in the restore stability check no longer
-            // overrides the upstream error; the original NoCurrent
-            // failure is preserved so the host sees the meaningful
-            // root cause. Drift is still logged for diagnostics.
             assert_eq!(
                 status,
                 crate::autotune::CommissionError::NoCurrent.status_code()
@@ -2219,8 +2170,6 @@ async fn outer_failed_unstable_drift_preserves_upstream_error() {
 #[fixture_test]
 async fn outer_failed_restore_uses_encoder_scale_for_position_jitter() {
     let mut backend = MockBackend::new();
-    // The full window spans 31 TMC position units, within two quadrature
-    // encoder counts at 4000 counts/revolution (33 rounded position units).
     backend.read_position_actual_sequence.push(1000).unwrap();
     backend.read_position_actual_sequence.push(1000).unwrap();
     backend.read_position_actual_sequence.push(1031).unwrap();
@@ -2362,13 +2311,6 @@ fn outer_failed_restore_rejects_monotonic_creep() {
     });
 }
 
-/// A breakaway campaign that fails on a safety envelope violation must be safely
-/// disarmed at the dispatch boundary and must never continue into Integral.
-///
-/// The campaign energizes through the documented commissioning exception, so the
-/// dispatch owns the disarm. On the engine's `OuterFailed` terminal the safety
-/// fault de-energizes the motor and produces the outer-failure reply namespace,
-/// never an Integral / velocity-integral continuation.
 #[fixture_test]
 async fn breakaway_campaign_safety_failure_disarms_without_reaching_integral() {
     use core::sync::atomic::Ordering::Relaxed;
@@ -2376,7 +2318,6 @@ async fn breakaway_campaign_safety_failure_disarms_without_reaching_integral() {
     tmc_state().commission_in_flight.store(true, Relaxed);
     let mut backend = MockBackend::new();
     seed_motor_sentinel(&mut backend).await;
-    // The campaign has energized the motor; the dispatch must disarm it.
     backend.enable_pin = true;
     let (mut cal, mut en, mut gains) = fresh_state_locals();
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
@@ -2392,14 +2333,10 @@ async fn breakaway_campaign_safety_failure_disarms_without_reaching_integral() {
     )
     .await;
 
-    // Safe disarm: the motor is de-energized on the safety-fault terminal.
     assert!(!backend.enable_pin);
-    // The engine is consumed into a terminal (no lingering campaign state).
     assert!(engine.is_none());
     assert!(!tmc_state().commission_in_flight.load(Relaxed));
 
-    // No Integral continuation: the reply is the outer-failure namespace, and
-    // no velocity-integral / Integral terminal is produced.
     match outcome {
         CommissionOutcome::Terminal {
             reply: ReplyPayload::TuneResult { status, .. },
@@ -2414,13 +2351,6 @@ async fn breakaway_campaign_safety_failure_disarms_without_reaching_integral() {
     clear_motor_sentinel();
 }
 
-/// A production outer-tune failure during an active velocity/breakaway workflow
-/// must run the velocity-aware disarm/restore, which zeroes `PID_VELOCITY_TARGET`
-/// and re-clamps the operational current limit. For the `OuterFailed(Shutdown)`
-/// path exercised here, the alternative is the safe-state restore, which zeroes
-/// `PID_VELOCITY_OFFSET` instead — it never touches `PID_VELOCITY_TARGET` — so
-/// this test's `PID_VELOCITY_TARGET` assertion still discriminates the
-/// velocity-aware path from that alternative on this path.
 #[fixture_test]
 async fn outer_failed_during_velocity_workflow_runs_velocity_aware_restore() {
     let mut backend = MockBackend::new();
@@ -2452,9 +2382,6 @@ async fn outer_failed_during_velocity_workflow_runs_velocity_aware_restore() {
     assert!(engine.is_none(), "safety fault must consume the engine");
 }
 
-/// A scheduler-generated outer failure may interrupt a still-active campaign.
-/// Simulate reset immediately after completion becomes visible: safe workflow
-/// restoration must already be done, while engine removal must not happen yet.
 #[fixture_test]
 fn outer_failed_breakaway_cancellation_completes_after_safe_restore() {
     use core::sync::atomic::Ordering::Relaxed;
@@ -2498,8 +2425,6 @@ fn outer_failed_breakaway_cancellation_completes_after_safe_restore() {
     tmc_state().commission_in_flight.store(false, Relaxed);
 }
 
-/// A failed velocity-limit restoration consumes the terminal engine but keeps
-/// its active breadcrumb so the next boot reports the incomplete safe exit.
 #[test]
 fn outer_failed_breakaway_cancellation_restore_failure_stays_active() {
     pollster::block_on(async {
@@ -2534,12 +2459,6 @@ fn outer_failed_breakaway_cancellation_restore_failure_stays_active() {
     });
 }
 
-/// Build a representative Integral terminal for the downgrade-guard test below.
-///
-/// Field values mirror the fixture `replies.rs`'s own dispatch tests already
-/// build for the same struct; this promotes that pattern out from behind the
-/// now-removed fixed-gain-amplitude-only feature flag rather than inventing new
-/// evidence.
 fn sample_velocity_integral_terminal_for_test()
 -> crate::commissioning::types::VelocityIntegralTerminal {
     use crate::commissioning::outer::velocity::integral_evidence::{
@@ -2580,13 +2499,6 @@ fn sample_velocity_integral_terminal_for_test()
     }
 }
 
-/// An Integral terminal must not fall through to the generic `TuneResult` reply.
-///
-/// A disabled-feature stub arm for
-/// `StepResult::VelocityIntegralTerminal` downgraded every production
-/// autotune terminal to a zero-filled `TuneResult`, discarding the real
-/// Integral evidence. This test pins the dedicated reply in the default
-/// build.
 #[fixture_test]
 async fn velocity_integral_terminal_is_not_downgraded_to_tune_result() {
     let mut backend = MockBackend::new();
@@ -2618,9 +2530,6 @@ async fn velocity_integral_terminal_is_not_downgraded_to_tune_result() {
     clear_motor_sentinel();
 }
 
-/// Entry snapshot carrying the position gains, velocity limit, and biquad
-/// cutoffs an inline-robustness pass must join with its selected velocity gains.
-/// `filters` is `(velocity, position, flux, torque)` cutoff Hz.
 fn robustness_entry_snapshot(
     position_p: u16,
     position_i: u16,
@@ -2642,9 +2551,6 @@ fn robustness_entry_snapshot(
     }
 }
 
-/// Outer engine holding `entry`. The robustness-terminal dispatch arm only
-/// reads `entry_snapshot()` and consumes the engine, so the engine's internal
-/// phase is immaterial to the routing this exercises.
 fn robustness_outer_engine(
     entry: crate::commissioning::OuterGainRollbackSnapshot,
 ) -> CommissioningEngine {
@@ -2662,7 +2568,6 @@ fn robustness_outer_engine(
     .expect("valid robustness safety configuration")
 }
 
-/// Retained accepted point whose identity matches the terminal fixtures below.
 fn robustness_accepted_point(
     qualifier_bits: u16,
 ) -> crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
@@ -2688,9 +2593,6 @@ fn robustness_accepted_point(
     }
 }
 
-/// Passed robustness terminal for the retained point, joined gains 863/512.
-/// Built from the zero-evidence terminal so the evidence bundle need not be
-/// hand-assembled here.
 fn robustness_pass_terminal() -> crate::commissioning::types::RobustnessReversalTerminal {
     use crate::commissioning::types::RobustnessOutcome;
     let mut terminal = robustness::failed_robustness_terminal(
@@ -2706,7 +2608,6 @@ fn robustness_pass_terminal() -> crate::commissioning::types::RobustnessReversal
     terminal
 }
 
-/// Rejected robustness terminal for the same retained point identity.
 fn robustness_reject_terminal(
     cause: u8,
 ) -> crate::commissioning::types::RobustnessReversalTerminal {
@@ -2725,8 +2626,6 @@ async fn robustness_pass_emits_tune_result_with_joined_gains() {
     let mut backend = MockBackend::new();
     let (mut cal, mut en, mut gains) = fresh_state_locals();
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-    // Position-mode restore needs a configured motion scale to place the
-    // next-command origin; the backend defaults to 4000 quadrature counts/rev.
     tmc_state()
         .configure_motion_scale(stepper_state(), 1_000, 3_200)
         .expect("valid test motion scale");
@@ -2849,10 +2748,6 @@ async fn robustness_pass_carries_cycle_evidence_on_the_tune_result() {
     clear_motor_sentinel();
 }
 
-/// A robustness pass whose retained point carries nonzero qualifier bits
-/// (e.g. the always-set latched-limit-evidence capability bit) must still
-/// emit an unconditional `Accepted` tune with `warning_code == 0`. Qualifier
-/// bits are measurement/capability provenance, not a status verdict.
 #[fixture_test]
 async fn robustness_pass_with_qualifier_bits_still_emits_accepted_status() {
     use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
@@ -2951,8 +2846,6 @@ async fn robustness_reject_keeps_fault_terminal_and_does_not_deploy() {
     clear_motor_sentinel();
 }
 
-/// Baseline gains an entry snapshot must restore before disarm, as the
-/// `PID_VELOCITY_P_VELOCITY_I`/`PID_POSITION_P_POSITION_I` register values.
 fn entry_snapshot_baseline_registers(
     entry: &crate::commissioning::OuterGainRollbackSnapshot,
 ) -> (u32, u32) {
@@ -3101,9 +2994,6 @@ async fn robustness_restore_failure_maps_to_safety_fault() {
     let mut slot = IntegralRetentionSlot::new();
     slot.install_acceptance_point(robustness_accepted_point(0));
     seed_motor_sentinel(&mut backend).await;
-    // A register the entry-snapshot restore writes but the safe-state disarm
-    // sequence never touches, so this fails the restore specifically rather
-    // than any later disarm write.
     backend.fail_on_write = Some(foci_tmc4671::registers::PID_VELOCITY_LIMIT.addr());
 
     let outcome = drive_commission_result_with_stages(
@@ -3139,11 +3029,6 @@ async fn robustness_restore_failure_maps_to_safety_fault() {
     clear_motor_sentinel();
 }
 
-/// Distinct from `robustness_restore_failure_maps_to_safety_fault`: this
-/// drives the generic (non-staged) handler directly with an engine that was
-/// never in `Outer` mode, so `entry_snapshot()` returns `None` rather than a
-/// restore call returning `Err`. Both must land on the same
-/// `Failed`/`SAFETY_FAULT` terminal.
 #[fixture_test]
 async fn robustness_missing_entry_snapshot_maps_to_safety_fault() {
     use crate::commissioning::types::RobustnessOutcome;
@@ -3187,8 +3072,6 @@ async fn robustness_missing_entry_snapshot_maps_to_safety_fault() {
 
 #[fixture_test]
 async fn stability_from_span_matches_flat_helper_at_threshold_boundary() {
-    // 4000 counts/rev: threshold is 2 encoder counts converted to raw
-    // position units, i.e. ((2 * 65_536 + 2000) / 4000).max(1) = 33.
     let at_threshold = super::stability_from_span(0, 33, 4000);
     assert!(
         at_threshold.stable,
@@ -3200,7 +3083,6 @@ async fn stability_from_span_matches_flat_helper_at_threshold_boundary() {
     assert!(!over_threshold.stable, "span > threshold must be unstable");
     assert_eq!(over_threshold.span_counts, 34);
 
-    // encoder_counts_per_rev == 0 falls back to a threshold of 1.
     let no_encoder = super::stability_from_span(0, 1, 0);
     assert!(no_encoder.stable);
     let no_encoder_over = super::stability_from_span(0, 2, 0);

@@ -1,7 +1,3 @@
-//! Test infrastructure for commission_dispatch: mock CommissioningBackend
-//! with injectable SPI failures, register-write log, delay log, and
-//! enable-pin tracking.
-
 use crate::commissioning::backend::{
     CommissionBoardConfig, CommissionEncoderRead, CommissionMotorControl, CommissionPendingConfig,
     CommissionRegisterIo, CommissionStepStimulus, CommissionTiming, CommissionTrace, StimulusError,
@@ -23,28 +19,15 @@ pub struct MockSpiError;
 /// quadratic position / exponential current response.
 #[derive(Debug, Clone, Copy)]
 pub struct GainFloorCaptureScript {
-    /// Position units per microsecond^2 produced per commanded torque count
-    /// (the plant's true accel-per-count in the fit's own raw units).
     pub accel_raw_per_us2_per_count: f64,
-    /// Position units per microsecond^2 added regardless of the commanded
-    /// torque (a current-independent offset such as gravity or an assist).
     pub accel_raw_offset_per_us2: f64,
-    /// First-order current-response time constant, in microseconds.
     pub tau_current_us: f64,
-    /// Peak-to-target ratio of the synthesized current step: 1.0 is the plain
-    /// first-order rise, above it a decaying ring is added.
     pub overshoot_ratio: f64,
-    /// Steps commanded at or below this target get `creep_excess_accel_per_us2`
-    /// added to their acceleration.
     pub creep_below_target: i16,
-    /// Position units per microsecond^2 added to those steps.
     pub creep_excess_accel_per_us2: f64,
 }
 
-/// Time after the step at which `GainFloorCaptureScript::overshoot_ratio`'s
-/// ring peaks: the first capture slot after the zero-time sample.
 const GAIN_FLOOR_RING_ONSET_US: f64 = 60.0;
-/// Decay time constant of that ring.
 const GAIN_FLOOR_RING_DECAY_US: f64 = 300.0;
 
 /// Construct a validated current limit for test fixtures.
@@ -93,10 +76,9 @@ pub fn sample_outer_params() -> crate::commissioning::OuterAutotuneInputs {
     }
 }
 
-/// A genuine breakaway confirmation, minted through the real
+/// A genuine breakaway confirmation, minted through the same
 /// `plan_band_confirmation` -> `evaluate_band_confirmation` ->
-/// `bind_breakaway_integral_authority` chain a live campaign uses, plus the
-/// intermediate values an Integral plan builder needs alongside the token.
+/// `bind_breakaway_integral_authority` chain a live campaign uses.
 pub struct BreakawayConfirmationForTest {
     pub token: crate::commissioning::outer::velocity::integral_plan::ConfirmedAcquisitionDigest,
     pub confirmation_plan:
@@ -210,10 +192,7 @@ pub fn breakaway_campaign_engine() -> crate::commissioning::CommissioningEngine 
 }
 
 /// Build a real admitted reversal-standstill robustness engine for
-/// cross-module lifecycle tests. Unlike a breakaway-campaign or Integral
-/// engine, this phase reports no active velocity workflow (see
-/// `CommissioningEngine::velocity_operational_torque_limit`), so it is the
-/// live-path witness for dispatch behavior gated on that distinction.
+/// cross-module lifecycle tests.
 pub fn robustness_reversal_engine() -> crate::commissioning::CommissioningEngine {
     use crate::commission_dispatch::robustness::RobustnessPreflight;
     use crate::commissioning::outer::velocity::integral_reproduction::{
@@ -256,258 +235,101 @@ pub fn robustness_reversal_engine() -> crate::commissioning::CommissioningEngine
 pub enum SpiOp {
     Read,
     Write(u8, u32),
-    /// `set_enable_pin` call, recorded in the same ordered log as register
-    /// writes so tests can assert relative ordering (e.g. a register must be
-    /// written before the enable pin is asserted).
     EnablePin(bool),
-    /// A motor lifecycle flag transition, recorded at its exact mutation
-    /// site (see `CommissionMotorControl::record_lifecycle`) so tests can
-    /// assert its relative order against SPI writes and `EnablePin` calls
-    /// in the same interleaved log.
-    Lifecycle {
-        flag: LifecycleFlag,
-        value: bool,
-    },
-    /// A `CommissionPendingConfig::drain_pending_config` call, recorded in the
-    /// same ordered log so tests can assert the drain runs before the enable
-    /// pin is asserted.
+    Lifecycle { flag: LifecycleFlag, value: bool },
     DrainPendingConfig,
 }
 
 /// Mock implementation of `CommissioningBackend` for host-side unit tests.
-///
-/// Stores register state in a linear map keyed by register address, records
-/// every SPI operation, and supports per-address failure injection for both
-/// reads and writes.
-///
-/// Do not implement the `Commission*Access` helper traits for this type.
-/// `MockBackend` intentionally keeps explicit capability impls so tests can
-/// inject register-map mismatches, SPI failures, and delay observations without
-/// colliding with production blanket impls.
 pub struct MockBackend {
-    /// Current register values, keyed by TMC4671 address byte.
     pub registers: heapless::LinearMap<u8, u32, 64>,
-    /// Last CONFIG subregister selected through address register 0x4E.
     config_selected_subregister: u8,
-    /// Value retained specifically for CONFIG subregister 62.
     advanced_pi_representation: u32,
-    /// Ordered log of every SPI read/write issued during the test.
     pub spi_log: std::vec::Vec<SpiOp>,
-    /// Number of paired register-read operations issued during the test.
     pub register_pair_reads: usize,
-    /// Number of single-register capture reads issued during the test.
     pub capture_register_reads: usize,
-    /// Number of velocity-controller torque-output selector writes.
     pub velocity_controller_output_selects: usize,
-    /// Number of writes clearing the velocity-integrator error sum.
     pub pid_velocity_error_sum_clears: usize,
-    /// Number of direct velocity-feedback reads.
     pub pid_velocity_actual_reads: usize,
-    /// Update the interim torque output on a selected velocity-feedback read.
     pub pid_velocity_actual_update_interim_on_read: Option<(usize, u32)>,
-    /// Ordered trace events recorded by the commissioning engine.
     pub trace_events: Vec<crate::trace::events::CommissionTraceEvent, 64>,
-    /// Characterization-only raw velocity observations.
     #[cfg(feature = "trace")]
     pub velocity_trace_observations: Vec<crate::trace::stream::VelocityTraceObservation, 2_048>,
-    /// Canonical Proportional records emitted into the trace stream.
     #[cfg(feature = "trace")]
     pub velocity_sweep_trace_records:
         Vec<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord, 128>,
-    /// Interleaved canonical-record kinds and event IDs for emission-order assertions.
     #[cfg(feature = "trace")]
     pub trace_emission_order: Vec<u16, 256>,
-    /// Current state of the TMC4671 enable pin.
     pub enable_pin: bool,
-    /// Value returned by `interlock_tripped`; tests set it to inject a fault.
     pub interlock_tripped: bool,
-    /// If `Some(addr)`, trip the interlock once that address has been written,
-    /// modelling an ISR latching a fault during the SPI transfer itself.
     pub trip_interlock_on_write: Option<u8>,
-    /// Log of every `delay_us` call, in order.
     pub delay_us_log: Vec<u32, 32>,
-    /// If `Some(addr)`, `write_register` returns `Err(MockSpiError)` for that address.
     pub fail_on_write: Option<u8>,
-    /// Fail the zero-based write occurrence for one register address.
     pub fail_on_write_occurrence: Option<(u8, usize)>,
-    /// If `Some(addr)`, `read_register` returns `Err(MockSpiError)` for that address.
     pub fail_on_read: Option<u8>,
-    /// Suspend the next verified register write exactly once, after its write
-    /// has landed and before its verifying read-back, so a manually polled test
-    /// can drop a caller while a real backend operation is genuinely half done.
     pub pend_next_op: bool,
-    /// Transient write failures as `(address, remaining failures)`.
     pub fail_writes_remaining: Option<(u8, u8)>,
-    /// Transient read failures as `(address, remaining failures)`.
     pub fail_reads_remaining: Option<(u8, u8)>,
-    /// Last value passed to `store_motor_sentinel`. None until first call.
     pub last_motor_sentinel_stored: core::cell::Cell<Option<u32>>,
-    /// When Some((addr, value)), `read_register(reg)` for that addr returns
-    /// `value` instead of consulting `registers`. Used by verify tests to
-    /// inject a mismatch.
     pub read_override: Option<(u8, u32)>,
-    /// Transient read mismatches as `(address, value, remaining reads)`.
     pub read_override_remaining: Option<(u8, u32, u8)>,
-    /// Value returned by `elapsed_us()`.
     pub elapsed_us_value: u64,
-    /// Sequential values returned by `elapsed_us()` before the fallback value.
     elapsed_us_sequence: Vec<u64, 16>,
-    /// Current index into `elapsed_us_sequence`.
     elapsed_us_pos: core::cell::Cell<usize>,
-    /// Whether cooperative test delays advance the mock monotonic.
     pub advance_elapsed_on_delay: bool,
-    /// Elapsed-time increment applied by each mock register read or write.
     pub spi_elapsed_step_us: u64,
-    /// Value returned by `is_shutdown_requested()`.
     pub shutdown_requested: bool,
-    /// Value returned by `current_limit()`.
     pub current_limit_value: PidTorqueFluxLimit,
-    /// Value returned by `pwm_maxcnt()`.
     pub pwm_maxcnt_value: u16,
-    /// Value returned by `bbm_register()`.
     pub bbm_register_value: u32,
-    /// Value returned by `dsadc_mdec_register()`.
     pub dsadc_mdec_register_value: u32,
-    /// Value returned by `excitation_voltage()`.
     pub excitation_voltage_value: u16,
-    /// Value returned by `configured_physical_step_width()`.
     pub configured_physical_width: Option<u32>,
-    /// Encoder quadrature counts per mechanical revolution.
     pub mechanical_encoder_quadrature_counts_per_rev_value: u32,
-    /// Value returned by `adc_offsets_ready()`.
     pub adc_offsets_ready_value: bool,
-    /// Value returned by `operational_velocity_limit()`.
     pub operational_velocity_limit_value: u32,
-    /// Value returned by `operational_voltage_limit()`.
     pub operational_voltage_limit_value: u32,
-    /// Value returned by `tmc_config()`.
     pub tmc_config: TmcConfig,
-    /// Value returned by `feedback_config()`.
     pub feedback_config: crate::config::FeedbackConfig,
-    /// Optional torque-filter override returned by `configured_torque_filter_hz()`.
     pub configured_torque_filter_hz: Option<u16>,
-    /// Optional flux-filter override returned by `configured_flux_filter_hz()`.
     pub configured_flux_filter_hz: Option<u16>,
-    /// Encoder position returned by the sampled-count accessor.
     pub mechanical_encoder_position_counts_value: u32,
-    /// Sequential values to return for consecutive `PID_POSITION_ACTUAL` reads.
-    ///
-    /// When non-empty, each `read_register(PID_POSITION_ACTUAL)` call pops and
-    /// returns the front value instead of consulting `registers`. Used by
-    /// stability-check tests that need two reads to return different values.
     pub read_position_actual_sequence: Vec<u32, 8>,
-    /// Current index into `read_position_actual_sequence`.
     pub read_position_actual_pos: usize,
-    /// Sequential values to return for consecutive `ABN_DECODER_COUNT` reads.
     pub abn_decoder_count_sequence: Vec<u32, 16>,
-    /// Current index into `abn_decoder_count_sequence`.
     pub abn_decoder_count_pos: usize,
-    /// Sequential values to return for consecutive `PID_TORQUE_FLUX_ACTUAL` reads.
     pub pid_torque_flux_actual_sequence: Vec<u32, 128>,
-    /// Current index into `pid_torque_flux_actual_sequence`.
     pub pid_torque_flux_actual_pos: usize,
-    /// Sequential values to return for consecutive `OPENLOOP_PHI` reads.
     pub openloop_phi_sequence: Vec<u32, 128>,
-    /// Current index into `openloop_phi_sequence`.
     pub openloop_phi_pos: usize,
-    /// Elapsed-time increment applied for each scripted `OPENLOOP_PHI` read.
     pub openloop_phi_elapsed_step_us: u64,
-    /// If true, every SPI write asserts that step processing has already been gated off.
     pub assert_motor_armed_false_on_write: bool,
-    /// If true, `read_register(ADC_IWY_IUX)` reports a phase current
-    /// proportional 1:1 to the most recent `UQ_UD_EXT` write (packed into
-    /// both axis halves), and `read_register(STATUS_FLAGS)` reports `0`.
-    /// Used by the shared resistance-identification runner's integration
-    /// tests to script a clean linear current response without needing a
-    /// dedicated fake backend.
     pub script_resistance_current_proportional_to_ud: bool,
-    /// Last value written to `UQ_UD_EXT`, tracked only when
-    /// `script_resistance_current_proportional_to_ud` is set.
     last_uq_ud_ext_write: u32,
-    /// When set, synthesizes `PID_POSITION_ACTUAL` (quadratic in elapsed
-    /// time) and `PID_TORQUE_FLUX_ACTUAL` (first-order exponential in
-    /// elapsed time, flux held at zero) directly from `elapsed_us()`, so a
-    /// full fixed-grid gain-floor capture can exercise the real quadratic
-    /// and current-response fits end to end. Requires
-    /// `advance_elapsed_on_delay = true` and a capture starting at
-    /// `elapsed_us_value == 0` so `elapsed_us()` reads as time-since-capture-start.
     pub script_gain_floor_capture: Option<GainFloorCaptureScript>,
-    /// `elapsed_us` at the most recent nonzero `PID_TORQUE_FLUX_TARGET`
-    /// write; the scripted capture response starts from this instant.
     pub gain_floor_step_start_us: u64,
-    /// Torque target of the most recent nonzero `PID_TORQUE_FLUX_TARGET`
-    /// write; the scripted response scales with and asymptotes toward it.
     pub gain_floor_commanded_target: i16,
-    /// Set by every `record_safe_state_report` call, mirroring
-    /// `TmcChannelState::safe_state_incomplete`: a clean pass alone does not
-    /// clear this, only a caller explicitly confirming a fresh sentinel pass
-    /// would (this mock has no sentinel concept, so nothing clears it).
     pub safe_state_incomplete: bool,
-    /// Whether the most recent `record_safe_state_report` call reported
-    /// `failed_writes > 0`, mirroring `TmcChannelState::safe_state_last_pass_failed`.
     pub safe_state_last_pass_failed: bool,
-    /// The report from the most recent `record_safe_state_report` call.
     pub safe_state_report: Option<crate::tmc_safe_state::SafeStateRestoreReport>,
-    /// The timestamp from the most recent `record_safe_state_report` call.
     pub safe_state_report_timestamp_ms: Option<u32>,
-    /// Total number of `record_safe_state_report` calls, whether clean or
-    /// not, mirroring `TmcChannelState::safe_state_pass_count`.
     pub safe_state_pass_count: u16,
-    /// Channel state whose pending-config bits the mock drain clears.
-    ///
-    /// Defaults to channel 0, which every `MockBackend` test uses today. A
-    /// dual-channel arming test must point this at its own channel or the
-    /// mock drain clears the wrong channel's bits.
     pub tmc_state: &'static crate::state::tmc::TmcChannelState,
-    /// Result returned by `drain_pending_config`; tests set it to inject a
-    /// failed drain.
     pub pending_config_result: Result<(), PendingConfigItem>,
-    /// Bits to set after the mock drain clears, modelling a config command
-    /// dispatched at P2 while the P1 arming path is mid-drain.
     pub pending_config_set_during_drain: u8,
-    /// Bits to set when the arm's pre-enable interlock check runs, modelling a
-    /// config command dispatched at P2 after every awaiting step of the arm
-    /// has already completed.
     pub pending_config_set_at_interlock_check: u8,
-    /// Count of `write_register_verified` calls, incremented once per call
-    /// regardless of how many attempts its internal retry loop takes.
-    /// Deliberately separate from `spi_log`. Exists solely so other tests
-    /// can tell "one verified-write call, possibly retried" apart from
-    /// "multiple independent register operations" in the same poll.
     pub verified_write_calls: usize,
-    /// Sum of raw `spi_log` growth attributed to *completed*
-    /// `write_register_verified` calls, measured as a length diff around
-    /// each call rather than a persistent in-progress flag -- this stays
-    /// correct even if a verified-write future is dropped mid-retry (RTIC
-    /// futures are cancellable, and the existing suite intentionally drops
-    /// restore futures mid-poll): a cancelled call simply attributes
-    /// nothing, since the measurement only runs after the inner call
-    /// actually returns.
     pub raw_ops_attributed_to_verified_calls: usize,
-    /// Ordered log of every step-stimulus operation issued during the test.
     pub stimulus_log: heapless::Vec<StimulusOp, 512>,
-    /// Value returned by `stimulus_is_trigger_blocked()`.
     pub stimulus_trigger_blocked: bool,
-    /// Refuse `stimulus_queue_segment` once this many segments are queued.
     pub stimulus_refuse_after: Option<usize>,
-    /// Value returned by `stimulus_queue_free()`.
     pub stimulus_queue_free: usize,
-    /// Value returned by `stimulus_step_timer_hz()`.
     pub stimulus_step_timer_hz: u32,
-    /// Value returned by `stimulus_step_clock_now()`.
     pub stimulus_clock_now: u32,
-    /// Whether `stimulus_arm` is allowed to succeed.
     pub stimulus_energized: bool,
-    /// Value returned by `stall_threshold_units()`.
     pub stall_threshold_units_value: u32,
-    /// Value returned by `velocity_feedforward_gain_permille()`.
     pub velocity_feedforward_gain_value: u32,
     pub feedforward_path_flags_value: u8,
-    /// Single ordered log interleaving every SPI write and every
-    /// step-stimulus operation, so tests can assert their relative order.
-    /// Deliberately separate from `spi_log` and `stimulus_log`: those two
-    /// stay independently ordered for their own existing assertions, and
-    /// this is the only log both append to.
     pub event_log: heapless::Vec<MockEvent, 2_048>,
 }
 
@@ -669,13 +491,6 @@ impl MockBackend {
         for attempt in 0..max_attempts {
             let result = async {
                 self.write_register(reg, val).await?;
-                // Suspends *between* the register write and its verifying
-                // read-back, so a test that drops here interrupts a
-                // half-completed verified write rather than gating entry to
-                // one. Deliberately not on `write_register`/`read_register`
-                // themselves: the engine-step future contains those, and the
-                // extra suspension state would inflate the F407 stack-budget
-                // gates in `commissioning::tests::size_regression_gates`.
                 if core::mem::take(&mut self.pend_next_op) {
                     YieldOnce::default().await;
                 }
@@ -693,8 +508,6 @@ impl MockBackend {
     }
 }
 
-/// Returns `Pending` once, then `Ready`. Lets a test drive a caller's future to
-/// a real suspension point instead of running it straight to completion.
 #[derive(Default)]
 struct YieldOnce {
     yielded: bool,
@@ -836,8 +649,6 @@ impl CommissionRegisterIo for MockBackend {
         }
         if self.script_resistance_current_proportional_to_ud {
             if addr == foci_tmc4671::registers::ADC_IWY_IUX.addr() {
-                // Pack the same proportional current into both axis halves so
-                // either electrical axis channel reads the intended value.
                 let half = (self.last_uq_ud_ext_write & 0xffff) as u16 as u32;
                 return Ok((half << 16) | half);
             }
@@ -992,9 +803,6 @@ impl CommissionMotorControl for MockBackend {
     }
 
     fn interlock_tripped(&self) -> bool {
-        // The arm queries this immediately before raising the enable pin, so
-        // it is where a test plants a config command landing at the very last
-        // moment the P2 dispatch task could preempt the P1 arming path.
         self.tmc_state.config_apply_pending.fetch_or(
             self.pending_config_set_at_interlock_check,
             core::sync::atomic::Ordering::Relaxed,
@@ -1029,8 +837,6 @@ impl CommissionPendingConfig for MockBackend {
         self.spi_log.push(SpiOp::DrainPendingConfig);
         let observed = self.tmc_state.config_apply_pending.load(Relaxed);
         self.pending_config_result?;
-        // Mirrors the real drain: a success clears exactly the bits observed
-        // on entry, never bits a concurrent setter raised afterwards.
         self.tmc_state
             .config_apply_pending
             .fetch_and(!observed, Relaxed);
@@ -1285,28 +1091,9 @@ impl CommissionStepStimulus for MockBackend {
 /// Mutex for tests that mutate firmware-shared statics
 /// (channel motor-armed / in-flight flags, and the gain/filter atomics in
 /// `state::tmc`).
-///
-/// Tests acquire this guard before any read-modify-write sequence on a shared
-/// static, and hold it for the duration of the assertion phase. Cargo runs
-/// tests in parallel by default; without serialization, dirty static state
-/// from one test would flake another running concurrently.
-///
-/// Usage:
-/// ```ignore
-/// let _guard = SHARED_STATE_MUTEX.lock().await;
-/// crate::state::tmc::tmc_channel0().motor_armed.store(false, Ordering::Relaxed);
-/// // ... test body ...
-/// ```
-///
-/// Use Tokio's async mutex so async tests can intentionally hold the guard
-/// across awaited firmware calls without blocking an executor thread.
 pub static SHARED_STATE_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Build locals for a fresh dispatch state.
-///
-/// Returns `(calibrated, motor_enabled, stored_gains)` with zero/false/None
-/// defaults. Tests borrow these as `&mut` to construct a `DispatchState`
-/// per call site.
 pub fn fresh_state_locals() -> (bool, bool, Option<crate::pid::InnerLoopGains>) {
     (false, false, None)
 }

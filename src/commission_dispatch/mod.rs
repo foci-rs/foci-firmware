@@ -1,7 +1,5 @@
 //! Board-agnostic post-processing for `CommissioningEngine::step()` results.
 
-// pub(crate) so sibling test modules (commissioning, diagnostics, ...) can
-// import MockBackend + helpers via crate::commission_dispatch::test_support::*.
 #[cfg(test)]
 mod characterization_tests;
 pub mod fixed_gain_amplitude;
@@ -39,16 +37,9 @@ use crate::state::stepper::StepperChannelState;
 use crate::state::tmc::TmcChannelState;
 
 /// Borrowed view of the per-engine task locals the dispatch needs to mutate.
-///
-/// The board's `tmc_control` task owns these as task locals; per-dispatch
-/// it constructs a `DispatchState` so the firmware can mutate them in
-/// place without copy-back.
 pub struct DispatchState<'a> {
-    /// Board-local TMC channel the borrowed state belongs to.
     pub channel: u8,
-    /// Channel-local TMC runtime atomics for the active motor.
     pub tmc: &'static TmcChannelState,
-    /// Channel-local stepper runtime atomics for the active motor.
     pub stepper: &'static StepperChannelState,
     pub calibrated: &'a mut bool,
     pub motor_enabled: &'a mut bool,
@@ -62,7 +53,6 @@ pub struct CommissionRetention<'a> {
 }
 
 impl<'a> CommissionRetention<'a> {
-    /// Borrow the Integral RAM slot as one lifecycle context.
     pub fn new(
         integral: &'a mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
     ) -> Self {
@@ -71,7 +61,6 @@ impl<'a> CommissionRetention<'a> {
 }
 
 impl<'a> DispatchState<'a> {
-    /// Build a dispatch-state view for one board-local motor channel.
     pub fn new(
         channel: u8,
         tmc: &'static TmcChannelState,
@@ -94,23 +83,15 @@ impl<'a> DispatchState<'a> {
 /// What the board should do after the dispatch returns.
 #[allow(clippy::large_enum_variant)]
 pub enum CommissionOutcome {
-    /// Engine wants more time. Board: Mono::delay(1ms), continue.
     Continue,
-    /// A phase transition occurred. Board: emit FociCommissionPhase reply,
-    /// Mono::delay(1ms), continue.
     PhaseChanged {
         oid: u8,
         phase_id: CommissionPhase,
         engine_kind: EngineKind,
     },
-    /// Nonterminal report-only evidence is ready for immediate emission.
     Evidence {
-        /// Shared reply payload; boards provide only transport forwarding.
         reply: ReplyPayload,
     },
-    /// Engine reached a terminal state. Firmware has already executed all
-    /// SPI restore, atomic stores, filter re-apply, and arm/disarm motor.
-    /// Board: execute PostActions in order, emit reply.
     Terminal {
         reply: ReplyPayload,
         actions: PostActions,
@@ -120,11 +101,8 @@ pub enum CommissionOutcome {
 /// Stepper-runtime transition the board performs after a terminal outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum StepperPostAction {
-    /// Leave the stepper runtime unchanged.
     None,
-    /// Preserve the firmware step epoch, then arm step-timer processing.
     ArmPreservePosition,
-    /// Stop and drain step-timer processing.
     Stop,
 }
 
@@ -132,10 +110,7 @@ pub enum StepperPostAction {
 /// Order: stop_trace -> stepper action -> emit reply.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub struct PostActions {
-    /// Stop the trace buffer. True for InnerFailed, OuterDone, OuterFailed,
-    /// CommissionDone. False for CalibrateDone, SelftestDone.
     pub stop_trace: bool,
-    /// Board-owned stepper runtime transition.
     pub stepper: StepperPostAction,
 }
 
@@ -148,9 +123,6 @@ impl PostActions {
 
 const OUTER_RESTORE_STABILITY_SAMPLES: usize = 5;
 const OUTER_RESTORE_STABILITY_INTERVAL_US: u32 = 5_000;
-/// Most a sample may run late past its `OUTER_RESTORE_STABILITY_INTERVAL_US`
-/// deadline before `PositionStabilityStep` gives up on the whole check as
-/// stale rather than risk a verdict computed over an unbounded window.
 const OUTER_RESTORE_STABILITY_MAX_SAMPLE_GAP_US: u32 = 5_000;
 const OUTER_RESTORE_STABILITY_ENCODER_COUNTS: u32 = 2;
 
@@ -232,65 +204,50 @@ fn record_restore_summary<B: CommissioningBackend>(
 /// Wire-reply payload for the board to emit via `klipper_reply_from!`.
 #[allow(clippy::large_enum_variant)]
 pub enum ReplyPayload {
-    /// Command-level motion shape and conservative host-timeout authority.
     CommissioningWorkflowPlan {
         oid: u8,
         plan: crate::commissioning::outer::velocity::workflow_plan::CommissioningWorkflowPlan,
     },
-    /// FociCommissionPhase: phase change reply (foci_commission failures
-    /// during inner phases).
     CommissionPhase {
         oid: u8,
         phase: u8,
         status: u8,
         diagnostics: crate::selftest::CommissionDiagnostics,
     },
-    /// FociCommissionResult: current-loop commissioning complete.
     CommissionResult {
         oid: u8,
         status: u8,
         result: CommissionResult,
     },
-    /// FociTuneResult: installed tuning complete (success or any failure mode).
-    /// Zero-filled OuterResult on failure paths.
     TuneResult {
         oid: u8,
         status: u8,
         result: OuterResult,
         safety_fault: Option<OuterSafetyFault>,
-        /// Per-direction robustness evidence when this tune deployed through
-        /// a robustness pass; the pass never emits a robustness terminal, so
-        /// this is the only way the cycle-evidence replies reach the host.
         robustness_evidence:
             Option<crate::commissioning::outer::velocity::robustness_evidence::RobustnessEvidence>,
     },
-    /// FociCalibrateResult: ADC calibration complete.
     CalibrateResult {
         oid: u8,
         status: u8,
         result: AdcCalResult,
         diagnostics: crate::selftest::CommissionDiagnostics,
     },
-    /// FociSelftestResult per stage + FociSelftestDone terminal.
-    /// Board emits one Result message per populated stage, then Done.
     Selftest {
         oid: u8,
         results: SelftestResults,
         diagnostics: crate::selftest::CommissionDiagnostics,
         done_status: u8,
     },
-    /// Complete exact Integral plan emitted before direct-resume motion.
     VelocityIntegralPlan {
         oid: u8,
         run_sequence: u32,
         plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
     },
-    /// One streamed Integral observation or rung event.
     VelocityIntegralEvent {
         oid: u8,
         event: crate::commissioning::types::VelocityIntegralEvent,
     },
-    /// Dedicated detailed Integral terminal and optional comparison.
     VelocityIntegralTerminal {
         oid: u8,
         terminal: crate::commissioning::types::VelocityIntegralTerminal,
@@ -299,44 +256,31 @@ pub enum ReplyPayload {
             crate::commissioning::outer::velocity::integral_reproduction::IntegralAuthoritySummary,
         >,
     },
-    /// Integral terminal for a request refused before any exact plan existed.
-    ///
-    /// Distinct from [`ReplyPayload::VelocityIntegralTerminal`] because that one
-    /// derives leading fragments from run evidence. A refusal has no run, so
-    /// those fragments would describe motion that never happened, and the host
-    /// reads anything ahead of the terminal as evidence preceding its plan.
     VelocityIntegralRefusal {
         oid: u8,
         terminal: crate::commissioning::types::VelocityIntegralTerminal,
     },
-    /// Complete immutable fixed-I fixed-gain amplitude plan disclosed before motion.
     FixedGainAmplitudePlan {
         oid: u8,
         run_sequence: u32,
         plan: crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainAmplitudePlan,
     },
-    /// Compact firmware-authored fixed-I fixed-gain amplitude terminal.
     FixedGainAmplitudeTerminal {
         oid: u8,
         terminal: crate::commissioning::types::FixedGainAmplitudeTerminal,
     },
-    /// Compact firmware-authored reversal-standstill robustness-gate terminal.
     RobustnessReversalTerminal {
         oid: u8,
         terminal: crate::commissioning::types::RobustnessReversalTerminal,
     },
-    /// One streamed breakaway-campaign plan, terminal, or evidence bundle.
     BreakawayCampaignEvent {
         oid: u8,
         event: crate::commissioning::types::BreakawayCampaignEvent,
     },
 }
 
-// Reply values cross nested async commissioning dispatch. Bound their inline
-// size so a future evidence field cannot recreate the F407 startup reset.
 const _: () = assert!(core::mem::size_of::<ReplyPayload>() <= 1_400);
 
-/// Helper: zero-filled OuterResult for failure-path TuneResult emission.
 fn zero_outer_result() -> OuterResult {
     OuterResult {
         status: crate::autotune::CommissionStatus::Failed(crate::autotune::CommissionError::Spi),
@@ -372,7 +316,6 @@ fn validate_outer_gains(
     })
 }
 
-/// Helper: zero-filled AdcCalResult for failure-path CalibrateResult emission.
 fn zero_adc_cal_result() -> AdcCalResult {
     AdcCalResult {
         adc_i0: 0,
@@ -388,9 +331,6 @@ fn zero_adc_cal_result() -> AdcCalResult {
     }
 }
 
-/// Helper: zero-filled CommissionResult for the mid-phase cancel synthesis
-/// path (`TerminalRestoreMachine::start_cancelled`), reporting a `Cancelled`
-/// inner status rather than `zero_outer_result()`'s `Spi` convention.
 fn zero_commission_result() -> CommissionResult {
     use crate::commissioning::types::{
         AdcResidualEvidence, CommissionTimingSummary, CurrentValidationAxisEvidence,

@@ -24,35 +24,12 @@ pub const INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH: u8 = 7;
 /// No reproduced operating rung can run under the Integral probe clamp.
 pub const INTEGRAL_DISPATCH_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT: u8 = 11;
 /// An Integral resume was requested with nothing retained to resume from.
-///
-/// Distinct from every rejection cause: the request was well formed and the
-/// slot is simply empty, which is the ordinary state after any reset because
-/// retention is RAM-only. Sharing a cause with a rejection would tell the
-/// operator to inspect a mismatch that does not exist.
 pub const INTEGRAL_DISPATCH_CAUSE_NO_RETAINED_AUTHORITY: u8 = 12;
 /// A breakaway acceptance `RepeatabilityConfirmed` recorded no target terminus.
-///
-/// Distinct from an evidence-integrity fault: the run was well formed and simply
-/// did not reach a target terminus, so no acceptance point is installed. Sharing
-/// a cause with a fault would tell the operator to inspect an integrity breach
-/// that did not occur.
 pub const INTEGRAL_DISPATCH_CAUSE_NO_ACCEPTANCE_TERMINUS: u8 = 13;
 /// An Integral terminal arrived with no retained authority to dispatch against.
-///
-/// Distinct from [`INTEGRAL_DISPATCH_CAUSE_NO_RETAINED_AUTHORITY`]: a
-/// terminal only exists because a run was dispatched, which requires
-/// authority to have been present at start, so its absence here means
-/// authority was lost mid-run, not the ordinary empty-slot state.
 pub const INTEGRAL_DISPATCH_CAUSE_AUTHORITY_LOST_MID_RUN: u8 = 14;
-/// An Integral terminal arrived already carrying an outcome only this
-/// dispatch is meant to assign. Code 15.
-///
-/// Not reachable via `apply_integral_terminal`, its only production caller
-/// as of this writing: no production path constructs a
-/// `VelocityIntegralTerminal` with `RepeatabilityConfirmed` or
-/// `RejectedPlanMismatch` before it reaches this function -- allocated
-/// because the underlying check is a real code path, not because current
-/// production input can reach it.
+/// An Integral terminal arrived already carrying an outcome only this dispatch assigns.
 pub const INTEGRAL_DISPATCH_CAUSE_UNEXPECTED_TERMINAL_OUTCOME: u8 = 15;
 
 const ACCEPTANCE_QUALIFIER_RECOVERY_QUANTIZATION_EXPOSED: u16 = 1 << 7;
@@ -62,18 +39,12 @@ const ACCEPTANCE_QUALIFIER_LATCHED_LIMIT_EVIDENCE: u16 = 1 << 9;
 /// Immutable plan and identity accepted before Integral actuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IntegralPreflight {
-    /// The sole exact Integral plan consumed by construction and reporting.
     pub plan: VelocityIntegralPlan,
-    /// Exact cross-run identity derived from the plan.
     pub identity: IntegralPlanIdentity,
-    /// Caller-assigned trace sequence.
     pub run_sequence: u32,
 }
 
 /// Install retained Integral authority from one exact execution plan.
-///
-/// Public so a board can retain authority directly from the scheduled plan
-/// event; an Integral terminal arriving with an empty slot fails closed.
 pub fn install_authority_from_plan(
     channel: u8,
     integral_candidate: &mut IntegralRetentionSlot,
@@ -94,66 +65,38 @@ pub fn install_authority_from_plan(
 /// Fail-closed reason a retained Integral request was rejected before actuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum IntegralPreflightRejection {
-    /// The current request could not reconstruct a safe exact Integral plan.
     InvalidPlan,
-    /// The current request differs from retained Integral authority.
-    RejectedPlanMismatch {
-        /// Exact retained Integral identity.
-        retained: IntegralPlanIdentity,
-    },
-    /// The reproduced operating component contains no Integral-safe test point.
+    RejectedPlanMismatch { retained: IntegralPlanIdentity },
     NoTransitionCapableOperatingPoint(IntegralFailedAdmission),
 }
 
 /// Cross-run comparison attached to the Integral terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct IntegralReproductionReport {
-    /// One exact retained-versus-current comparison.
     pub delta: IntegralReproductionDelta,
     /// One for RepeatabilityConfirmed, two for RepeatabilityMismatch.
     pub outcome: u8,
-    /// Exact retained-run evidence digest.
     pub previous_run_digest: u64,
-    /// Exact current-run evidence digest.
     pub current_run_digest: u64,
 }
 
 /// Integral terminal after firmware-owned retention policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct IntegralTerminalDispatch {
-    /// Authoritative terminal class after comparison.
     pub terminal: VelocityIntegralTerminal,
     /// Comparison evidence present only for a second sufficient run.
     pub reproduction: Option<IntegralReproductionReport>,
-    /// Retained Proportional authority used for anchor comparison and context.
     pub authority: Option<IntegralAuthoritySummary>,
 }
 
 /// Typed outcome of the breakaway acceptance-point installer.
-///
-/// The no-terminus refusal is a distinct variant, not folded into an ordinary
-/// non-install, so the caller can attach a dedicated cause instead of silently
-/// dropping a breakaway `RepeatabilityConfirmed` that carried no target terminus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum AcceptanceInstall {
-    /// A reproduced breakaway target run yielded one installable point.
     Installed(AcceptancePoint),
-    /// The terminal is not a breakaway acceptance terminal (no install).
     NotAcceptanceTerminal,
-    /// A breakaway acceptance `RepeatabilityConfirmed` that recorded no target terminus.
     MissingTargetTerminus,
 }
 
-/// Derive one token-carrying amplitude handoff from a breakaway `RepeatabilityConfirmed`.
-///
-/// A breakaway point sources the token and signed recovery intervals from the
-/// run's breakaway authority; it cannot be reconstructed from the request
-/// alone. The token is copied from `authority.acquisition`, never
-/// constructed, so the confirmation's unforgeability is preserved.
-///
-/// `Err(())` is an evidence-integrity fault: a breakaway acceptance
-/// `RepeatabilityConfirmed` whose recorded target status, plan digest, gain,
-/// or ladder index does not hold together.
 pub(crate) fn breakaway_acceptance_point(
     channel: u8,
     authority: &IntegralAuthoritySummary,
@@ -170,24 +113,15 @@ pub(crate) fn breakaway_acceptance_point(
         VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG, integral_i_at,
     };
 
-    // (1) Not a breakaway acceptance terminal: nothing to install. The
-    // terminus-independent `breakaway_acceptance` flag is what keeps a
-    // no-terminus breakaway `RepeatabilityConfirmed` from being dismissed here, so it can
-    // reach the distinct missing-terminus branch below.
     if !terminal.breakaway_acceptance {
         return Ok(AcceptanceInstall::NotAcceptanceTerminal);
     }
-    // (2) Defensive: the caller invokes only on a promoted `RepeatabilityConfirmed`.
     if terminal.outcome != VelocityIntegralOutcome::RepeatabilityConfirmed {
         return Ok(AcceptanceInstall::NotAcceptanceTerminal);
     }
-    // (3) A breakaway `RepeatabilityConfirmed` that recorded no target terminus is a distinct
-    // refusal, not a fabricated point.
     let Some(positive_index) = terminal_target_terminus(terminal) else {
         return Ok(AcceptanceInstall::MissingTargetTerminus);
     };
-    // (4) A recorded terminus must be a genuinely target-reaching run whose
-    // identity matches the authority the promotion held.
     if terminal_target_status(terminal) != Some(CombinedTargetStatus::TargetReached) {
         return Err(());
     }
@@ -226,10 +160,6 @@ pub(crate) fn breakaway_acceptance_point(
 }
 
 /// Device parameters needed to reproduce a retained Integral authority's plan.
-///
-/// Grouped out of `preflight_integral_request`'s argument list to bring it under the
-/// project's <=5-parameter rule: these five are the axis/hardware description the
-/// preflight reproduces against, distinct from the per-call request and sequence.
 pub struct IntegralPreflightConfig {
     pub encoder_counts_per_rev: u32,
     pub torque_limit: u16,
@@ -238,19 +168,6 @@ pub struct IntegralPreflightConfig {
     pub pwm_hz: u32,
 }
 
-/// Admit one resume against retained breakaway authority.
-///
-/// The torque limits and evidence capability come from the retained authority
-/// because the campaign measured its usable limit from the current observer, so
-/// recomputing them here could plan against a different boundary than the one
-/// the confirmation evidence was gathered under.
-///
-/// PWM and encoder resolution are the opposite case: they must be compared
-/// against live configuration, which is why both are passed in separately from
-/// the retained values the context freezes. The plan digest cannot police this
-/// on its own, because a plan rebuilt from retained context hashes those same
-/// retained values and still matches the retained identity while execution does
-/// its target-rate math against the stale resolution.
 fn preflight_retained_breakaway(
     token: crate::commissioning::outer::velocity::integral_plan::ConfirmedAcquisitionDigest,
     authority: IntegralAuthoritySummary,
@@ -296,9 +213,6 @@ fn preflight_retained_breakaway(
         schema_revision: plan.schema_revision,
         plan_digest: plan.digest(),
     };
-    // The sole identity check on this path: the rebuilt plan must be the exact
-    // plan that was retained. A request that changed anything material produces
-    // a different digest and is refused before any stroke.
     if integral_candidate.preflight(identity).is_some() {
         return Err(IntegralPreflightRejection::RejectedPlanMismatch {
             retained: authority.identity,
@@ -394,11 +308,6 @@ pub fn apply_integral_terminal(
                             slot,
                         },
                     ),
-                // The breakaway target-terminus wire encoding
-                // (`terminal_target_terminus`) is `rest_boundary_slot_plus_one
-                // == 0`, disjoint from the current-headroom encoding `rest_boundary`
-                // above requires (both fields nonzero), so it is retained here
-                // in its own raw field rather than lost to that field's `.zip()`.
                 target_terminus_rung_plus_one: if terminal.rest_boundary_slot_plus_one == 0 {
                     terminal.rest_boundary_rung_plus_one
                 } else {
@@ -414,11 +323,6 @@ pub fn apply_integral_terminal(
                 IntegralReproductionDecision::FirstRunRetained(_) => None,
                 IntegralReproductionDecision::RepeatabilityConfirmed(delta) => {
                     terminal.outcome = VelocityIntegralOutcome::RepeatabilityConfirmed;
-                    // The confirmation run's own terminus check need not
-                    // re-trip for reproduction to succeed (a breakaway target
-                    // terminus is not part of reproduction authority), so fall
-                    // back to the terminus already proven by the first
-                    // sufficient run rather than losing it on promotion.
                     if terminal.rest_boundary_rung_plus_one == 0
                         && terminal.rest_boundary_slot_plus_one == 0
                         && previous_target_terminus_rung_plus_one != 0
@@ -438,8 +342,6 @@ pub fn apply_integral_terminal(
                     terminal.cause = IntegralOutcomeCause::Dispatch(
                         INTEGRAL_DISPATCH_CAUSE_REPRODUCTION_MISMATCH,
                     );
-                    // The sole defmt signal for why a resume came back Inconclusive:
-                    // which shared rungs reproduced vs diverged, per direction.
                     defmt::warn!(
                         "integral reproduction mismatch: reproduced=[{=u32:#x}, {=u32:#x}] divergent=[{=u32:#x}, {=u32:#x}]",
                         delta.reproduced_masks[0],
@@ -496,13 +398,9 @@ pub fn apply_integral_terminal(
     }
 }
 
-/// Build the authoritative zero-motion terminal for a failed Integral admission.
 /// Terminal for an Integral resume with nothing retained to resume from.
 ///
-/// Reports a zero plan digest because there is genuinely no exact plan: the
-/// slot held no authority to reconstruct one from. Every other failed-admission
-/// terminal names the plan it rejected, so consumers must branch on the cause
-/// rather than assume a digest is present.
+/// Reports a zero plan digest: no authority existed to reconstruct a plan from.
 pub fn missing_authority_integral_terminal(run_sequence: u32) -> VelocityIntegralTerminal {
     use crate::commissioning::outer::velocity::integral_evidence::{
         ExactRateInterval, IntegralRunEvidence,

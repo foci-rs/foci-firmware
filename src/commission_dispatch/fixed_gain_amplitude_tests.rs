@@ -52,16 +52,6 @@ fn amplitude_config() -> IntegralPreflightConfig {
     }
 }
 
-// --- Breakaway amplitude-authority fixtures ------------------------------------
-//
-// A schema-16 breakaway plan can only be minted through the real confirmation
-// gate (`ConfirmedAcquisitionDigest`'s inner field is private outside
-// `integral_plan.rs`), so these fixtures walk the same
-// discovery-confirmation-token path `breakaway_campaign.rs` does, rather than
-// fabricating a plan. `breakaway_request` freezes its own velocity (6_666
-// mrev/s, distinct from `request()`'s 4_394) because gain 512 is only known
-// transition-capable under that target.
-
 fn breakaway_request() -> VelocitySweepRequest {
     VelocitySweepRequest {
         requested_velocity_mrev_s: 6_666,
@@ -86,8 +76,6 @@ fn full_directional_consensus() -> DirectionalConsensus {
     }
 }
 
-/// A held-out family-eight block that `evaluate_band_confirmation` accepts:
-/// both directions fully collected, well inside the 70-80% response band.
 fn accepted_confirmation_evidence() -> (ConfirmationDirectionalInput, ConfirmationDirectionalInput)
 {
     let mean_rate_q: i64 = 750_000;
@@ -120,8 +108,6 @@ fn breakaway_confirmation_plan(nominated_p: PidPGain) -> BandConfirmationPlan {
     plan_band_confirmation(0x1111_2222_3333_4444, nominated_p).unwrap()
 }
 
-/// Mint the confirmation token through the real gate, exactly as a live
-/// campaign would, rather than fabricating the digest.
 fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcquisitionDigest {
     let (forward, reverse) = accepted_confirmation_evidence();
     let acceptance =
@@ -141,16 +127,6 @@ fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]
         .held_out_response_intervals_q
 }
 
-/// One genuine schema-16 breakaway plan, built through the real
-/// discovery-confirmation-token path (see the module doc above) via the
-/// CAMPAIGN builder (`plan_breakaway_velocity_integral_response`), plus the
-/// token that authorizes it.
-///
-/// Deliberately independent of `reconstruct_breakaway_plan`'s own logic: this
-/// fixture derives `usable_torque_limit` via `current_gain_span` the same way
-/// `BreakawayCampaign::new` does, not via any helper `reconstruct_breakaway_plan`
-/// shares, so a digest match against this fixture is a genuine check against
-/// production rather than the reconstruction checking itself.
 fn breakaway_plan_and_token() -> (VelocityIntegralPlan, ConfirmedAcquisitionDigest) {
     let request = breakaway_request();
     let proportional = plan_proportional_velocity_sweep(
@@ -222,10 +198,6 @@ fn breakaway_point(
     }
 }
 
-/// The end-to-end proof the cutover depends on: a genuine breakaway point's
-/// carried token, `selected_p`, and intervals rebuild the exact retained
-/// plan, so `plan_digest` matches. If any reconstruction input were wrong or
-/// missing this would fail, not merely warn.
 #[test]
 fn breakaway_reconstructs_and_verifies_from_token() {
     let (plan, token) = breakaway_plan_and_token();
@@ -247,9 +219,6 @@ fn breakaway_reconstructs_and_verifies_from_token() {
     assert_eq!(rebuilt.target_velocity_rpm, point.target_velocity_rpm);
 }
 
-/// Altering the carried intervals still lets the deterministic I-ladder
-/// rebuild a plan, but a different one -- the digest check must catch the
-/// divergence rather than accepting the tampered point.
 #[test]
 fn breakaway_reconstruct_rejects_tampered_intervals() {
     let (plan, token) = breakaway_plan_and_token();
@@ -269,8 +238,6 @@ fn breakaway_reconstruct_rejects_tampered_intervals() {
     );
 }
 
-/// `selected_p` is folded into the confirmed gain used to rebuild the plan;
-/// tampering it must also be refused, not silently rebuild a different plan.
 #[test]
 fn breakaway_reconstruct_rejects_tampered_selected_p() {
     let (plan, token) = breakaway_plan_and_token();
@@ -290,8 +257,6 @@ fn breakaway_reconstruct_rejects_tampered_selected_p() {
     );
 }
 
-/// A point with no token (only ever the combined case) must be refused before
-/// any reconstruction is attempted.
 #[test]
 fn breakaway_reconstruct_rejects_point_without_token() {
     let (plan, token) = breakaway_plan_and_token();
@@ -393,8 +358,6 @@ fn action_codes_and_invalid_values_are_exact() {
     );
     assert_eq!(AutotuneAction::PositionTune.amplitude_order(), None);
     assert_eq!(AutotuneAction::PositionTune.amplitude_slot_order(), None);
-    // The breakaway campaign runs its own schedule; it is neither an amplitude
-    // acquisition nor a classic forward/reverse slot order.
     assert_eq!(
         AutotuneAction::BreakawaySeeded.slot_order(),
         IntegralSlotOrder::ForwardFirst
@@ -402,7 +365,6 @@ fn action_codes_and_invalid_values_are_exact() {
     assert_eq!(AutotuneAction::BreakawaySeeded.amplitude_order(), None);
     assert_eq!(AutotuneAction::BreakawaySeeded.amplitude_slot_order(), None);
 
-    // Slot order is defined for every surviving acquisition.
     for (action, slot_order) in [
         (
             AutotuneAction::FixedGainAmplitudeAscending,
@@ -416,7 +378,6 @@ fn action_codes_and_invalid_values_are_exact() {
         assert_eq!(action.slot_order(), slot_order, "{action:?}");
     }
 
-    // Amplitude order and slot order are independent dimensions of one action.
     for (action, order, slot_order) in [
         (
             AutotuneAction::FixedGainAmplitudeAscending,

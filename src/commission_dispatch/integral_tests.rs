@@ -102,9 +102,6 @@ fn breakaway_integral_plan()
     .expect("valid breakaway Integral plan")
 }
 
-/// The retained breakaway authority summary, as `apply_integral_terminal` holds
-/// it at the `RepeatabilityConfirmed` promotion (`acquisition ==
-/// ConfirmedBreakaway`, held-out intervals, campaign `fixed_p`/target).
 fn breakaway_authority_summary(
     plan: &crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
 ) -> IntegralAuthoritySummary {
@@ -118,7 +115,6 @@ fn breakaway_authority_summary(
     )
 }
 
-/// One breakaway Integral terminal (`breakaway_acceptance` set, no combined bit).
 fn breakaway_terminal(
     plan: &crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
     authority: &IntegralAuthoritySummary,
@@ -168,7 +164,6 @@ fn breakaway_reproduced_complete_installs_token_carrying_point() {
         VelocityIntegralOutcome::RepeatabilityConfirmed,
         sufficient_evidence(0),
     );
-    // terminus == 2 (rest boundary at rung index 2, slot cleared).
     terminal.rest_boundary_rung_plus_one = 3;
 
     let installed = match super::integral::breakaway_acceptance_point(
@@ -189,12 +184,10 @@ fn breakaway_reproduced_complete_installs_token_carrying_point() {
         installed.selected_response_intervals_q,
         authority.directional_pooled_intervals
     );
-    // Exact, not tautological: selected_i is the ladder value at terminus + 1.
     assert_eq!(
         installed.selected_i,
         integral_i_at(execution, 3).expect("in range")
     );
-    // The token is carried so the amplitude preflight can reconstruct the plan.
     assert_eq!(installed.token, Some(authority.acquisition));
     assert!(installed.token.is_some());
 }
@@ -204,7 +197,6 @@ fn breakaway_complete_without_terminus_reports_missing_terminus() {
     let plan = breakaway_integral_plan();
     let authority = breakaway_authority_summary(&plan);
     let execution = plan.execution_plan();
-    // Sufficiency only: no rest boundary, so no target terminus.
     let terminal = breakaway_terminal(
         &plan,
         &authority,
@@ -313,10 +305,6 @@ fn empty_evidence() -> IntegralRunEvidence {
 
 #[test]
 fn a_resume_without_retained_authority_fails_closed_and_carries_no_plan() {
-    // A resume asked for against an empty slot has no exact plan to name, so
-    // the terminal reports a zero plan digest rather than inventing one. It is
-    // its own cause: the request was well formed and the machine simply has
-    // nothing retained, which is the ordinary state after any reset.
     let slot = IntegralRetentionSlot::new();
     assert!(
         preflight_integral_request(request(), &preflight_config(), 4, &slot)
@@ -463,11 +451,6 @@ fn sufficient_runs_advance_candidate_compare_and_complete_lifecycle() {
     assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
 }
 
-/// A reproduced confirmation run that does not itself re-cross the
-/// target-reaching threshold must still install, using the terminus already
-/// proven by the first sufficient run: a breakaway target terminus is not
-/// part of reproduction authority, so a `RepeatabilityConfirmed` promotion cannot require
-/// the second run to redetect it.
 #[test]
 fn reproduced_complete_without_current_terminus_still_installs() {
     let plan = breakaway_integral_plan();
@@ -578,10 +561,6 @@ fn inconclusive_preserves_authority_while_fault_clears_it() {
 
 #[test]
 fn unexpected_complete_terminal_fails_closed_in_retained_integral_dispatch() {
-    // Combined workflow terminals are handled before this retained dispatcher.
-    // Non-combined retained Integral reports sufficiency as `FirstRunRetained`.
-    // A bare `RepeatabilityConfirmed` reaching this function is therefore a contract
-    // violation, so it must not be accepted as success.
     let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(retained_authority());
 
@@ -603,11 +582,6 @@ fn unexpected_complete_terminal_fails_closed_in_retained_integral_dispatch() {
 
 #[test]
 fn every_engine_outcome_has_a_declared_dispatch_verdict() {
-    // The engine has six outcomes and `apply_integral_terminal` has five arms;
-    // nothing tested the cross-product, which is why three instances of
-    // dispatch-level fault promotion reached hardware before a test. Each row
-    // states the intended verdict, so grouping a success with a rejection
-    // cannot pass unnoticed again.
     let expectations = [
         (
             VelocityIntegralOutcome::RepeatabilityConfirmed,
@@ -894,9 +868,6 @@ fn outer_safety_timing_terminal_order_integral_resume() {
         };
         assert_eq!(terminal.rest_boundary_rung_plus_one, 4);
         assert_eq!(terminal.rest_boundary_slot_plus_one, 6);
-        // Raw FTRC canonical-record content and emission order are a `trace`-only
-        // diagnostic concern; the dispatch/terminal assertions above already cover
-        // this path in the default build.
         #[cfg(feature = "trace")]
         {
             assert_eq!(
@@ -988,9 +959,6 @@ fn candidate_terminal_restores_entry_snapshot_to_registers() {
         let mut backend = MockBackend::new();
         backend.enable_pin = true;
 
-        // Live "candidate" registers diverge from the baseline snapshot -- the
-        // restore must overwrite them, not merely no-op because a value is
-        // already present.
         let _ = backend
             .write_register(PID_VELOCITY_P_VELOCITY_I, 0xdead_beef)
             .await;
@@ -1076,8 +1044,6 @@ fn candidate_terminal_restores_entry_snapshot_to_registers() {
     });
 }
 
-/// Build the breakaway Integral engine parked in `OuterPhase::VelocityIntegral`
-/// whose live execution plan the dispatch seam reads for the promotion.
 fn breakaway_engine(
     plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
     authority: &IntegralAuthoritySummary,
@@ -1110,7 +1076,6 @@ async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_poi
     let plan = breakaway_integral_plan();
     let authority = breakaway_authority_summary(&plan);
 
-    // First sufficient run retains the candidate the reproduced run confirms.
     let mut integral_slot = IntegralRetentionSlot::new();
     integral_slot.install_authority(authority);
     let mut first = breakaway_terminal(
@@ -1128,9 +1093,6 @@ async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_poi
     let mut backend = MockBackend::new();
     backend.enable_pin = true;
 
-    // Live "candidate" registers diverge from the baseline snapshot -- the
-    // restore must overwrite them, not merely no-op because a value is
-    // already present.
     let _ = backend
         .write_register(PID_VELOCITY_P_VELOCITY_I, 0xdead_beef)
         .await;
@@ -1153,7 +1115,6 @@ async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_poi
         &mut gains,
     );
 
-    // Reproduced second run: same evidence, matching terminus.
     let mut second = breakaway_terminal(
         &plan,
         &authority,
@@ -1186,21 +1147,16 @@ async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_poi
         VelocityIntegralOutcome::RepeatabilityConfirmed
     );
 
-    // The acceptance point install (unchanged from before F3) still happens.
     assert_eq!(
         integral_slot.state(),
         IntegralRetentionSlotState::AcceptancePoint
     );
 
-    // The engine is consumed and the motor fully disarmed -- no inline
-    // continuation into robustness.
     assert!(engine.is_none());
     assert!(!enabled);
     assert!(!calibrated);
     assert!(!backend.enable_pin);
 
-    // The operator's installed-tuning entry baseline is restored to the registers
-    // before the disarm safe-state overwrites the torque-limit register.
     let (velocity_reg, position_reg) = crate::pid::OuterLoopGains {
         position_p: baseline.position_p,
         position_i: baseline.position_i,
@@ -1262,7 +1218,6 @@ async fn promoted_complete_from_terminal_poll_emits_terminal_reply() {
     let plan = breakaway_integral_plan();
     let authority = breakaway_authority_summary(&plan);
 
-    // First sufficient run retains the candidate the reproduced run confirms.
     let mut integral_slot = IntegralRetentionSlot::new();
     integral_slot.install_authority(authority);
     let mut first = breakaway_terminal(
@@ -1300,9 +1255,6 @@ async fn promoted_complete_from_terminal_poll_emits_terminal_reply() {
         )
         .await;
 
-    // A promoted RepeatabilityConfirmed from the terminal poll ends the workflow
-    // like any other terminal outcome, disarming instead of continuing into
-    // robustness.
     let ScheduledCommissionTickAction::Terminal { reply, .. } = action else {
         panic!("a promoted RepeatabilityConfirmed must emit a Terminal action from the poll");
     };
@@ -1327,8 +1279,6 @@ async fn first_run_retained_still_emits_report_only_terminal() {
     let plan = breakaway_integral_plan();
     let authority = breakaway_authority_summary(&plan);
 
-    // Authority only: the first sufficient run has nothing to reproduce, so it
-    // stays a `FirstRunRetained` the host resumes from.
     let mut integral_slot = IntegralRetentionSlot::new();
     integral_slot.install_authority(authority);
 
@@ -1377,7 +1327,6 @@ async fn first_run_retained_still_emits_report_only_terminal() {
         reply,
         ReplyPayload::VelocityIntegralTerminal { .. }
     ));
-    // The report-only path disarms exactly as before.
     assert!(!enabled);
     assert!(!backend.enable_pin);
 }

@@ -1,9 +1,4 @@
 //! Shared commissioning reply emission.
-//!
-//! Board crates keep transport-specific ankyra sender calls behind
-//! [`CommissionReplySink`]. This module owns the semantic mapping from terminal
-//! commissioning payloads to reply events so boards cannot drift by dropping
-//! fields locally.
 
 use crate::autotune::{CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CommissionPhase};
 use crate::commission_dispatch::ReplyPayload;
@@ -19,30 +14,10 @@ use crate::tmc_diagnostics::{
     ResistanceRunReport,
 };
 
-/// TMC4671 external electrical angle for electrical axis 0 (PHASE0).
 const RESISTANCE_AXIS0_PHI_E_EXT: u16 = 0;
 
-/// TMC4671 external electrical angle for electrical axis 1 (PHASE90).
 const RESISTANCE_AXIS1_PHI_E_EXT: u16 = 16_384;
 
-/// Single source of truth for every `CommissionReplySink` reply that can be
-/// generated mechanically: which trait method it becomes, its wire reply
-/// type, and the fields forwarded into it. Consumed via the callback
-/// pattern by `foci_firmware_macros::commission_reply_trait_methods!`
-/// (inside this trait) and `foci_firmware_macros::commission_reply_forwarding_impls!`
-/// (inside each board's `impl CommissionReplySink` block) so both surfaces
-/// stay generated from exactly one list.
-///
-/// Entries use the crate-absolute path `foci_firmware::ankyra::replies::...`
-/// for `reply`/`param`, not `crate::ankyra::replies::...`: this macro's
-/// entries are expanded verbatim at each *invocation* site (once here, once
-/// per board), and a board has no `crate::ankyra::replies` module of its
-/// own. `foci_firmware::` resolves to the same crate everywhere, since
-/// every invocation site (this trait's own crate and both boards) already
-/// depends on `foci-firmware` -- including this crate's own trait
-/// definition below, via the `extern crate self as foci_firmware;` alias
-/// in `lib.rs` (a crate cannot otherwise refer to itself by its own crate
-/// name).
 #[macro_export]
 macro_rules! __commission_reply_manifest {
     ($callback:path) => {
@@ -216,72 +191,41 @@ macro_rules! __commission_reply_manifest {
 }
 
 /// Board-local sink for commissioning-family Klipper replies.
-///
-/// Implementations call board-generated ankyra reply macros. Methods return
-/// `()` to preserve the existing fire-and-forget reply behavior.
 pub trait CommissionReplySink {
-    /// Emit one retained commissioning diagnostic detail event.
     fn foci_commission_detail(&mut self, oid: u8, event: CommissionDiagnostic);
 
-    /// Emit a commissioning phase reply.
     fn foci_commission_phase(&mut self, oid: u8, phase: u8, status: u8);
 
-    /// Emit the commissioning result.
     fn foci_commission_result(&mut self, oid: u8, status: u8, result: &CommissionResult);
 
     crate::__commission_reply_manifest!(foci_firmware_macros::commission_reply_trait_methods);
 
-    /// Emit the resistance-identification per-run evidence captured during
-    /// commissioning. `FociCommissionResult` is size-capped, so this
-    /// reuses the standalone resistance test's `foci_resistance_run` reply
-    /// to carry the evidence
-    /// that lives on `InnerResult` to the host.
+    /// Emit resistance-identification per-run evidence.
     fn foci_resistance_run(&mut self, report: ResistanceRunReport);
 
-    /// Emit one resistance-identification per-axis fit result captured
-    /// during commissioning. Reuses the `foci_resistance_axis` reply for
-    /// the same reason as [`Self::foci_resistance_run`].
+    /// Emit one resistance-identification per-axis fit result.
     fn foci_resistance_axis(&mut self, report: ResistanceAxisReport);
 
-    /// Emit run-level production inductance evidence captured during
-    /// commissioning.
     fn foci_inductance_run(&mut self, report: InductanceRunReport);
 
-    /// Emit rotating-frame production inductance current evidence captured
-    /// during commissioning.
     fn foci_inductance_frame(&mut self, report: InductanceFrameReport);
 
-    /// Emit accepted production inductance estimate evidence captured during
-    /// commissioning.
     fn foci_inductance_estimate(&mut self, report: InductanceEstimateReport);
 
-    /// Emit sustained-hold current-loop evidence captured during
-    /// commissioning before the run-level current-loop summary.
     fn foci_current_loop_hold(&mut self, report: CurrentLoopHoldReport);
 
-    /// Emit fast closed-loop entry stability evidence captured before the
-    /// sustained-hold sampler.
     fn foci_closed_loop_activation(&mut self, report: ClosedLoopActivationReport);
 
-    /// Emit applied filter cutoffs for the commissioned closed-loop frame.
     fn foci_current_loop_filters(&mut self, report: CurrentLoopFiltersReport);
 
-    /// Emit run-level current-loop evidence captured during commissioning.
-    /// `FociCommissionResult` is size-capped, so this
-    /// supplemental reply carries source, tier, split, validation coverage,
-    /// and failure-reason evidence separately.
     fn foci_current_loop_run(&mut self, report: CurrentLoopRunReport);
 
-    /// Emit one per-axis, per-delay current validation evidence sample
-    /// captured during commissioning.
     fn foci_current_validation_axis(&mut self, report: CurrentValidationAxisReport);
 
-    /// Emit the installed-tuning result.
     fn foci_tune_result(&mut self, oid: u8, report_seq: u8, status: u8, result: &OuterResult);
 
-    /// Emit position-tune evidence fields dropped from the terminal tune
-    /// result to stay under the frame budget. Emitted immediately before
-    /// the terminal reply when `rungs_measured > 0`.
+    /// Emit position-tune evidence dropped from the terminal result; sent before it when
+    /// `rungs_measured > 0`.
     fn foci_tune_position_evidence(
         &mut self,
         oid: u8,
@@ -289,16 +233,12 @@ pub trait CommissionReplySink {
         position_tune: &crate::commissioning::types::PositionTuneProvenance,
     );
 
-    /// Emit installed-tuning safety-envelope evidence before the terminal tune result.
     fn foci_outer_safety_fault(&mut self, oid: u8, fault: OuterSafetyFault);
 
-    /// Emit the ADC calibration result.
     fn foci_calibrate_result(&mut self, oid: u8, status: u8, result: &AdcCalResult);
 
-    /// Emit one self-test stage result.
     fn foci_selftest_result(&mut self, oid: u8, stage: u8, value: SelftestStageValue);
 
-    /// Emit the terminal self-test completion reply.
     fn foci_selftest_done(&mut self, oid: u8, status: u8);
 }
 
@@ -541,11 +481,7 @@ pub fn emit_breakaway_campaign_terminal<S: CommissionReplySink>(
     });
 }
 
-/// Fan one campaign evidence event out to the Task-7 `emit_breakaway_*`
-/// bridges, looping over any batch evidence a terminal variant carries (every
-/// in-band rung's margin, every resolved ladder rung, every fresh held-out
-/// stroke) the same way [`emit_fixed_gain_amplitude_plan`] already loops one
-/// Rust value out to several wire fragments.
+/// Fan one campaign evidence event out to the `emit_breakaway_*` bridges.
 pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -570,10 +506,6 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
             emit_breakaway_discovery_plan(sink, oid, planned);
             emit_breakaway_ceiling_source(sink, oid, ceiling_source);
         }
-        // Per-observation raw evidence and per-rung nomination margins are
-        // detailed evidence the host does not consume: they ride the
-        // canonical trace only, where foci-trace reconstructs the consensus and
-        // nomination from them. No ordinary reply is emitted for either.
         BreakawayCampaignEvent::RawObservation(_) => {}
         BreakawayCampaignEvent::ProbeDecision(_) => {}
         BreakawayCampaignEvent::DiscoveryRungMargin(_) => {}
@@ -589,10 +521,6 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
         BreakawayCampaignEvent::ConfirmationPlanned(report) => {
             emit_breakaway_confirmation_plan(sink, oid, report);
         }
-        // The per-stroke confirmation observations are detailed trace-only
-        // evidence; the ordinary reply carries the terminal (with its
-        // mask structure) but not the individual strokes. `forward`/`reverse`
-        // are consumed only by the trace encoder.
         BreakawayCampaignEvent::ConfirmationTerminal {
             terminal,
             forward: _,
@@ -603,15 +531,7 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
         BreakawayCampaignEvent::CampaignTerminal(report) => {
             emit_breakaway_campaign_terminal(sink, oid, report);
         }
-        // Diagnostic-only: the rejected-rest record exists to explain a
-        // `VelocityRestNotConfirmed` terminal offline, and every field it
-        // carries is already reconstructible from the FTRC trace stream.
-        // Giving it a Klipper reply too would add a wire type to both board
-        // sinks and the host extra for evidence no host-side decision reads,
-        // so this path deliberately drops it. The campaign terminal the
-        // rejection produces still reports over the reply channel as usual.
         BreakawayCampaignEvent::RecoveryRestRejected(_) => {}
-        // Diagnostic-only, for the same reason as the rejected-rest record.
         BreakawayCampaignEvent::RecoveryOriginMismatch(_) => {}
     }
 }
@@ -688,9 +608,7 @@ pub fn emit_robustness_reversal_terminal<S: CommissionReplySink>(
     );
 }
 
-/// Emit both directions' per-cycle robustness evidence, ahead of the
-/// compact terminal -- mirrors the tune-result path's
-/// outer-safety-fault-before-terminal-result ordering.
+/// Emit both directions' per-cycle robustness evidence ahead of the compact terminal.
 pub fn emit_robustness_cycle_evidence<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -838,12 +756,7 @@ pub fn emit_velocity_integral_event<S: CommissionReplySink>(
 
 /// Emit the single compact velocity-integral terminal reply.
 ///
-/// Carries only the fields the live host reads for status text and
-/// orchestration: outcome, cause, rest-rejection, eligibility/bookend
-/// masks, and the reproduced/divergent mask summary. The detailed
-/// observation/rung/curve/recovery evidence rides the canonical trace
-/// only, decoded independently by `foci-trace` (see
-/// `encode_velocity_integral_terminal` for that record).
+/// Carries only the fields the host reads for status text and orchestration.
 pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -902,14 +815,6 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(
             status,
             result,
         } => {
-            // FociCommissionResult is size-capped (17 fields, near the
-            // 64-byte Klipper message limit) and cannot carry the evidence
-            // that lives alongside `InnerResult`. Emit supplemental evidence
-            // before the terminal commission result so the result stays the
-            // true terminal/"done" signal for the whole commission flow.
-            //
-            // Resistance axes stay before the resistance run, mirroring the
-            // diagnostic path's axes-then-run ordering (`emit_diagnostic_report`).
             let inner = &result.inner;
             sink.foci_resistance_axis(commission_resistance_axis_report(
                 oid,
@@ -1046,16 +951,6 @@ fn emit_commission_diagnostics<S: CommissionReplySink>(
     }
 }
 
-/// Build the resistance-identification run report carried by the
-/// commission flow's `foci_resistance_run` emission.
-///
-/// `status` is always 0: this report is only built once `InnerResult` has
-/// already reached `CommissionDone`, which implies the resistance run
-/// that produced it succeeded. Power-stage readback fields
-/// (`pwm_maxcnt_readback`, `bbm_readback`, `dsadc_mdec_readback`,
-/// `pwm_sv_chop_readback`) have no counterpart on `InnerResult` and are set
-/// to 0; only the standalone diagnostic path (`foci_resistance_test`)
-/// retains those readbacks.
 fn commission_resistance_run_report(oid: u8, inner: &InnerResult) -> ResistanceRunReport {
     ResistanceRunReport {
         oid,
@@ -1075,12 +970,6 @@ fn commission_resistance_run_report(oid: u8, inner: &InnerResult) -> ResistanceR
     }
 }
 
-/// Build one electrical-axis resistance fit report carried by the
-/// commission flow's `foci_resistance_axis` emission.
-///
-/// `excluded_point_mask`, `selected_count`, and per-axis `warning_flags`
-/// have no counterpart on `InnerResult` (only a run-level
-/// `resistance_warning_flags` is retained) and are set to 0.
 fn commission_resistance_axis_report(
     oid: u8,
     electrical_axis: u8,
@@ -3268,8 +3157,6 @@ mod tests {
             retry_count: 1,
             inconclusive: false,
         };
-        // Real per-cycle wire triples now ride the terminal's evidence and are
-        // emitted verbatim (no single-cycle bridge).
         let example_cycles: [Option<CycleWire>; 5] = [
             Some(CycleWire {
                 reconvergence_ms: 42,
@@ -3470,8 +3357,6 @@ mod tests {
             ReplyPayload::RobustnessReversalTerminal { oid: 3, terminal },
         );
 
-        // A safety fault preempts the run before any cycle is measured, so the
-        // cycle-evidence replies carry all-unfilled slots.
         assert_eq!(
             sink.events,
             std::vec![

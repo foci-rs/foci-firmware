@@ -12,14 +12,6 @@ pub(crate) enum PositionStabilityErrorKind {
     Stale,
 }
 
-/// Poll-driven replacement for `outer_restore_position_stable`, used only by
-/// `RestoreCursor::OuterFailedStability`. Each `advance` call performs at
-/// most one backend register read; between reads it returns `None` without
-/// touching the backend until at least `OUTER_RESTORE_STABILITY_INTERVAL_US`
-/// has elapsed since the previous sample (or since `start`, for the first
-/// sample), and reports `Stale` if more than
-/// `OUTER_RESTORE_STABILITY_MAX_SAMPLE_GAP_US` elapses past that deadline
-/// before the sample can be taken.
 #[derive(Clone, Copy)]
 pub(crate) struct PositionStabilityStep {
     index: u8,
@@ -226,10 +218,6 @@ pub(crate) enum EntrySnapshotRestoreErrorKind {
     Readback,
 }
 
-/// Does **not** touch `PID_TORQUE_FLUX_LIMITS`: the operational current
-/// limit lives in `tmc_state`, not the snapshot, and is restored separately
-/// by the velocity-disarm step's `ClampRestore` phase, which must run after
-/// this one.
 #[derive(Clone, Copy)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum EntrySnapshotRestoreStep {
@@ -435,16 +423,8 @@ impl EntrySnapshotRestoreStep {
     }
 }
 
-/// Reloads the four per-axis biquad filters from an `OuterGainRollbackSnapshot`,
-/// one raw backend write per `advance()` call.
 #[derive(Clone, Copy)]
 pub(crate) struct EntryGainFiltersStep {
-    // (register, value, index to jump to if this write fails). The disable
-    // pair's on_fail_next is always the next index (both writes always run,
-    // matching write_sub_register's unconditional double-write); an enable
-    // sequence's on_fail_next is that filter's end boundary for every op
-    // (matching write_biquad_*_checked's `?`-chained abort-the-rest-of-this-
-    // filter behavior, which the original outer wrapper then swallowed).
     ops: [(foci_tmc4671::registers::Register, u32, u8); 48],
     len: u8,
     next: u8,
@@ -541,11 +521,6 @@ impl EntryGainFiltersStep {
                 ops[len] = (sub.data, value, 0);
                 len += 1;
             }
-            // Every op in this filter's enable sequence jumps straight to
-            // the filter's end on failure, whether it fails at a selector
-            // or a data write -- matching write_biquad_*_checked's `?`
-            // chain, which aborts every remaining sub-register pair in the
-            // same filter (not just the one in progress).
             for op in &mut ops[start..len] {
                 op.2 = len as u8;
             }
@@ -558,8 +533,6 @@ impl EntryGainFiltersStep {
         }
     }
 
-    /// Returns `true` once every queued op has been attempted (successfully
-    /// or not -- failures are swallowed, never reported).
     async fn advance<B: CommissioningBackend>(&mut self, backend: &mut B) -> bool {
         if self.next >= self.len {
             return true;
@@ -574,7 +547,6 @@ impl EntryGainFiltersStep {
     }
 }
 
-/// Failure reason for [`RestoreEntryGainsStep`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum RestoreEntryGainsErrorKind {
     Spi,
@@ -592,9 +564,6 @@ impl From<RestoreEntryGainsErrorKind> for crate::autotune::CommissionError {
     }
 }
 
-/// Restores outer gains from an entry snapshot after an installed-tuning soft failure
-/// or a safety-fault gain restore, one raw backend operation per
-/// `advance()` call.
 #[derive(Clone, Copy)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum RestoreEntryGainsStep {
@@ -1413,12 +1382,6 @@ mod tests {
         assert_eq!(write_log(&flat_backend), write_log(&stepped_backend));
 
         use foci_tmc4671::registers::*;
-        // `.data.addr()` (0x4D) is shared by every biquad sub-register, so it
-        // cannot identify velocity specifically -- torque/position/flux are
-        // hz=0 here and legitimately write 0 to that same shared address via
-        // their own disable sequences. The ADDR-selector write
-        // (addr.addr()=0x4E, value=sub_addr=15) is what uniquely identifies
-        // an access to CONFIG_BIQUAD_V_ENABLE.
         assert!(
             !write_log(&stepped_backend).iter().any(|(addr, val)| {
                 *addr == CONFIG_BIQUAD_V_ENABLE.addr.addr()
@@ -1523,9 +1486,6 @@ mod tests {
         let mut snap = sample_entry_snapshot();
         snap.velocity_filter_hz = 200;
         let mut backend = MockBackend::new();
-        // Fail only the first write to the shared biquad data register
-        // (velocity's A_1) -- every later write to that same address must
-        // succeed, isolating whether the abort is scoped to one filter.
         backend.fail_on_write_occurrence = Some((CONFIG_BIQUAD_V_A_1.data.addr(), 0));
 
         let mut step = RestoreEntryGainsStep::start(&snap);
@@ -1595,9 +1555,6 @@ mod tests {
     async fn restore_entry_gains_step_pi_representation_failure_maps_to_pi_representation_kind() {
         let snap = sample_entry_snapshot();
         let mut backend = MockBackend::new();
-        // tmc_state() unconditionally establishes PI representation on every
-        // call, so it can never exercise this path -- use tmc_channel0()
-        // directly instead, after reset() clears the flag.
         crate::state::tmc::tmc_channel0().reset();
 
         let mut step = RestoreEntryGainsStep::start(&snap);
@@ -1616,10 +1573,6 @@ mod tests {
 
     #[fixture_test]
     async fn entry_gain_filters_step_skips_velocity_above_motion_ceiling() {
-        // A velocity cutoff above the 1000 Hz motion ceiling but below the
-        // 10 kHz current ceiling must still be skipped on restore -- the
-        // per-target ceiling threaded through this loop is the only thing
-        // stopping it from reusing the wider torque/flux limit.
         let snapshot = crate::commissioning::OuterGainRollbackSnapshot {
             velocity_filter_hz: 2000,
             ..crate::commission_dispatch::test_support::sample_entry_snapshot()

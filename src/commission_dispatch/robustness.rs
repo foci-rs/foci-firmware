@@ -1,13 +1,4 @@
-//! Dispatch-side preflight and terminal application for the
-//! reversal-standstill robustness gate.
-//!
-//! Holds the `ROBUSTNESS_CAUSE_*` namespace (consumed by
-//! `robustness_evidence::summary_cause`) plus the read-only preflight, the
-//! failed-terminal builder, and the terminal-application identity check.
-//! Both `preflight_robustness_reversal` and `apply_robustness_terminal`
-//! take `&IntegralRetentionSlot`, never `&mut`: this phase probes the
-//! already-accepted operating point but never advances or closes
-//! `FixedGainAmplitudeProgress`.
+//! Dispatch-side preflight and terminal application for the reversal-standstill robustness gate.
 
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptancePoint, IntegralRetentionSlot,
@@ -23,19 +14,10 @@ use crate::commissioning::outer::velocity::robustness_reporting::ROBUSTNESS_SCHE
 use crate::commissioning::outer::velocity::sweep_plan::ZERO_SETTLE_US;
 use crate::commissioning::types::{RobustnessOutcome, RobustnessReversalTerminal};
 
-/// Reversal directions probed per run: forward->reverse and
-/// reverse->forward. Mirrors `robustness_reversal::DIRECTION_COUNT`,
-/// duplicated here so this module's worst-case arithmetic does not need a
-/// cross-module reach for a single scalar.
 const ROBUSTNESS_DIRECTION_COUNT: u32 = 2;
 
-/// Bounded per-direction tail-grace re-run budget: the cycle ledger grants
-/// exactly one free re-run for the first conclusive cycle whose
-/// reconvergence time crosses the tail threshold; a second tail cycle
-/// latches the rejection instead of retrying.
 const ROBUSTNESS_TAIL_GRACE_CYCLES: u32 = 1;
 
-/// Microseconds per millisecond, for the envelope's unit conversion.
 const MICROS_PER_MILLI: u32 = 1_000;
 
 /// No direction tripped a threshold gate and no direction was inconclusive.
@@ -51,102 +33,54 @@ pub const ROBUSTNESS_CAUSE_IAE_EXCEEDED: u8 = 3;
 pub const ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE: u8 = 4;
 /// No candidate survived acceptance to be probed for robustness.
 pub const ROBUSTNESS_CAUSE_NO_ACCEPTED_CANDIDATE: u8 = 5;
-/// Envelope/velocity-limit safety fault passthrough only. Carries a populated
-/// `safety_fault` field; internal (non-envelope) faults use one of the
-/// dedicated internal-fault causes below so the host can tell them apart.
+/// Envelope/velocity-limit safety fault passthrough; carries a populated `safety_fault`.
 pub const ROBUSTNESS_CAUSE_SAFETY_FAULT: u8 = 6;
 /// Accepted-point identity mismatch, set at terminal application.
-/// Never returned by `summary_cause`.
 pub const ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY: u8 = 7;
-// Code 8 is retired: it was the generic internal-fault bucket, since split into
-// the dedicated causes 12-22. Do not reuse it for a new meaning.
-/// The rest after a conclusive cycle was never confirmed, even after the one
-/// bounded re-opened rest window. A rejected rest after an inconclusive leg
-/// proceeds to origin recovery instead and fails there, if at all, with
-/// `ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED`. An operator-actionable subset of
-/// the internal-fault space (outcome stays `Failed`); every other internal
-/// fault has its own dedicated cause (codes 12-22). Set at the fault
-/// terminal, never by `summary_cause`.
+/// The rest after a conclusive cycle was never confirmed, even after one re-opened window.
 pub const ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED: u8 = 9;
-/// Two conclusive tail cycles occurred in one reversal direction, latching a
-/// tail rejection. Distinct from `ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED`
-/// (a slow per-direction median) so the host can tell a slow center from a
-/// heavy tail. Set at terminal assembly; never returned by `summary_cause`.
+/// Two conclusive tail cycles occurred in one reversal direction, latching a tail rejection.
 pub const ROBUSTNESS_CAUSE_TAIL_REPEATED: u8 = 10;
-/// The origin recovery that precedes an establish retry did not leave the
-/// axis where the next leg fits: the recovery ended unconfirmed, or the
-/// headroom precondition failed again immediately after it. A non-safety
-/// `Failed` cause (no inhibit, gains retained), distinct from
-/// `ROBUSTNESS_CAUSE_SAFETY_FAULT`. Set at the fault terminal, never by
-/// `summary_cause`.
+/// The origin recovery preceding an establish retry left the axis where the next leg does not fit.
 pub const ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED: u8 = 11;
-/// A register write or read (including an encoder or capture-register read)
-/// failed. Set at the fault terminal, never by `summary_cause`.
+/// A register write or read failed.
 pub const ROBUSTNESS_CAUSE_IO: u8 = 12;
-/// A safety-envelope precondition failed to arm (encoder baseline, safety
-/// observation, or a bounded primitive open) -- an arming failure, distinct
-/// from a real envelope trip (`ROBUSTNESS_CAUSE_SAFETY_FAULT`). Set at the
-/// fault terminal, never by `summary_cause`.
+/// A safety-envelope precondition failed to arm.
 pub const ROBUSTNESS_CAUSE_SAFETY_ARM_FAILED: u8 = 13;
-/// A recovery plan or schedule could not be constructed, or the reversal
-/// schedule does not fit the available position window. Set at the fault
-/// terminal, never by `summary_cause`.
+/// A recovery plan or reversal schedule could not be constructed or does not fit the window.
 pub const ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID: u8 = 14;
-/// The retained P/I gain pair was invalid. Set at the fault terminal, never
-/// by `summary_cause`.
+/// The retained P/I gain pair was invalid.
 pub const ROBUSTNESS_CAUSE_INVALID_GAINS: u8 = 15;
-/// A checked deadline computation overflowed. Set at the fault terminal,
-/// never by `summary_cause`.
+/// A checked deadline computation overflowed.
 pub const ROBUSTNESS_CAUSE_DEADLINE_OVERFLOW: u8 = 16;
-/// A stationarity analysis deadline was exceeded before it concluded. Set at
-/// the fault terminal, never by `summary_cause`.
+/// A stationarity analysis deadline was exceeded before it concluded.
 pub const ROBUSTNESS_CAUSE_ANALYSIS_TIMEOUT: u8 = 17;
-/// A stationarity or scored-rest-confirmation poll returned an internal
-/// error. Set at the fault terminal, never by `summary_cause`.
+/// A stationarity or scored-rest-confirmation poll returned an internal error.
 pub const ROBUSTNESS_CAUSE_ANALYSIS_POLL_FAILED: u8 = 18;
-/// Reversal-leg scoring failed. Set at the fault terminal, never by
-/// `summary_cause`.
+/// Reversal-leg scoring failed.
 pub const ROBUSTNESS_CAUSE_SCORING_FAILED: u8 = 19;
 /// A confirmed rest arrived with neither a pending cycle nor a held route to
 /// recover from.
-///
-/// Not reachable via `step_robustness_reversal`, its only production caller
-/// as of this writing: every path that confirms rest either has a pending
-/// cycle or a held route already set -- allocated because the underlying
-/// check is a real code path, not because current production input can
-/// reach it.
 pub const ROBUSTNESS_CAUSE_UNEXPECTED_STATE: u8 = 20;
-/// The origin-recovery worker reported an internal fault. Set at the fault
-/// terminal, never by `summary_cause`.
+/// The origin-recovery worker reported an internal fault.
 pub const ROBUSTNESS_CAUSE_ORIGIN_RECOVERY_FAULT: u8 = 21;
-/// The outer dispatch aborted the run for a reason outside this phase's own
-/// step loop (a pre-tick envelope trip's non-safety companion, or another
-/// dispatch-level failure). Set at `robustness_reversal_fault_terminal`,
-/// never by `summary_cause`.
+/// The outer dispatch aborted the run for a reason outside this phase's step loop.
 pub const ROBUSTNESS_CAUSE_DISPATCH_ABORT: u8 = 22;
 
 /// Definitive rejection of a robustness-reversal preflight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum RobustnessPreflightRejection {
-    /// No candidate survived acceptance to be probed for robustness.
     NoAcceptedCandidate,
 }
 
 /// Immutable robustness-reversal plan accepted before any probe motion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RobustnessPreflight {
-    /// The retained accepted operating point read for this probe.
     pub point: AcceptancePoint,
-    /// Caller-assigned trace sequence.
     pub run_sequence: u32,
 }
 
 /// Validate a retained accepted point without mutating retention.
-///
-/// Reads [`IntegralRetentionSlot::acceptance_point`] only; never calls
-/// `advance_matrix_progress`/`close_matrix_progress`, so a failed or
-/// completed reversal probe cannot itself move the fixed-gain-amplitude
-/// lifecycle forward.
 pub fn preflight_robustness_reversal(
     run_sequence: u32,
     integral_candidate: &IntegralRetentionSlot,
@@ -176,8 +110,6 @@ pub fn failed_robustness_terminal(
         selected_p: 0,
         selected_i: 0,
         target_velocity_rpm: 0,
-        // No accepted point exists on this rejection path, so no plant
-        // response was ever identified to construct a threshold from.
         plant_rate_q: 0,
         iae_max_q: 0,
         evidence: zero_robustness_evidence(),
@@ -190,11 +122,7 @@ pub fn failed_robustness_terminal(
 /// Apply one reversal-robustness terminal after confirming the retained
 /// accepted point's identity has not changed underneath the probe.
 ///
-/// Takes `&IntegralRetentionSlot` (shared, read-only): this phase never
-/// advances or closes `FixedGainAmplitudeProgress`, so it cannot take a
-/// mutable slot reference. On identity mismatch (or an emptied slot) the
-/// terminal is stamped `Failed`/`EVIDENCE_INTEGRITY` -- distinct from
-/// `SAFETY_FAULT`, which is reserved for envelope faults.
+/// On identity mismatch (or an emptied slot) the terminal is `Failed`/`EVIDENCE_INTEGRITY`.
 pub fn apply_robustness_terminal(
     mut terminal: RobustnessReversalTerminal,
     integral_candidate: &IntegralRetentionSlot,
@@ -214,20 +142,6 @@ pub fn apply_robustness_terminal(
     terminal
 }
 
-/// Worst-case wall-clock duration of a full reversal-robustness run, in
-/// milliseconds.
-///
-/// Bounds the run at 20 total probe cycles: per direction, the
-/// `ROBUSTNESS_CYCLES_PER_DIRECTION` measurement slots plus
-/// `ROBUSTNESS_MAX_RETRIES` bounded inconclusive retries plus the single
-/// tail-grace re-run, doubled for both reversal directions. Each cycle
-/// budgets `ROBUSTNESS_LEGS_PER_CYCLE` legs at
-/// `ROBUSTNESS_MEASUREMENT_BUDGET_US` apiece. On top of that, every cycle can
-/// return to the origin twice: once before its establish leg when the
-/// headroom precondition refuses the leg, and once after the leg when it ends
-/// inconclusive. Each unwind is one recovery slot (`recovery_maximum_slot_us`,
-/// the host-declared per-primitive cap the recovery plan carries) plus two
-/// `ZERO_SETTLE_US` rest windows.
 pub(crate) fn robustness_worst_case_duration_ms(recovery_maximum_slot_us: u32) -> u32 {
     let cycles_per_direction = ROBUSTNESS_CYCLES_PER_DIRECTION as u32
         + u32::from(ROBUSTNESS_MAX_RETRIES)
@@ -244,13 +158,6 @@ pub(crate) fn robustness_worst_case_duration_ms(recovery_maximum_slot_us: u32) -
     u32::try_from(probe_ms + unwinds * unwind_slot_ms).unwrap_or(u32::MAX)
 }
 
-/// Clean-run duration estimate of a full reversal-robustness run, in
-/// milliseconds: the host's `nominal_workflow_ms`.
-///
-/// Every measurement slot fills on its first attempt, so no inconclusive
-/// retries and no tail grace, and each cycle rests once with no re-opened rest
-/// window (`ROBUSTNESS_LEGS_PER_CYCLE - 1` legs). This is only a disclosure
-/// hint; the host arms its run timeout off `robustness_worst_case_duration_ms`.
 pub(crate) fn robustness_nominal_duration_ms() -> u32 {
     let nominal_cycles = ROBUSTNESS_CYCLES_PER_DIRECTION as u32 * ROBUSTNESS_DIRECTION_COUNT;
     let per_cycle_envelope_ms =
@@ -258,7 +165,6 @@ pub(crate) fn robustness_nominal_duration_ms() -> u32 {
     nominal_cycles * per_cycle_envelope_ms
 }
 
-/// All-zero robustness evidence for a terminal built before any probe motion.
 fn zero_robustness_evidence() -> RobustnessEvidence {
     let direction = RobustnessDirectionSummary {
         median_reconvergence_ms: 0,
@@ -328,7 +234,7 @@ mod tests {
 
     #[test]
     fn preflight_refuses_when_no_accepted_point() {
-        let slot = IntegralRetentionSlot::new(); // Empty
+        let slot = IntegralRetentionSlot::new();
         assert_eq!(
             preflight_robustness_reversal(1, &slot),
             Err(RobustnessPreflightRejection::NoAcceptedCandidate)
@@ -341,11 +247,11 @@ mod tests {
     #[test]
     fn preflight_reads_point_without_mutating_progress() {
         let mut slot = IntegralRetentionSlot::new();
-        slot.install_acceptance_point(sample_acceptance_point()); // helper; progress ReadyAscending
+        slot.install_acceptance_point(sample_acceptance_point());
         let before = slot.acceptance_point().unwrap().progress;
         let pre = preflight_robustness_reversal(1, &slot).expect("has point");
         assert_eq!(pre.point.selected_p, sample_acceptance_point().selected_p);
-        assert_eq!(slot.acceptance_point().unwrap().progress, before); // untouched
+        assert_eq!(slot.acceptance_point().unwrap().progress, before);
     }
 
     #[test]
@@ -381,8 +287,6 @@ mod tests {
         let mut slot = IntegralRetentionSlot::new();
         slot.install_acceptance_point(point);
         let mut terminal = sample_terminal(point);
-        // Identical gains, different target: a re-installed candidate must not
-        // pass the identity check as unchanged.
         terminal.target_velocity_rpm = point.target_velocity_rpm.wrapping_add(1);
 
         let applied = apply_robustness_terminal(terminal, &slot);
@@ -394,7 +298,7 @@ mod tests {
     #[test]
     fn apply_terminal_flags_no_accepted_candidate_when_slot_empty() {
         let point = sample_acceptance_point();
-        let slot = IntegralRetentionSlot::new(); // Empty
+        let slot = IntegralRetentionSlot::new();
         let terminal = sample_terminal(point);
 
         let applied = apply_robustness_terminal(terminal, &slot);

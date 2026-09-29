@@ -42,9 +42,6 @@ impl AutotuneAction {
     }
 
     /// Return the immutable observation slot order for an amplitude action.
-    ///
-    /// Amplitude order and slot order are independent dimensions that share one
-    /// wire byte; this keeps them separate in the type system.
     pub const fn amplitude_slot_order(self) -> Option<IntegralSlotOrder> {
         match self {
             Self::BreakawaySeeded
@@ -61,38 +58,23 @@ impl AutotuneAction {
 /// Exact amplitude plan accepted before any SPI write or enable assertion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FixedGainAmplitudePreflight {
-    /// Sole immutable amplitude plan used for disclosure and execution.
     pub plan: FixedGainAmplitudePlan,
-    /// Caller-assigned trace sequence.
     pub run_sequence: u32,
 }
 
 /// Definitive zero-motion amplitude admission rejection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum FixedGainAmplitudePreflightRejection {
-    /// No target-reaching combined operating point is retained.
     MissingAcceptancePoint,
-    /// Current controller geometry does not reconstruct the retained identity.
     AcceptancePointIdentityMismatch,
-    /// The action does not match the retained two-run progress.
     AmplitudeOrderMismatch,
-    /// Exact plan arithmetic or geometry was invalid.
     InvalidPlan,
 }
 
 /// Reconstruct the breakaway plan whose confirmed token installed the retained point.
 ///
-/// Breakaway carries no retained combined-selected-response plan, and its
-/// I-ladder is deterministic (PWM frequency plus fixed constants), so the
-/// plan is rebuilt directly from the point's carried `token`, `selected_p`,
-/// and `selected_response_intervals_q` via
-/// `plan_retained_breakaway_velocity_integral_response` -- the same builder
-/// the Integral resume path already uses -- rather than from any retained full
-/// plan. `point.token` is `Some` only for a genuine breakaway acceptance
-/// point (see [`AcceptancePoint::token`]), so a point carrying none is
-/// refused before any reconstruction is attempted. Digest, schema, final P,
-/// and target velocity are all re-checked against the retained identity
-/// before the reconstruction is trusted, with any divergence rejected.
+/// Rejects points without a token and any digest, schema, final P, or target velocity
+/// divergence from the retained identity.
 pub fn reconstruct_breakaway_plan(
     point: AcceptancePoint,
     request: VelocitySweepRequest,
@@ -104,16 +86,6 @@ pub fn reconstruct_breakaway_plan(
     let token = point
         .token
         .ok_or(FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch)?;
-    // Breakaway has no Proportional phase of its own; the campaign that produced
-    // this point derived its planned velocity, target RPM, hard torque limit,
-    // and limit-evidence capability from exactly this same
-    // `plan_proportional_velocity_sweep` reconstruction
-    // (`breakaway_campaign::plan_breakaway_campaign_command`), so this
-    // reproduces those fields identically. The plan-time physical context
-    // guard inside the breakaway builder compares against the live
-    // `pwm_hz`/`encoder_counts_per_rev` passed below; there is no separately
-    // retained plan-time value here, so any live drift is instead caught by
-    // the digest check at the end of this function.
     let proportional = plan_proportional_velocity_sweep(
         request,
         encoder_counts_per_rev,
@@ -125,18 +97,6 @@ pub fn reconstruct_breakaway_plan(
     context.channel = point.identity.channel;
     context.plan_time_pwm_hz = pwm_hz;
     context.plan_time_encoder_counts_per_rev = encoder_counts_per_rev;
-    // `usable_torque_limit` is the one field the generic Proportional sweep gets
-    // wrong for this path: `plan_proportional_velocity_sweep` plans with
-    // `use_operational_limit = true` and so stamps the UNSCALED hard limit.
-    // The campaign never uses that value for its gain span -- it derives
-    // `usable_torque_limit` from `current_gain_span`, which applies the
-    // deterministic nine-tenths probe headroom via `derive_probe_limit`
-    // (`sweep_plan::current_gain_span` -> `velocity_clamp::derive_probe_limit`).
-    // That headroom depends only on `hard_torque_limit`, not on the target
-    // velocity or any live measurement, so it reproduces exactly here.
-    // `VelocityIntegralPlan::digest()` hashes `usable_torque_limit`, so
-    // leaving the Proportional sweep's stamped value in place would make a
-    // genuine breakaway point's digest never match.
     let operational_limit = PidTorqueFluxLimit::new(u32::from(torque_limit))
         .map_err(|_| FixedGainAmplitudePreflightRejection::InvalidPlan)?;
     context.usable_torque_limit = derive_probe_limit(operational_limit)
@@ -185,12 +145,6 @@ pub fn reconstruct_breakaway_plan(
 }
 
 /// Validate a retained point and derive one immutable amplitude plan without mutating retention.
-///
-/// Reconstructs the plan the retained point identifies before checking it:
-/// breakaway points rebuild theirs deterministically from the carried
-/// confirmation token via [`reconstruct_breakaway_plan`]; every other
-/// identity is rejected. No full plan is retained -- only the compact
-/// [`AcceptancePoint`] the caller reads from `integral_candidate`.
 pub fn preflight_fixed_gain_amplitude(
     action: AutotuneAction,
     request: VelocitySweepRequest,
@@ -377,9 +331,6 @@ pub(crate) fn test_acceptance_point(
     context.channel = 0;
     context.plan_time_pwm_hz = PWM_HZ;
     context.plan_time_encoder_counts_per_rev = ENCODER_COUNTS_PER_REV;
-    // Mirrors `reconstruct_breakaway_plan`'s own derivation exactly: the
-    // deterministic nine-tenths probe headroom depends only on the hard
-    // torque limit, not on the target velocity or any live measurement.
     let operational_limit = PidTorqueFluxLimit::new(u32::from(TORQUE_LIMIT)).unwrap();
     context.usable_torque_limit = derive_probe_limit(operational_limit).unwrap().raw();
 

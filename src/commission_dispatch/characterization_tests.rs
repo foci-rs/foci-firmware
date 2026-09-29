@@ -1,55 +1,3 @@
-//! Characterization oracle for `drive_commission_result`'s terminal-variant
-//! behavior. This is executable documentation: it pins the *current*
-//! per-terminal ordering of SPI writes, GPIO/enable-pin transitions, motor
-//! lifecycle flag transitions, fault/cause stamping, reply shape, and
-//! `engine.take()` timing, so a later restructuring of this dispatch can be
-//! proven behavior-preserving against these goldens rather than against
-//! prose.
-//!
-//! Terminal-variant table, extracted from `drive_commission_result`
-//! (mod.rs:473-1259):
-//!
-//! | `StepResult` (sub-case)                          | mandatory cleanup on failure                                                             | fault/cause stamped                                    | reply                        | `engine.take()` | arms? |
-//! |---------------------------------------------------|-------------------------------------------------------------------------------------------|----------------------------------------------------------|-------------------------------|-------------------|-------|
-//! | `VelocityIntegralTerminal`                         | `disarm_velocity_workflow`: no operational limit -> `disarm_motor` (always `Ok`); with a limit -> `PID_VELOCITY_TARGET=0`, clear velocity error sum, *then* `disarm_motor`, *then* restore the operational current-limit clamp | on `disarm_velocity_workflow` failure: outcome forced to `Fault`, `cause=Error(Spi)`, `recovery_unavailable=true`, `safety_fault=None` | `VelocityIntegralTerminal`   | always           | never |
-//! | `FixedGainAmplitudeTerminal`                         | `disarm_motor` unconditionally, before any terminal post-processing                       | terminal passed through unmodified                       | `FixedGainAmplitudeTerminal`   | always           | never |
-//! | `RobustnessReversalTerminal` (outcome != `Complete`) | restore `entry_snapshot()` to registers if present; `disarm_motor` always runs afterward   | restore failure or missing snapshot -> `Failed`/`ROBUSTNESS_CAUSE_SAFETY_FAULT` | `RobustnessReversalTerminal` | always           | never |
-//! | `RobustnessReversalTerminal` (outcome == `Complete`) | **no** baseline restore attempted; `disarm_motor` still runs unconditionally              | terminal passed through unmodified                       | `RobustnessReversalTerminal` | always           | never (deploy/arm happens only in `drive_commission_result_with_stages`, out of this function's scope) |
-//! | `SelftestDone`                                     | `CalibrateGainsRestoreStep`; failure is logged only, no disarm/arm, no lifecycle events    | none (`done_status=0` always)                             | `Selftest`                   | always           | never |
-//! | `InnerFailed` (any `EngineKind`)                    | `restore_safe_state_via_backend` directly -- **not** `lifecycle::disarm_motor`, so `state.calibrated`/`state.motor_enabled` are left untouched even though the enable pin is lowered; `Calibrate`/`Selftest` kinds also attempt `CalibrateGainsRestoreStep` (log-only on failure) | `error.status_code()` mapped per `EngineKind`             | `CalibrateResult`/`Selftest`/`CommissionPhase` | always | never |
-//! | `CalibrateDone` (gain-restore SPI failure)          | `disarm_motor`                                                                             | `PiRepresentation` -> `ChipResetDetected`, else `SpiError` | `CalibrateResult`            | always           | never |
-//! | `CalibrateDone` (filter-apply SPI failure)          | `disarm_motor`                                                                             | `SpiError`                                                | `CalibrateResult`            | always           | never |
-//! | `CalibrateDone` (`arm_motor_electrical` failure)    | `disarm_motor`                                                                             | `ChipResetDetected`, `FaultInterlock`, else `SpiError`     | `CalibrateResult`            | always           | never |
-//! | `CalibrateDone` (success)                           | none                                                                                       | `status=0`                                                | `CalibrateResult`            | always           | **yes** (`ArmPreservePosition`) |
-//! | `CommissionDone` (`inner.status == Failed`)         | **direct** atomic/flag clears (`motor_armed`, `calibrated`, `motor_enabled`) -- **not** `disarm_motor`, so no SPI restore and no `EnablePin`/`Lifecycle` events are recorded at all | `inner.status`'s error code                               | `CommissionResult`           | always           | never |
-//! | `CommissionDone` (invalid fallback outer gains)     | `disarm_motor`                                                                             | `CurrentValidationFailed`                                  | `CommissionResult`           | always           | never |
-//! | `CommissionDone` (current-limit restore SPI failure) | `disarm_motor`                                                                            | `Spi`                                                      | `CommissionResult`           | always           | never |
-//! | `CommissionDone` (`arm_motor_electrical` failure)   | `disarm_motor`                                                                             | error's status code                                        | `CommissionResult`           | always           | never |
-//! | `CommissionDone` (success)                          | none                                                                                       | `inner.status`'s code (0/1/2)                              | `CommissionResult`           | always           | **yes** (`ArmPreservePosition`) |
-//! | `OuterDone` (tuned gains out of range)            | `disarm_motor`                                                                            | `CurrentValidationFailed`                                | `TuneResult`                 | always           | never |
-//! | `OuterDone` (success)                             | `disarm_motor`; tuned gains/limit/filter cutoffs published for the next calibrate-on-enable | `outer.status`'s code                                    | `TuneResult`                 | always           | never |
-//! | `OuterFailed` (safety-fault error variant)          | restore skipped outright; `MODE_RAMP_MODE_MOTION=0` best-effort, then `disarm_motor`        | the safety-fault error itself                                 | `TuneResult`                 | always (`take_after_handled_stop` or plain `take`) | never |
-//! | `OuterFailed` (entry-gain restore fails, or restore-stability read fails) | `MODE_RAMP_MODE_MOTION=0`, `disarm_motor`                          | restore error, or `Spi` on a stability-read failure             | `TuneResult`                 | always           | never |
-//! | `OuterFailed` (restore succeeds but position drifts) | `MODE_RAMP_MODE_MOTION=0`, `disarm_motor`                                                 | the **original upstream** error is preserved, not overwritten  | `TuneResult`                 | always           | never |
-//! | `OuterFailed` (restore succeeds, stable, `arm_motor_electrical` fails) | `disarm_motor`                                                              | arm error's status code                                        | `TuneResult`                 | always           | never |
-//! | `OuterFailed` (restore succeeds, stable, arm succeeds -- soft failure) | none                                                                        | the original upstream error (still nonzero: `OuterFailed` always reports *some* failure) | `TuneResult` | always | **yes** (`ArmPreservePosition`) |
-//!
-//! Non-terminal arms (`ReadyNow`, `At`, `PhaseChanged`, `VelocityIntegralEvent`,
-//! `FixedGainAmplitudeEvent`, `BreakawayCampaignEvent`, `BreakawayIntegralPlanReady`)
-//! never touch `engine.take()`, never call `arm_motor_electrical`/`disarm_motor`,
-//! and are the only arms safe to poll repeatedly: every terminal arm calls
-//! `engine.take().expect(..)`, so re-driving the same already-consumed engine
-//! slot through a terminal arm panics rather than being idempotent. Dispatch
-//! is a run-exactly-once-per-terminal-result contract, not a poll loop that
-//! tolerates replay.
-//!
-//! `arm_motor_for_steps` is never called from inside `drive_commission_result`
-//! itself. It runs from the board's separate `apply_stepper_post_action_state`
-//! call, driven by the `PostActions::stepper` this function returns
-//! (`ArmPreservePosition`). `run_variant` below simulates
-//! that second call so the full arm-electrical-before-arm-for-steps ordering
-//! is observable in one trace.
-
 use super::test_support::{
     MockBackend, SpiOp, accepted_commission_result, breakaway_campaign_engine, dispatch_state,
     fresh_state_locals, robustness_reversal_engine,
@@ -134,17 +82,6 @@ fn zero_fixed_gain_amplitude_terminal() -> FixedGainAmplitudeTerminal {
     }
 }
 
-/// What kind of `CommissionOutcome` a run produced, independent of the full
-/// `ReplyPayload` so an equivalence check can `assert_eq!` two traces
-/// without needing `PartialEq`/`Debug` on `CommissionOutcome` itself (its
-/// nested evidence types make that impractical).
-///
-/// `outcome_class` carries the reply's own semantic outcome discriminant
-/// (`RobustnessOutcome`, `FixedGainAmplitudeOutcome`, `VelocityIntegralOutcome`)
-/// as its `u8` value, for the three reply families that separate "what
-/// class of result" from "what caused it". It is `None` for the flat-status
-/// replies (`CalibrateResult`, `CommissionResult`, `TuneResult`, `Selftest`,
-/// `CommissionPhase`), where the status code alone is the whole story.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutcomeTag {
     Continue,
@@ -157,12 +94,6 @@ enum OutcomeTag {
     },
 }
 
-/// One characterization run's interleaved ordered event log, outcome shape,
-/// terminal cause, and whether the dispatch consumed the engine slot.
-///
-/// This is the equivalence helper a future restructuring of
-/// `drive_commission_result` is checked against: run the same `StepResult`
-/// through both implementations and `assert_eq!` the two `OpTrace` values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OpTrace {
     events: std::vec::Vec<SpiOp>,
@@ -171,13 +102,10 @@ struct OpTrace {
     engine_consumed: bool,
 }
 
-/// Pack a `IntegralOutcomeCause`'s namespace and raw value into one `u16` so the two
-/// namespaces (`Engine`/`Error`/`Dispatch`) never alias each other.
 fn integral_cause_code(cause: crate::commissioning::types::IntegralOutcomeCause) -> u16 {
     (u16::from(cause.namespace_code()) << 8) | u16::from(cause.raw_value())
 }
 
-/// Extract `(outcome_class, terminal_cause)` from one terminal `ReplyPayload`.
 fn terminal_shape(reply: &ReplyPayload) -> (Option<u8>, Option<u16>) {
     match reply {
         ReplyPayload::CommissionPhase { status, .. } => (None, Some(u16::from(*status))),
@@ -201,22 +129,6 @@ fn terminal_shape(reply: &ReplyPayload) -> (Option<u8>, Option<u16>) {
     }
 }
 
-/// Drive one `StepResult` through `drive_commission_result`, then -- for a
-/// terminal outcome -- simulate the board's follow-up
-/// `apply_stepper_post_action_state` call so `arm_motor_for_steps` (which
-/// never runs inside `drive_commission_result` itself) appears in the same
-/// ordered trace. Returns both the raw `CommissionOutcome` (for goldens that
-/// need to inspect reply fields `OpTrace` does not carry, e.g.
-/// `recovery_unavailable`) and the derived `OpTrace`.
-///
-/// Takes `engine`/`backend`/`state` rather than constructing them from
-/// `result` alone: `StepResult::InnerFailed` carries no `EngineKind`, so a
-/// single-`StepResult`-argument helper cannot pick between a Calibrate,
-/// Selftest, or Commission engine for it, and several goldens below need
-/// backend failure injection (`fail_writes_remaining`, `fail_on_write`) that
-/// no `StepResult` value encodes either. `run_variant` below is the
-/// single-purpose oracle entry point that returns bare `OpTrace`; call this
-/// directly only when a test needs the full `CommissionOutcome` too.
 async fn drive_and_trace(
     result: StepResult,
     engine: &mut Option<CommissioningEngine>,
@@ -258,10 +170,6 @@ async fn drive_and_trace(
     (outcome, trace)
 }
 
-/// The equivalence-check entry point: run one `StepResult` and return only
-/// the `OpTrace` a future implementation is diffed against via `assert_eq!`.
-/// See [`drive_and_trace`] for the parameter-shape rationale and for goldens
-/// that need the full `CommissionOutcome` as well.
 async fn run_variant(
     result: StepResult,
     engine: &mut Option<CommissioningEngine>,
@@ -278,8 +186,6 @@ fn index_of(events: &[SpiOp], target: SpiOp) -> Option<usize> {
 fn contains(events: &[SpiOp], target: SpiOp) -> bool {
     index_of(events, target).is_some()
 }
-
-// --- calibrate ---------------------------------------------------------
 
 #[fixture_test]
 async fn calibrate_done_success_arms_electrical_before_steps() {
@@ -345,9 +251,6 @@ async fn calibrate_done_success_arms_electrical_before_steps() {
 
 #[fixture_test]
 async fn calibrate_done_gain_restore_failure_disarms_without_arming() {
-    // Forced-fail-mid-restore: a transient write failure inside
-    // `CalibrateGainsRestoreStep` must divert straight to `disarm_motor`
-    // without ever reaching `arm_motor_electrical`.
     let mut backend = MockBackend::new();
     backend.fail_writes_remaining = Some((foci_tmc4671::registers::PID_FLUX_P_FLUX_I.addr(), 1));
     let (mut cal, mut en, _) = fresh_state_locals();
@@ -469,15 +372,10 @@ async fn calibrate_arm_pending_config_drain_failure_takes_the_existing_error_pat
     assert!(!backend.enable_pin);
 }
 
-// --- ADC / inner-failed (calibrate) -------------------------------------
-
 #[fixture_test]
 async fn inner_failed_calibrate_uses_safe_state_restore_not_disarm_motor() {
     let mut backend = MockBackend::new();
     let (_, _, mut gains) = fresh_state_locals();
-    // Pre-seed as if a prior arm had happened, to prove this path leaves
-    // these flags untouched (it restores GPIO/registers directly, bypassing
-    // `lifecycle::disarm_motor`).
     let mut cal = true;
     let mut en = true;
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
@@ -506,11 +404,7 @@ async fn inner_failed_calibrate_uses_safe_state_restore_not_disarm_motor() {
             crate::calibration::CalibrationError::EncoderFault.status_code()
         ))
     );
-    // GPIO restored low via restore_safe_state_via_backend...
     assert!(!backend.enable_pin);
-    // ...but the dispatch-local flags are untouched: this path never calls
-    // `lifecycle::disarm_motor`, so no Lifecycle events are recorded and the
-    // caller-owned flags keep whatever value they held on entry.
     assert!(!contains(
         &trace.events,
         SpiOp::Lifecycle {
@@ -521,8 +415,6 @@ async fn inner_failed_calibrate_uses_safe_state_restore_not_disarm_motor() {
     assert!(*state.calibrated);
     assert!(*state.motor_enabled);
 }
-
-// --- selftest --------------------------------------------------------------
 
 #[fixture_test]
 async fn selftest_done_restores_gains_without_lifecycle_events() {
@@ -562,8 +454,6 @@ async fn selftest_done_restores_gains_without_lifecycle_events() {
         } => assert_eq!(oid, 3),
         _ => panic!("expected Selftest"),
     }
-    // CalibrateGainsRestoreStep writes the stored current-loop gains -- the
-    // "restore, log-only on failure, no disarm/arm" row of the table.
     assert!(trace.events.iter().any(|op| matches!(
         op,
         SpiOp::Write(addr, _) if *addr == foci_tmc4671::registers::PID_FLUX_P_FLUX_I.addr()
@@ -583,8 +473,6 @@ async fn selftest_done_restores_gains_without_lifecycle_events() {
         },
     ));
 }
-
-// --- commission (current-loop) -------------------------------------------
 
 #[fixture_test]
 async fn commission_done_success_arms_electrical_before_preserve_position_arm() {
@@ -670,9 +558,6 @@ async fn commission_done_failed_status_skips_disarm_motor_and_lifecycle_events()
             crate::autotune::CommissionError::CurrentValidationFailed.status_code()
         ))
     );
-    // The Failed-status branch clears flags directly, never through
-    // `lifecycle::disarm_motor` -- so the interleaved log carries no SPI,
-    // no EnablePin, and no Lifecycle events at all.
     assert!(trace.events.is_empty());
     assert!(!*state.calibrated);
     assert!(!*state.motor_enabled);
@@ -681,8 +566,6 @@ async fn commission_done_failed_status_skips_disarm_motor_and_lifecycle_events()
 #[fixture_test]
 async fn commission_done_arm_failure_disarms_without_reaching_arm_for_steps() {
     let mut backend = MockBackend::new();
-    // No sentinel seeded, so arm_motor_electrical's read_register_verified
-    // mismatches and fails.
     let (mut cal, mut en, mut gains) = fresh_state_locals();
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
     let mut engine = Some(CommissioningEngine::new_commission(
@@ -723,8 +606,6 @@ async fn commission_done_arm_failure_disarms_without_reaching_arm_for_steps() {
     ));
     assert!(!backend.enable_pin);
 }
-
-// --- outer (installed tuning) ---------------------------------------------
 
 #[fixture_test]
 async fn outer_done_success_disarms_without_arming() {
@@ -800,8 +681,6 @@ async fn outer_failed_safety_fault_disarms_without_restore_attempt() {
         }
     );
     assert_eq!(trace.terminal_cause, Some(u16::from(err.status_code())));
-    // A safety fault skips the restore-stability check entirely -- no
-    // stability-window register reads before the disarm.
     assert!(backend.delay_us_log.is_empty());
     assert!(!backend.enable_pin);
 }
@@ -835,8 +714,6 @@ async fn outer_failed_soft_failure_arms_electrical_and_holds_position() {
             outcome_class: None,
         }
     );
-    // The soft-failure path still reports the original upstream error even
-    // though the motor stays armed.
     assert_eq!(trace.terminal_cause, Some(u16::from(err.status_code())));
     let enabled_index = index_of(
         &trace.events,
@@ -856,8 +733,6 @@ async fn outer_failed_soft_failure_arms_electrical_and_holds_position() {
     .expect("must record MotorArmed(true)");
     assert!(enabled_index < armed_index);
 }
-
-// --- robustness ------------------------------------------------------------
 
 #[fixture_test]
 async fn robustness_reversal_terminal_never_arms_even_on_complete_outcome() {
@@ -954,8 +829,6 @@ async fn robustness_reversal_terminal_restores_baseline_before_disarm_on_reject(
     );
 }
 
-// --- integral-phase / fixed-gain amplitude -------------------------------------------
-
 #[fixture_test]
 async fn fixed_gain_amplitude_terminal_disarms_unconditionally() {
     let mut backend = MockBackend::new();
@@ -995,8 +868,6 @@ async fn fixed_gain_amplitude_terminal_disarms_unconditionally() {
     assert!(!backend.enable_pin);
 }
 
-// --- velocity-integral terminal ---------------------------------------------
-
 #[fixture_test]
 async fn velocity_integral_terminal_without_operational_limit_disarms_directly() {
     let mut backend = MockBackend::new();
@@ -1004,8 +875,6 @@ async fn velocity_integral_terminal_without_operational_limit_disarms_directly()
     let mut cal = true;
     let mut en = true;
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-    // `new_commission` reports no active velocity workflow, so
-    // `disarm_velocity_workflow` takes the plain `disarm_motor` branch.
     let mut engine = Some(CommissioningEngine::new_commission(
         0,
         CommissionProfile::Balanced,
@@ -1025,8 +894,6 @@ async fn velocity_integral_terminal_without_operational_limit_disarms_directly()
         OutcomeTag::Terminal {
             stop_trace: true,
             stepper: StepperPostAction::Stop,
-            // The disarm path must not have rewritten a healthy terminal's
-            // outcome away from the `Inconclusive` it was built with.
             outcome_class: Some(
                 crate::commissioning::types::VelocityIntegralOutcome::Inconclusive as u8
             ),
@@ -1043,12 +910,6 @@ async fn velocity_integral_terminal_without_operational_limit_disarms_directly()
 
 #[fixture_test]
 async fn velocity_integral_terminal_restore_failure_skips_disarm_leaving_motor_armed() {
-    // A restore failure on the very first velocity-workflow disarm write
-    // aborts `disarm_and_restore_velocity_limit` before it ever reaches
-    // `lifecycle::disarm_motor` -- so the motor stays electrically armed
-    // even though the terminal is downgraded to Fault. This is a
-    // preserved-as-is characterization finding, not something to silently
-    // fix here.
     let mut backend = MockBackend::new();
     backend.fail_on_write = Some(foci_tmc4671::registers::PID_VELOCITY_TARGET.addr());
     let (_, _, mut gains) = fresh_state_locals();
@@ -1057,9 +918,6 @@ async fn velocity_integral_terminal_restore_failure_skips_disarm_leaving_motor_a
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
     let mut engine = Some(breakaway_campaign_engine());
 
-    // `drive_and_trace`, not `run_variant`: this golden needs
-    // `recovery_unavailable`/`safety_fault`, reply fields `OpTrace` does not
-    // carry.
     let (outcome, trace) = drive_and_trace(
         StepResult::VelocityIntegralTerminal(sample_velocity_integral_terminal()),
         &mut engine,
@@ -1139,17 +997,6 @@ fn sample_velocity_integral_terminal() -> crate::commissioning::types::VelocityI
     }
 }
 
-// --- poll-driven equivalence -------------------------------------------------
-//
-// The terminal dispatch is one poll-driven machine. `drive_commission_result`
-// drives it in a tight loop with one long-lived `DispatchState`; the board
-// instead polls it once per tick, rebuilding the borrowed dispatch view every
-// time. These two drive modes must produce byte-identical traces, or the
-// machine is smuggling state through a borrow that does not survive a tick
-// boundary. The table below enumerates every terminal variant of the golden
-// table above, including its failure sub-cases.
-
-/// One enumerated terminal variant plus the fixture it needs.
 struct TerminalVariant {
     name: &'static str,
     result: fn() -> StepResult,
@@ -1430,16 +1277,11 @@ fn all_terminal_variants() -> [TerminalVariant; 22] {
     ]
 }
 
-/// Clear the shared channel-0 atomics so two runs of the same variant start
-/// from identical global state.
 fn reset_channel0() {
     crate::state::tmc::tmc_channel0().reset();
     crate::state::stepper::stepper_channel0().reset();
 }
 
-/// Takes `&mut` rather than returning the backend: `MockBackend` embeds an
-/// 8 KiB inline op log, and moving one out of an async fn puts that log in the
-/// caller's future frame.
 async fn prepare_backend(variant: &TerminalVariant, backend: &mut MockBackend) {
     reset_channel0();
     (variant.prepare)(backend);
@@ -1448,8 +1290,6 @@ async fn prepare_backend(variant: &TerminalVariant, backend: &mut MockBackend) {
     }
 }
 
-/// Same content as [`OpTrace`], with the event log on the heap so a pair of
-/// traces can be compared without two 8 KiB inline vectors on the stack.
 #[derive(Debug, PartialEq, Eq)]
 struct TraceSummary {
     events: std::vec::Vec<SpiOp>,
@@ -1500,7 +1340,6 @@ fn apply_post_actions(
     }
 }
 
-/// Drive one variant through the tight-loop driver.
 async fn run_variant_via_driver(variant: &TerminalVariant) -> TraceSummary {
     let mut backend = MockBackend::new();
     prepare_backend(variant, &mut backend).await;
@@ -1522,8 +1361,6 @@ async fn run_variant_via_driver(variant: &TerminalVariant) -> TraceSummary {
     trace_of(&outcome, &backend, &engine)
 }
 
-/// Drive one variant the way the board does: one `poll_step` per tick, with the
-/// borrowed dispatch view rebuilt from scratch before every poll.
 async fn run_variant_via_machine(variant: &TerminalVariant) -> TraceSummary {
     let mut backend = MockBackend::new();
     prepare_backend(variant, &mut backend).await;
@@ -1565,13 +1402,6 @@ async fn run_variant_via_machine(variant: &TerminalVariant) -> TraceSummary {
     trace_of(&outcome, &backend, &engine)
 }
 
-/// Assert that, from the first `EnablePin(false)` event onward (the unique
-/// marker a split safe-state restore sequence emits on its first step),
-/// `variant` never issues more than one logical register operation per
-/// `poll_step` call -- a verified write's own write+read-back pair counts
-/// as that one operation, per the Global Constraints' settled granularity
-/// decision. Also asserts the run actually reaches that point, so the
-/// assertion cannot silently pass on a variant that never disarms.
 async fn assert_disarm_phase_one_op_per_poll(variant: &TerminalVariant) {
     let mut backend = MockBackend::new();
     prepare_backend(variant, &mut backend).await;
@@ -1601,16 +1431,6 @@ async fn assert_disarm_phase_one_op_per_poll(variant: &TerminalVariant) {
             disarm_phase = true;
         }
         if disarm_phase {
-            // `verified_write_calls`/`raw_ops_attributed_to_verified_calls`
-            // attribute every raw op to whether it belongs
-            // to a completed verified-write call, measured via length diff
-            // rather than a persistent flag (cancellation-safe). Exactly one
-            // verified call: every raw op this poll performed must be
-            // attributed to it, so nothing may be unattributed. Zero
-            // verified calls: at most one plain Write or Read may be
-            // unattributed (the eight unverified sub-register writes; see
-            // Global Constraints' settled granularity decision). More than
-            // one verified call in a single poll is always a violation.
             let verified_delta = backend.verified_write_calls - previous_verified;
             let attributed_delta =
                 backend.raw_ops_attributed_to_verified_calls - previous_attributed;
@@ -2057,11 +1877,6 @@ async fn robustness_reversal_rejected_disarm_phase_is_one_op_per_poll() {
     assert_disarm_phase_one_op_per_poll(&variant).await;
 }
 
-/// Assert that, from the first `CONFIG_ADVANCED_PI_REPRESENT` write onward
-/// (`CalibrateGainsRestoreStep`'s own first-operation marker), `variant`
-/// never issues more than one raw register operation per `poll_step` call --
-/// until a disarm phase (marked by `SpiOp::EnablePin(false)`) starts, whose
-/// own budget, if any, is a different phase's concern.
 async fn assert_gain_restore_phase_one_op_per_poll(variant: &TerminalVariant) {
     let mut backend = MockBackend::new();
     prepare_backend(variant, &mut backend).await;
@@ -2156,20 +1971,10 @@ async fn calibrate_done_gain_restore_failure_polls_are_one_op_each() {
 async fn outer_failed_stability_stale_gap_falls_back_to_spi_disarm() {
     let mut backend = MockBackend::new();
     seed_motor_sentinel(&mut backend).await;
-    // A few leading zeros absorb any elapsed_us() calls made by earlier
-    // cursor arms (classify, restore-entry-gains) before this arm's own
-    // PositionStabilityStep::start snapshots a small "now"; once the
-    // sequence is exhausted, elapsed_us() falls back to a value already
-    // past the first sample's interval-plus-slack deadline, so the very
-    // first advance() call must report Stale rather than wait or sample.
     backend.set_elapsed_us_sequence(&[0, 0, 0]);
     backend.elapsed_us_value = u64::from(super::OUTER_RESTORE_STABILITY_INTERVAL_US)
         + u64::from(super::OUTER_RESTORE_STABILITY_MAX_SAMPLE_GAP_US)
         + 1;
-    // Seeded so `read_position_actual_pos` actually increments on a real
-    // PID_POSITION_ACTUAL read -- with an empty sequence the counter would
-    // stay 0 regardless of whether a read happened, making the assertion
-    // below vacuous.
     backend.read_position_actual_sequence.push(1000).unwrap();
 
     let (_, _, mut gains) = fresh_state_locals();

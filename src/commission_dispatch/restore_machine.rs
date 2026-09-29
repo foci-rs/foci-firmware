@@ -1,10 +1,4 @@
 //! Poll-driven per-channel terminal restore.
-//!
-//! [`TerminalRestoreMachine`] is the terminal dispatch, expressed as an owned
-//! state machine that performs at most one awaited backend operation per
-//! [`TerminalRestoreMachine::poll_step`]. The machine holds only owned values;
-//! the engine slot, dispatch view, backend, and velocity-integral retention are borrows
-//! supplied per poll, so nothing borrowed lives across a tick boundary.
 
 use core::sync::atomic::Ordering::Relaxed;
 
@@ -36,10 +30,6 @@ pub enum RestoreStep {
     Done(CommissionOutcome),
 }
 
-/// Terminal payload copied out of the engine step result at `start`.
-///
-/// The variants differ widely in size because the reply payloads themselves do;
-/// boxing them would need an allocator this firmware does not have.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 enum TerminalPayload {
@@ -54,13 +44,8 @@ enum TerminalPayload {
     RobustnessReversal(RobustnessReversalTerminal),
 }
 
-/// Owned cross-tick terminal state: the reply payload under construction plus
-/// every intermediate result the remaining steps still need.
 struct OwnedTerminalData {
     payload: TerminalPayload,
-    /// Status this restore's `cancelled_reply` reports once it reaches
-    /// `ForceSafeDisarm`. Defaults to `Shutdown`; `set_status_error` and
-    /// `start_cancelled` are the only ways to override it.
     status_error: CommissionError,
     outer_error: CommissionError,
     outer_restore_failure: Option<CommissionError>,
@@ -96,7 +81,6 @@ impl OwnedTerminalData {
     }
 }
 
-/// Which awaited step runs next.
 #[derive(Clone, Copy)]
 enum RestoreCursor {
     SelftestRestoreGains(Option<restore::CalibrateGainsRestoreStep>),
@@ -291,8 +275,6 @@ impl TerminalRestoreMachine {
             },
             other => {
                 let mut machine = Self::start(other.into_step_result(), channel, pwm_maxcnt);
-                // Only the staged entry emits the outer safety-timing trace
-                // record, matching the awaited chain this replaced.
                 if matches!(machine.cursor, RestoreCursor::OuterFailedDisarmVelocity(_)) {
                     machine.cursor = RestoreCursor::OuterFailedStagedTiming;
                 }
@@ -301,13 +283,9 @@ impl TerminalRestoreMachine {
         }
     }
 
-    /// Begin a synthetic terminal restore for a channel whose commissioning
-    /// engine is still actively stepping (no natural `StepResult` terminal
-    /// reached yet, so no restore machine exists). Builds a placeholder
-    /// payload for the engine's kind, matching the zero-filled failure-path
-    /// results `zero_outer_result()`/`zero_adc_cal_result()` already use, and
-    /// jumps straight to `ForceSafeDisarm` — this restore never had real
-    /// register state to restore, only the motor to de-energize.
+    /// Begin a synthetic terminal restore for a channel whose engine is still stepping.
+    ///
+    /// Builds a placeholder payload for the engine kind and jumps to `ForceSafeDisarm`.
     pub fn start_cancelled(engine_kind: EngineKind, channel: u8, pwm_maxcnt: u16) -> Self {
         let payload = match engine_kind {
             EngineKind::Commission => TerminalPayload::CommissionDone(zero_commission_result()),
@@ -328,10 +306,6 @@ impl TerminalRestoreMachine {
         }
     }
 
-    /// Override the status this restore's `cancelled_reply` will report,
-    /// once it reaches `ForceSafeDisarm`. Existing callers that never call
-    /// this keep reporting `CommissionError::Shutdown`, the pre-existing
-    /// default `OwnedTerminalData::new` sets.
     pub(crate) fn set_status_error(&mut self, status_error: CommissionError) {
         self.terminal.status_error = status_error;
     }
@@ -351,11 +325,6 @@ impl TerminalRestoreMachine {
         !matches!(self.cursor, RestoreCursor::Finished)
     }
 
-    /// True if any poll of the most recent `poll_step` call executed one of
-    /// the single-op-per-poll target arms, including arms reached by
-    /// same-call fall-through from a non-yielding transition arm. Set from
-    /// inside each target arm's own body; reset at the top of every
-    /// `poll_step` call.
     #[cfg(test)]
     pub(crate) fn entered_single_op_arm_this_poll(&self) -> bool {
         self.entered_single_op_arm_this_poll
@@ -363,9 +332,7 @@ impl TerminalRestoreMachine {
 
     /// Advance the restore by at most one awaited backend operation.
     ///
-    /// Returns [`RestoreStep::Done`] once the terminal outcome is ready; the
-    /// engine slot is consumed at that point and not before, so an interrupted
-    /// teardown never leaves cleared bookkeeping behind a half-restored motor.
+    /// Returns [`RestoreStep::Done`] once the terminal outcome is ready.
     ///
     /// # Panics
     ///
@@ -393,7 +360,6 @@ impl TerminalRestoreMachine {
                     unreachable!("terminal restore polled after it reported its terminal")
                 }
 
-                // --- selftest ------------------------------------------------
                 RestoreCursor::SelftestRestoreGains(step) => {
                     let mut step = step.unwrap_or_else(|| {
                         state.tmc.commission_in_flight.store(false, Relaxed);
@@ -421,7 +387,6 @@ impl TerminalRestoreMachine {
                     return RestoreStep::Pending;
                 }
 
-                // --- inner-failed --------------------------------------------
                 RestoreCursor::InnerFailedSafeState(mut step) => {
                     if step.is_start() {
                         state.tmc.commission_in_flight.store(false, Relaxed);
@@ -486,7 +451,6 @@ impl TerminalRestoreMachine {
                     });
                 }
 
-                // --- calibrate -----------------------------------------------
                 RestoreCursor::CalibrateRestoreGains(step) => {
                     let mut step = step.unwrap_or_else(|| {
                         state.tmc.motor_armed.store(false, Relaxed);
@@ -838,7 +802,6 @@ impl TerminalRestoreMachine {
                     });
                 }
 
-                // --- outer failed ---------------------------------------------
                 RestoreCursor::OuterFailedStagedTiming => {
                     #[cfg(feature = "trace")]
                     if let Some(run_sequence) = engine
@@ -891,11 +854,6 @@ impl TerminalRestoreMachine {
                     );
                     if self.terminal.is_safety_fault {
                         self.terminal.outer_restore_failure = Some(error);
-                        // A SafetyEnvelopeViolation is a motion-envelope trip on a
-                        // healthy chip: still reload the operational gains/limits so
-                        // the next enable/homing does not inherit the tune's
-                        // mid-ladder gains (velocity I=0). Spi/Shutdown cannot
-                        // reliably write, so they keep the bare disarm.
                         if matches!(error, CommissionError::SafetyEnvelopeViolation)
                             && self.entry_snapshot(engine).is_some()
                         {
@@ -1091,7 +1049,6 @@ impl TerminalRestoreMachine {
                     ));
                 }
 
-                // --- fixed-gain amplitude ----------------------------------------
                 RestoreCursor::FixedGainAmplitudeStagedDisarmVelocity(step) => {
                     let retention = retention
                         .take()
@@ -1181,7 +1138,6 @@ impl TerminalRestoreMachine {
                     });
                 }
 
-                // --- robustness reversal --------------------------------------
                 RestoreCursor::RobustnessStagedClassify => {
                     let TerminalPayload::RobustnessReversal(terminal) =
                         self.terminal.payload.clone()
@@ -1443,7 +1399,6 @@ impl TerminalRestoreMachine {
                     }
                 }
 
-                // --- cancellation ----------------------------------------------
                 RestoreCursor::ForceSafeDisarm => {
                     crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                     state.tmc.commission_in_flight.store(false, Relaxed);
@@ -1464,10 +1419,7 @@ impl TerminalRestoreMachine {
     /// Run the remaining mandatory disarm/safe-state steps and consume the
     /// machine, discarding whatever restore progress was in flight.
     ///
-    /// This is the cancellation entry: it always de-energizes through
-    /// [`crate::tmc_control::lifecycle::disarm_motor`], whatever cursor the
-    /// restore had reached, so a torn-down restore can never leave the motor
-    /// partly armed.
+    /// Always de-energizes through [`crate::tmc_control::lifecycle::disarm_motor`].
     pub async fn force_safe_terminal<B: CommissioningBackend>(
         &mut self,
         engine: &mut Option<CommissioningEngine>,
@@ -1698,7 +1650,6 @@ impl TerminalRestoreMachine {
         self.terminal.authority = dispatch.authority;
     }
 
-    /// Terminal reply for a restore torn down before it finished.
     fn cancelled_reply(&self, oid: u8, status_error: CommissionError) -> ReplyPayload {
         let status = status_error.status_code();
         match self.terminal.payload.clone() {
@@ -1770,14 +1721,6 @@ fn commission_status_code(status: crate::autotune::CommissionStatus) -> u8 {
     }
 }
 
-/// Poll-driven equivalent of `tmc_control::lifecycle::disarm_motor`, split
-/// so `TerminalRestoreMachine` cursor states never issue more than one
-/// awaited backend operation per `poll_step`. Reproduces `disarm_motor`'s
-/// bookkeeping order exactly: the atomic/lifecycle-flag writes happen once,
-/// on the first poll, before any register write, matching `disarm_motor`'s
-/// own source order; the closing bookkeeping, including the aggregate
-/// safe-state failure log, happens once the underlying `SafeStateRestoreStep`
-/// reports completion.
 async fn poll_disarm_motor<B: CommissioningBackend>(
     step: &mut SafeStateRestoreStep,
     backend: &mut B,

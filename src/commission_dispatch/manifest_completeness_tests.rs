@@ -1,19 +1,3 @@
-//! Completeness and drift regression tests for `CommissionReplySink`. Two
-//! properties: (1) the trait must not gain a hand-typed default-bodied
-//! method outside the `__commission_reply_manifest!` invocation -- a
-//! default-bodied method that nobody wired into the manifest lets every
-//! board sink silently skip forwarding that reply; (2) every manifest
-//! entry's declared reply type and field list must match the actual
-//! `ankyra::replies` struct it names -- a drifted field can compile and
-//! forward successfully while silently changing the wire protocol. Both
-//! turn a silent failure into an immediate, attributable build failure.
-
-// foci-firmware is #![no_std], but lib.rs already has
-// `#[cfg(test)] extern crate std;` crate-wide -- std is linked for every
-// test module, this one included. Vec/String/format!/ToString need this
-// explicit import regardless: the crate root's `#![no_std]` means every
-// module resolves against `core::prelude`, not `std::prelude`, so none of
-// these ride in automatically the way they would in an ordinary std crate.
 use std::{
     format,
     string::{String, ToString},
@@ -22,18 +6,6 @@ use std::{
 
 const TRAIT_SOURCE: &str = include_str!("replies.rs");
 
-/// Every method signature found directly in the trait's hand-written
-/// region, paired with its terminator: `;` (required, no body) or `{`
-/// (default body). Deliberately not scoped to `fn foci_*` -- the gate must
-/// reject *any* default-bodied method someone hand-types into the trait,
-/// not only ones following today's naming convention. Anchored on
-/// `"\n    fn "` (a method declaration starting at the trait's own
-/// indentation level) rather than a bare `"fn "` search, so a `fn` occurring
-/// inside a doc comment's prose can't match. The manifest's own
-/// `entry { ... }` data blocks never produce that anchor (entries are
-/// declared as `name: foci_x`, never as a line starting with `fn `), so
-/// nothing needs to be excluded by region -- scanning the whole trait body
-/// is sufficient.
 fn trait_method_terminators(source: &str) -> Vec<(String, char)> {
     let trait_start = source
         .find("pub trait CommissionReplySink")
@@ -48,8 +20,8 @@ fn trait_method_terminators(source: &str) -> Vec<(String, char)> {
     let mut results = Vec::new();
     let mut search_from = 0usize;
     while let Some(rel_fn) = trait_body[search_from..].find(ANCHOR) {
-        let fn_start = search_from + rel_fn + 1; // +1: skip the leading '\n', keep "    fn "
-        let after_fn = &trait_body[fn_start + 7..]; // skip "    fn "
+        let fn_start = search_from + rel_fn + 1;
+        let after_fn = &trait_body[fn_start + 7..];
         let name_end = after_fn
             .find(|c: char| c == '(' || c.is_whitespace())
             .expect("malformed method signature: no name terminator");
@@ -134,21 +106,12 @@ fn manifest_has_the_expected_entry_count() {
     );
 }
 
-/// Wire reply structs live in `ankyra/replies.rs`, as
-/// `pub struct <Name>[<'a>] { /// doc pub <field>: <type>, ... }`.
 const ANKYRA_REPLIES_SOURCE: &str = include_str!("../ankyra/replies.rs");
 
-/// Strips the codebase's one lifetime name so `&'a [u8]` (the struct
-/// definition's own field type) and `&[u8]` (the manifest's field type,
-/// which never carries an explicit lifetime -- it isn't needed at the
-/// macro-input level) compare equal.
 fn strip_lifetime(ty: &str) -> String {
     ty.replace("'a ", "").trim().to_string()
 }
 
-/// Ordered (name, type) pairs for a struct's fields, found by locating
-/// `pub struct <name>` and reading each `pub <field>: <type>,` line in its
-/// body up to the closing brace.
 fn struct_field_list(source: &str, struct_name: &str) -> Vec<(String, String)> {
     let marker = format!("pub struct {struct_name}");
     let start = source
@@ -181,24 +144,12 @@ fn struct_field_list(source: &str, struct_name: &str) -> Vec<(String, String)> {
     fields
 }
 
-/// The wire struct name (stripped of the `foci_firmware::ankyra::replies::`
-/// prefix and any lifetime suffix) and ordered (name, type) field pairs
-/// declared in one manifest entry's `fields: { ... }` block.
 fn manifest_entry_fields(source: &str, method: &str) -> (String, Vec<(String, String)>) {
     let marker = format!("name: {method},");
     let start = source
         .find(&marker)
         .unwrap_or_else(|| panic!("manifest entry {method} not found"));
     let after = &source[start..];
-    // Bound to this one entry, same reasoning as the board host-tests'
-    // assert_manifest_entry helper: `after` starts at "name: <method>", strictly
-    // after this entry's own opening "entry {", so the next occurrence of
-    // "entry {" (if any) is the following entry's. Without this bound, an
-    // entry missing its own reply:/fields: block would silently read the
-    // *next* entry's instead of failing -- a false pass, not caught by
-    // adjacent entries that happen to share the same field shape (e.g.
-    // foci_fixed_gain_amplitude_terminal and foci_robustness_cycle_evidence
-    // are both just { oid: u8, payload: &[u8] }).
     let entry_end = after.find("entry {").unwrap_or(after.len());
     let entry = &after[..entry_end];
 
@@ -240,8 +191,6 @@ fn manifest_entry_fields(source: &str, method: &str) -> (String, Vec<(String, St
 
 #[test]
 fn manifest_entries_match_their_wire_reply_struct_fields() {
-    // Every `name: foci_x,` occurrence inside the manifest -- distinct from
-    // trait_method_terminators, which scans the hand-written region.
     let mut names = Vec::new();
     let mut search_from = 0usize;
     while let Some(rel) = TRAIT_SOURCE[search_from..].find("name: foci_") {

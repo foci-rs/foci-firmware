@@ -5,19 +5,14 @@ use crate::commission_dispatch::{DispatchState, StepperPostAction};
 /// Board task to run after a stepper post-action state transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum StepperTaskDirective {
-    /// No board task should be spawned.
     None,
-    /// Spawn the board-local arm-check task.
     ArmCheck,
-    /// Spawn the board-local stop-check task.
     StopCheck,
 }
 
 /// Apply P1-visible stepper state for a terminal commissioning action.
 ///
-/// Returns the board task directive only after all shared atomics and step
-/// epoch state are updated, so the board cannot spawn `arm_check` or
-/// `stop_check` before those tasks can observe the intended state.
+/// Returns the directive only after shared atomics and step epoch state are updated.
 pub fn apply_stepper_post_action_state(
     action: StepperPostAction,
     state: &mut DispatchState<'_>,
