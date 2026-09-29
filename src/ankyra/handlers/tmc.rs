@@ -742,6 +742,7 @@ mod tests {
         timer_inactive: bool,
         accept_request: bool,
         motion_scale_rejections: std::vec::Vec<crate::motion_scale::MotionScaleRejection>,
+        max_run_current_ma: u32,
     }
 
     impl MockCtx {
@@ -756,6 +757,7 @@ mod tests {
                 timer_inactive: true,
                 accept_request: true,
                 motion_scale_rejections: std::vec::Vec::new(),
+                max_run_current_ma: 10_000,
             }
         }
     }
@@ -831,6 +833,10 @@ mod tests {
 
         fn motion_quiescent(&self) -> bool {
             self.motion_scale_idle(0).is_ok()
+        }
+
+        fn max_run_current_ma(&self) -> u32 {
+            self.max_run_current_ma
         }
 
         fn report_motion_scale_rejection(

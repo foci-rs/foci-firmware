@@ -2121,6 +2121,7 @@ mod tests {
                 resistance_max_expected_current_count: 2000,
                 resistance_scale_metadata_validated: true,
                 current_scale_ma_per_lsb: 1.155,
+                max_run_current_ma: 10_000,
             },
             PendingConfigSink {
                 stored_inner_gains: &mut stored_inner_gains,

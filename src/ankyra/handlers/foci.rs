@@ -402,6 +402,7 @@ mod tests {
         last_request: RefCell<Option<crate::tmc::TmcRequest>>,
         last_shutdown: Option<ShutdownReason>,
         motion_quiescent: bool,
+        max_run_current_ma: u32,
     }
 
     impl MockCtx {
@@ -412,6 +413,7 @@ mod tests {
                 last_request: RefCell::new(None),
                 last_shutdown: None,
                 motion_quiescent: true,
+                max_run_current_ma: 10_000,
             }
         }
     }
@@ -475,6 +477,10 @@ mod tests {
 
         fn motion_quiescent(&self) -> bool {
             self.motion_quiescent
+        }
+
+        fn max_run_current_ma(&self) -> u32 {
+            self.max_run_current_ma
         }
 
         fn report_motion_scale_rejection(

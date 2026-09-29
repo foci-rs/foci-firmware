@@ -16,6 +16,7 @@ pub(super) fn autotune_test_config() -> crate::config::TmcConfig {
         resistance_max_expected_current_count: 1600,
         resistance_scale_metadata_validated: false,
         current_scale_ma_per_lsb: 1.155,
+        max_run_current_ma: 10_000,
     }
 }
 

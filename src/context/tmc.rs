@@ -22,6 +22,11 @@ pub trait TmcHost: StateAccess {
     /// `false`.
     fn motion_quiescent(&self) -> bool;
 
+    /// Board-specific RMS milliamp ceiling for run and homing current.
+    ///
+    /// Board-implemented; mirrors `TmcConfig::max_run_current_ma`.
+    fn max_run_current_ma(&self) -> u32;
+
     /// Emit a host-visible reason before rejecting motion-scale configuration.
     fn report_motion_scale_rejection(
         &mut self,

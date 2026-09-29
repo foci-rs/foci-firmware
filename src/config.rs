@@ -54,6 +54,8 @@ pub struct TmcConfig {
     pub resistance_scale_metadata_validated: bool,
     /// Board-specific milliamps-per-LSB scale for `PID_TORQUE_FLUX_LIMITS`.
     pub current_scale_ma_per_lsb: f32,
+    /// Board-specific RMS milliamp ceiling for run and homing current.
+    pub max_run_current_ma: u32,
 }
 
 /// Which physical encoder drives a TMC4671 selection register.
@@ -153,6 +155,7 @@ impl TmcConfig {
             resistance_max_expected_current_count: 1600,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
+            max_run_current_ma: 10_000,
         }
     }
 }
@@ -188,6 +191,7 @@ mod tests {
             resistance_max_expected_current_count: 1600,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
+            max_run_current_ma: 10_000,
         }
     }
 
@@ -258,6 +262,7 @@ mod tests {
             resistance_max_expected_current_count: 1600,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
+            max_run_current_ma: 10_000,
         };
         assert_eq!(cfg.dsadc_mdec_register(), (331 << 16) | 660);
     }
@@ -279,6 +284,7 @@ mod tests {
             resistance_max_expected_current_count: 1600,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
+            max_run_current_ma: 10_000,
         };
         assert_eq!(cfg.pwm_freq_hz(), 100_000);
     }
@@ -300,6 +306,7 @@ mod tests {
             resistance_max_expected_current_count: 1600,
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
+            max_run_current_ma: 10_000,
         };
         assert_eq!(cfg.pwm_freq_hz(), 50_000);
     }

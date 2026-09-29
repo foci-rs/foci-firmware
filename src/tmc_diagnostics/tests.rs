@@ -166,6 +166,7 @@ static TEST_TMC_CONFIG: crate::config::TmcConfig = crate::config::TmcConfig {
     resistance_max_expected_current_count: 1600,
     resistance_scale_metadata_validated: true,
     current_scale_ma_per_lsb: 1.155,
+    max_run_current_ma: 10_000,
 };
 
 fn ready_runtime() -> TmcControlRuntime {
