@@ -1,9 +1,4 @@
 //! Engine-level velocity-workflow phase emission.
-//!
-//! Every outer workflow names itself on the wire: the engine reports the
-//! active [`CommissionPhase`] the first time it becomes current, and again at
-//! each in-engine boundary, so the host can follow an autotune run without
-//! inferring the workflow from evidence traffic.
 
 use super::{CommissioningEngine, EngineMode, OuterPhase};
 use crate::autotune::CommissionPhase;
@@ -17,8 +12,6 @@ use crate::commissioning::types::StepResult;
 use crate::trace::events::{EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START};
 use foci_firmware_macros::fixture_test;
 
-/// Upper bound on cooperative ticks a fixture run may take before the test
-/// gives up. Every fixture below terminates far inside this.
 const MAX_DRIVE_TICKS: usize = 2_000_000;
 
 const COUNTS_PER_REV: u32 = 4_000;
@@ -72,8 +65,6 @@ fn outer_backend() -> MockBackend {
     backend
 }
 
-/// Outer parameters whose motion budget reproduces the velocity the plan
-/// fixtures below freeze, so the engine's safety envelope agrees with them.
 fn plan_matched_outer_params() -> OuterAutotuneInputs {
     OuterAutotuneInputs {
         requested_velocity_mrev_s: 6_666,
@@ -101,8 +92,6 @@ fn plan_request() -> crate::commissioning::outer::velocity::sweep_plan::Velocity
     }
 }
 
-/// One genuine breakaway Integral plan, minted through the real
-/// confirmation-token path a live campaign uses.
 fn response_ladder_plan() -> VelocityIntegralPlan {
     use crate::commissioning::outer::OuterMotionBudget;
     use crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
@@ -243,16 +232,6 @@ fn phase_code(phase: CommissionPhase) -> i32 {
     i32::from(phase.to_u8())
 }
 
-/// Replace the outer phase in place exactly as an accepted breakaway
-/// confirmation does (`route_confirmed_accept`), so the engine sees the same
-/// underneath-the-stepper hand-off a live campaign produces.
-///
-/// A stand-in, not the seam: `BreakawayCampaign`'s fields are private to its own
-/// module, so a mid-confirmation campaign cannot be built here. The hand-off
-/// driven through the live campaign, and the event ordering it produces, is
-/// covered by `breakaway_campaign_tests`'
-/// `the_engine_reports_one_integral_plan_before_any_integral_evidence`; what this
-/// buys is the trace-span pairing below, which that test does not inspect.
 fn hand_off_to_response_ladder(engine: &mut CommissioningEngine) {
     use crate::commissioning::outer::{VelocityIntegralRuntime, VelocityIntegralState};
 
@@ -283,8 +262,6 @@ async fn breakaway_run_emits_entry_then_its_integral_boundary() {
     );
     let spi_after_entry = backend.spi_log.len();
 
-    // The entry event rides the span `emit_trace_start` already opened, so it
-    // must not close and reopen it.
     assert_eq!(
         trace_phase_ids(&backend),
         &[(
@@ -336,9 +313,6 @@ async fn breakaway_run_emits_entry_then_its_integral_boundary() {
     );
 }
 
-/// The synthetic phase tick reports the transition instead of advancing the
-/// stepper, so no evidence the stepper would have produced is lost -- it
-/// arrives on the following tick.
 #[fixture_test]
 async fn the_phase_tick_does_not_advance_the_stepper() {
     let mut engine = response_ladder_engine();
@@ -404,8 +378,6 @@ async fn robustness_reversal_reports_its_own_phase() {
     );
 }
 
-/// A workflow whose very first stepper tick faults still names itself first:
-/// the phase event is selected before the stepper is dispatched at all.
 #[fixture_test]
 async fn first_step_failure_emits_initial_phase_before_terminal() {
     let mut engine = response_ladder_engine_with_params(OuterAutotuneInputs {
@@ -427,8 +399,6 @@ async fn first_step_failure_emits_initial_phase_before_terminal() {
     );
 }
 
-/// Reporting the workflow must never come before the e-stop check: a step
-/// taken under a shutdown request aborts, it does not name a phase.
 #[fixture_test]
 async fn a_shutdown_request_aborts_before_any_phase_is_reported() {
     let mut engine = response_ladder_engine();
@@ -445,8 +415,6 @@ async fn a_shutdown_request_aborts_before_any_phase_is_reported() {
     );
 }
 
-/// Inner commissioning reports its own transitions from the stepper; the
-/// outer-only synthetic selection must leave that path untouched.
 #[fixture_test]
 async fn inner_commissioning_reports_no_synthetic_entry_phase() {
     let mut engine =

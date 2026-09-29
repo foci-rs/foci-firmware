@@ -1,9 +1,4 @@
 //! Hardware backend capability traits for commissioning.
-//!
-//! The commissioning engine and dispatch code mostly use the umbrella
-//! [`CommissioningBackend`] bound. The smaller traits keep the capability
-//! surface explicit and allow later helpers to depend on narrower behavior
-//! without changing board semantics.
 
 use core::convert::Infallible;
 use core::marker::PhantomData;
@@ -21,10 +16,8 @@ use foci_tmc4671::spi::{SpiError, Tmc4671Spi};
 /// Register I/O capability for TMC4671 commissioning operations.
 #[allow(async_fn_in_trait)]
 pub trait CommissionRegisterIo {
-    /// SPI/hardware error type.
     type Error;
 
-    /// Read a TMC4671 register.
     async fn read_register(&mut self, reg: Register) -> Result<u32, Self::Error>;
 
     /// Read one register for a fixed-rate capture observation.
@@ -33,10 +26,6 @@ pub trait CommissionRegisterIo {
     }
 
     /// Read two TMC4671 registers for one capture observation.
-    ///
-    /// The default preserves ordinary async behavior for test and alternate
-    /// backends. Production shared backends override this with two blocking,
-    /// separately CS-framed transactions to avoid DMA wakeup overhead.
     async fn read_register_pair(
         &mut self,
         first: Register,
@@ -47,7 +36,6 @@ pub trait CommissionRegisterIo {
         Ok((first, second))
     }
 
-    /// Write a TMC4671 register.
     async fn write_register(&mut self, reg: Register, val: u32) -> Result<(), Self::Error>;
 
     /// Write a register, read it back, and compare against `val`.
@@ -71,7 +59,6 @@ pub trait CommissionRegisterIo {
 /// Result of one existing register await with measured monotonic wall time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimedRegisterIo<T> {
-    /// Unchanged result returned by the wrapped register operation.
     pub result: T,
     /// Time spent inside the register-operation await, in microseconds.
     pub wall_us: u32,
@@ -79,7 +66,6 @@ pub struct TimedRegisterIo<T> {
     pub overflowed: bool,
 }
 
-/// Read a register and measure wall time around the existing backend await.
 #[cfg(test)]
 pub(crate) async fn timed_read_register<B>(
     backend: &mut B,
@@ -119,7 +105,6 @@ where
     }
 }
 
-/// Write a register and measure wall time around the existing backend await.
 #[cfg(test)]
 pub(crate) async fn timed_write_register<B>(
     backend: &mut B,
@@ -152,15 +137,9 @@ fn measured_wall_us(start_us: u64, end_us: u64) -> (u32, bool) {
 
 /// Explicit motor lifecycle side effects used by commissioning.
 pub trait CommissionMotorControl {
-    /// Store the captured `MOTOR_TYPE_N_POLE_PAIRS` sentinel.
-    ///
-    /// Called by AdcCal immediately after the `MOTOR_TYPE_N_POLE_PAIRS`
-    /// write succeeds. Used by `arm_motor_electrical` to detect silent
-    /// chip resets. The default is a no-op for mocks that do not care
-    /// about motor lifecycle state.
+    /// Store the chip-verified `MOTOR_TYPE_N_POLE_PAIRS` sentinel checked by `arm_motor_electrical`.
     fn store_motor_sentinel(&self, _value: u32) {}
 
-    /// Set the TMC4671 enable pin state.
     fn set_enable_pin(&mut self, state: bool);
 
     /// True when a fault is latched, a disable is pending, or the STATUS pin
@@ -169,10 +148,6 @@ pub trait CommissionMotorControl {
     fn interlock_tripped(&self) -> bool;
 
     /// Record a motor lifecycle flag transition at the exact mutation site.
-    ///
-    /// Default no-op: production backends do not need an interleaved
-    /// lifecycle log. Test backends override this to capture the relative
-    /// order of lifecycle transitions against SPI/GPIO effects.
     fn record_lifecycle(
         &mut self,
         _flag: crate::tmc_control::lifecycle::LifecycleFlag,
@@ -182,11 +157,7 @@ pub trait CommissionMotorControl {
 
     /// Persist the outcome of a safe-state restore pass.
     ///
-    /// Called once at the end of every `restore_safe_state_via_backend`
-    /// pass. `timestamp_ms` is a board-monotonic millisecond timestamp
-    /// taken when the pass completed. Default no-op: a backend that does
-    /// not need to retain this (e.g. a mock that doesn't exercise the
-    /// re-arm gate) can ignore it.
+    /// `timestamp_ms` is a board-monotonic millisecond timestamp.
     fn record_safe_state_report(
         &mut self,
         _report: crate::tmc_safe_state::SafeStateRestoreReport,
@@ -210,31 +181,14 @@ pub trait CommissionEncoderRead: CommissionRegisterIo {
 /// Cooperative timing and shutdown checks for the commissioning engine.
 #[allow(async_fn_in_trait)]
 pub trait CommissionTiming {
-    /// Microseconds elapsed since an arbitrary monotonic reference point.
-    ///
-    /// Used for deadline-driven sub-state timing within `step()`. Must be
-    /// strictly monotonic, never decreasing or wrapping, across a
-    /// commissioning session.
-    ///
-    /// Returning `u64` avoids any realistic wraparound: `u64` microseconds
-    /// covers roughly 584,942 years. Board implementations should use a
-    /// hardware-backed monotonic to preserve microsecond precision for
-    /// sub-ms sampling loops in electrical identification.
+    /// Microseconds since an arbitrary reference point; strictly monotonic across a session.
     fn elapsed_us(&self) -> u64;
 
-    /// Whether a shutdown has been requested.
     fn is_shutdown_requested(&self) -> bool;
 
-    /// Cooperative microsecond delay.
+    /// Cooperative microsecond delay that yields to higher-priority tasks.
     ///
-    /// Used by the OuterFailed stability check and any other firmware-side
-    /// wait that must yield to higher-priority RTIC tasks. `u32`
-    /// microseconds gives roughly 71 minutes of range, far more than any
-    /// commissioning wait.
-    ///
-    /// Implementations should override this with the board's RTIC
-    /// monotonic. The default panics because a missing override is a bug:
-    /// firmware-side cooperative waits would not yield without a real wait.
+    /// Implementations must override; the default panics.
     async fn delay_us(&mut self, _us: u32) {
         panic!(
             "CommissioningBackend impl missing delay_us override; \
@@ -243,9 +197,7 @@ pub trait CommissionTiming {
     }
 }
 
-/// Combine the board-owned shutdown signals `CommissionTiming::is_shutdown_requested`
-/// should report as true: an explicit disable request, an expired
-/// host-liveness lease, or an outer shutdown/fault already in progress.
+/// Whether any board-owned shutdown signal (disable request, lease expiry, shutdown, fault) is active.
 pub const fn shutdown_requested_from(
     disable_signal: bool,
     lease_expired: bool,
@@ -257,26 +209,19 @@ pub const fn shutdown_requested_from(
 
 /// Board and channel configuration values consumed by commissioning.
 pub trait CommissionBoardConfig {
-    /// Read the configured torque/flux current limit.
     fn current_limit(&self) -> PidTorqueFluxLimit;
 
-    /// PWM_MAXCNT register value for the board.
     fn pwm_maxcnt(&self) -> u16;
 
-    /// PWM_BBM_H_BBM_L register value.
     fn bbm_register(&self) -> u32;
 
-    /// DSADC_MDEC_B_MDEC_A register value.
     fn dsadc_mdec_register(&self) -> u32;
 
     /// Test excitation voltage magnitude.
     fn excitation_voltage(&self) -> u16;
 
-    /// Board-specific TMC4671 configuration.
     fn tmc_config(&self) -> &TmcConfig;
 
-    /// This channel's feedback wiring (which encoder drives each TMC4671
-    /// selection register).
     fn feedback_config(&self) -> crate::config::FeedbackConfig;
 
     /// Host-configured torque filter cutoff, including explicit zero disable.
@@ -294,37 +239,23 @@ pub trait CommissionBoardConfig {
     /// Returns `None` until the complete motion scale has been configured.
     fn configured_physical_step_width(&self) -> Option<u32>;
 
-    /// Encoder counts per mechanical revolution.
     fn mechanical_encoder_quadrature_counts_per_rev(&self) -> u32;
 
     /// Configured motor electrical pole-pair count.
     ///
-    /// Decoded from the chip-verified `MOTOR_TYPE_N_POLE_PAIRS` sentinel
-    /// captured by ADC calibration, not a check-specific hardcoded constant.
-    /// Zero means the sentinel has not been established yet (motor
-    /// configuration not calibrated); callers must treat that as a hard
-    /// failure rather than falling back to a default pole-pair count.
+    /// Zero means not yet calibrated; callers must treat that as a failure.
     fn motor_pole_pairs(&self) -> u16;
 
     /// Whether ADC current-offset calibration has been established.
-    ///
-    /// Backs the resistance runner's `adc_offsets_ready` entry pre-check. True
-    /// once the commissioning ADC-calibration phase has captured the motor
-    /// sentinel, which the engine always does before electrical identification
-    /// runs the sweep.
     fn adc_offsets_ready(&self) -> bool;
 
-    /// Configured operational PID_VELOCITY_LIMIT value.
     fn operational_velocity_limit(&self) -> u32;
 
-    /// Configured operational PIDOUT_UQ_UD_LIMITS value.
     fn operational_voltage_limit(&self) -> u32;
 
     /// Configured stall-detection threshold, in position-error units.
     ///
-    /// `PositionTune` derives its tracking bound from this value; zero means
-    /// unconfigured, which the derivation rejects rather than falling back to
-    /// a guessed threshold.
+    /// Zero means unconfigured.
     fn stall_threshold_units(&self) -> u32 {
         0
     }
@@ -344,14 +275,12 @@ pub trait CommissionBoardConfig {
 
 /// Commissioning trace emission capability.
 pub trait CommissionTrace {
-    /// Record a transport-neutral commissioning trace event.
     fn record_commission_trace_event(
         &mut self,
         _event: crate::trace::events::CommissionTraceEvent,
     ) {
     }
 
-    /// Record one characterization-only raw velocity observation.
     #[cfg(feature = "trace")]
     fn record_velocity_trace_observation(
         &mut self,
@@ -359,7 +288,6 @@ pub trait CommissionTrace {
     ) {
     }
 
-    /// Record one canonical velocity-sweep evidence record for offline audit.
     fn record_velocity_sweep_trace_record(
         &mut self,
         _record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
@@ -368,12 +296,6 @@ pub trait CommissionTrace {
 }
 
 /// Connect-time configuration drain capability.
-///
-/// Config-time setters record their value in `TmcChannelState` instead of
-/// enqueueing an SPI request, so the recorded value reaches the chip only
-/// when something drains it. Arming needs that drain to have happened before
-/// the motor is energized, which is why the capability sits in the
-/// [`CommissioningBackend`] bundle rather than only on the board control tick.
 #[allow(async_fn_in_trait)]
 pub trait CommissionPendingConfig {
     /// Push every recorded-but-unapplied configuration item to the TMC4671.
@@ -391,9 +313,7 @@ pub trait CommissionPendingConfig {
 /// Why a stimulus operation was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum StimulusError {
-    /// This backend or board ships no step stimulus.
     Unsupported,
-    /// The channel does not exist on this board.
     InvalidChannel,
     /// The stepper is trigger-blocked by an unhandled homing stop.
     TriggerBlocked,
@@ -401,45 +321,26 @@ pub enum StimulusError {
     TimerActive,
     /// A stop left the stepper needing a clock reset before it can queue.
     NeedsReset,
-    /// The step queue refused the segment.
     QueueRefused {
-        /// Queue occupancy at refusal.
         queue_len: u32,
     },
-    /// The enable pin is not asserted, so the timer may not be armed.
     NotEnergized,
 }
 
 /// Step-queue stimulus a commissioning phase drives on its own channel.
-///
-/// Every operation is the production step path's own primitive reached
-/// from the commissioning engine: direction capture, step-clock reset,
-/// segment enqueue, timer arm, and the physical stop the trsync path uses.
-/// The feedforward pair flips the channel's stimulus opt-in and reads the
-/// control tick's restoration mirror.
 pub trait CommissionStepStimulus {
     /// Step timer frequency in Hz; 0 when no stimulus is available.
     ///
-    /// Distinct from `tmc_control::request::TmcRequestBoard::stimulus_step_timer_hz`
-    /// (same name, different source, wired separately per board): this one
-    /// backs actual stroke execution once the commissioning engine is
-    /// running; that one backs the dispatch-time duration disclosure before
-    /// the engine exists. A board must keep both in sync with the same
-    /// hardware timer frequency.
+    /// A board must keep this in sync with `TmcRequestBoard::stimulus_step_timer_hz`.
     fn stimulus_step_timer_hz(&self) -> u32;
-    /// Current step-timer clock.
     fn stimulus_step_clock_now(&self) -> u32;
-    /// Free segment slots on the channel's step queue right now. The phase
-    /// compares the whole generated profile against this before queuing
-    /// its first segment, so admission is all or nothing.
+    /// Free segment slots on the channel's step queue right now.
     fn stimulus_queue_free(&self) -> usize;
     /// Whether an unhandled trigger stop would discard queued segments.
     fn stimulus_is_trigger_blocked(&self) -> bool;
-    /// DIR level captured for the next queued segment.
     fn stimulus_set_direction(&mut self, forward: bool);
     /// Clear `need_reset` and set the base clock the next segment starts from.
     fn stimulus_reset_step_clock(&mut self, clock: u32) -> Result<(), StimulusError>;
-    /// Enqueue one segment under the captured direction.
     fn stimulus_queue_segment(&mut self, segment: StepMove) -> Result<(), StimulusError>;
     /// Mark the channel armed for steps and arm the timer for the queued profile.
     fn stimulus_arm(&mut self) -> Result<(), StimulusError>;
@@ -447,68 +348,53 @@ pub trait CommissionStepStimulus {
     /// `motor_armed` back to what `stimulus_arm` found. Trigger-block state
     /// is untouched. Idempotent.
     fn stimulus_stop(&mut self);
-    /// Opt the channel's planner paths on or off for a stroke.
     fn set_stimulus_feedforward(&mut self, enabled: bool);
     /// Whether the control tick reports every feedforward surface restored.
     fn stimulus_feedforward_idle(&self) -> bool;
 }
 
 /// Opt-in access to a production TMC4671 SPI driver for shared backend impls.
-///
-/// Do not implement this helper for `MockBackend`; the mock provides explicit
-/// capability impls for register-map behavior and failure injection.
 pub trait CommissionTmcSpiAccess {
-    /// Concrete board SPI device type.
     type Spi: SpiDevice<u8>;
 
-    /// Mutable access to the board-owned TMC4671 SPI driver.
     fn tmc_spi(&mut self) -> &mut Tmc4671Spi<Self::Spi>;
 }
 
 /// Opt-in access to a production TMC channel state for shared backend impls.
 pub trait CommissionTmcStateAccess {
-    /// TMC channel state associated with this commissioning backend.
     fn tmc_state(&self) -> &'static crate::state::tmc::TmcChannelState;
 }
 
 /// Opt-in enable-pin hook for shared motor-control backend impls.
 pub trait CommissionEnablePinAccess {
-    /// Drive the board-owned TMC4671 enable pin.
     fn set_commission_enable_pin(&mut self, state: bool);
 }
 
 /// Opt-in board configuration access for shared backend impls.
 pub trait CommissionConfigAccess {
-    /// Board-specific TMC4671 configuration.
     fn commission_tmc_config(&self) -> &'static TmcConfig;
 
-    /// This channel's feedback wiring.
     fn commission_feedback_config(&self) -> crate::config::FeedbackConfig;
 }
 
 /// Opt-in timing hooks for shared commissioning timing impls.
 #[allow(async_fn_in_trait)]
 pub trait CommissionTimingAccess {
-    /// Microseconds elapsed since the board monotonic epoch.
     fn commission_elapsed_us(&self) -> u64;
 
-    /// Whether a shutdown has been requested.
     fn commission_is_shutdown_requested(&self) -> bool;
 
-    /// Cooperative microsecond delay.
     async fn commission_delay_us(&mut self, us: u32);
 }
 
 /// Opt-in trace hook for shared commissioning trace impls.
 pub trait CommissionTraceAccess {
-    /// Record a transport-neutral commissioning trace event.
     fn record_commission_trace_event_impl(
         &mut self,
         _event: crate::trace::events::CommissionTraceEvent,
     ) {
     }
 
-    /// Record one characterization-only raw velocity observation.
     #[cfg(feature = "trace")]
     fn record_velocity_trace_observation_impl(
         &mut self,
@@ -516,7 +402,6 @@ pub trait CommissionTraceAccess {
     ) {
     }
 
-    /// Record one canonical velocity-sweep evidence record for offline audit.
     #[cfg(feature = "trace")]
     fn record_velocity_sweep_trace_record_impl(
         &mut self,
@@ -525,51 +410,37 @@ pub trait CommissionTraceAccess {
     }
 }
 
-/// Per-instance step-stimulus hooks. Implemented by the shared adapter;
-/// not by `MockBackend`, which implements `CommissionStepStimulus` directly.
+/// Per-instance step-stimulus hooks implemented by the shared adapter.
 pub trait CommissionStepStimulusAccess {
-    /// Step timer frequency; 0 means this board ships no step stimulus.
     fn commission_step_timer_hz_impl(&self) -> u32;
-    /// Current step-timer clock.
     fn commission_step_clock_now_impl(&self) -> u32;
-    /// Free segment slots on this channel's step queue.
     fn commission_stimulus_queue_free_impl(&self) -> usize;
-    /// Whether this channel is trigger-blocked.
     fn commission_stimulus_trigger_blocked_impl(&self) -> bool;
-    /// Capture the DIR level for this channel's next queued segment.
     fn commission_stimulus_set_direction_impl(&mut self, forward: bool);
-    /// Reset this channel's step clock.
     fn commission_stimulus_reset_step_clock_impl(
         &mut self,
         clock: u32,
     ) -> Result<(), StimulusError>;
-    /// Enqueue one segment on this channel.
     fn commission_stimulus_queue_segment_impl(
         &mut self,
         segment: StepMove,
     ) -> Result<(), StimulusError>;
-    /// Arm this channel's step timer for its queued profile.
     fn commission_stimulus_arm_impl(&mut self) -> Result<(), StimulusError>;
-    /// Halt this channel's in-flight segment and drain its queue.
     fn commission_stimulus_stop_impl(&mut self);
 }
 
 /// Board-specific hooks used by [`SharedCommissioningBackend`].
 #[allow(async_fn_in_trait)]
 pub trait CommissionBackendHooks {
-    /// Board-specific TMC4671 configuration.
     fn commission_tmc_config() -> &'static TmcConfig;
 
     /// Board-specific per-channel feedback wiring, indexed by channel.
     fn commission_feedback_configs() -> &'static [crate::config::FeedbackConfig];
 
-    /// Microseconds elapsed since the board monotonic epoch.
     fn commission_elapsed_us() -> u64;
 
-    /// Whether a shutdown has been requested.
     fn commission_is_shutdown_requested() -> bool;
 
-    /// Cooperative microsecond delay.
     async fn commission_delay_us(us: u32);
 
     /// Step timer frequency; 0 means this board ships no step stimulus.
@@ -577,25 +448,20 @@ pub trait CommissionBackendHooks {
         0
     }
 
-    /// Current step-timer clock.
     fn commission_step_clock_now() -> u32 {
         0
     }
 
-    /// Free segment slots on the given channel's step queue.
     fn commission_stimulus_queue_free(_channel: u8) -> usize {
         0
     }
 
-    /// Whether the given channel is trigger-blocked.
     fn commission_stimulus_trigger_blocked(_channel: u8) -> bool {
         true
     }
 
-    /// Capture the DIR level for the given channel's next queued segment.
     fn commission_stimulus_set_direction(_channel: u8, _forward: bool) {}
 
-    /// Reset the given channel's step clock.
     fn commission_stimulus_reset_step_clock(
         _channel: u8,
         _clock: u32,
@@ -603,7 +469,6 @@ pub trait CommissionBackendHooks {
         Err(StimulusError::Unsupported)
     }
 
-    /// Enqueue one segment on the given channel.
     fn commission_stimulus_queue_segment(
         _channel: u8,
         _segment: StepMove,
@@ -611,22 +476,18 @@ pub trait CommissionBackendHooks {
         Err(StimulusError::Unsupported)
     }
 
-    /// Arm the given channel's step timer for its queued profile.
     fn commission_stimulus_arm(_channel: u8) -> Result<(), StimulusError> {
         Err(StimulusError::Unsupported)
     }
 
-    /// Halt the given channel's in-flight segment and drain its queue.
     fn commission_stimulus_stop(_channel: u8) {}
 
-    /// Record a transport-neutral commissioning trace event.
     fn record_commission_trace_event(
         _channel: u8,
         _event: crate::trace::events::CommissionTraceEvent,
     ) {
     }
 
-    /// Record one characterization-only raw velocity observation.
     #[cfg(feature = "trace")]
     fn record_velocity_trace_observation(
         _channel: u8,
@@ -634,7 +495,6 @@ pub trait CommissionBackendHooks {
     ) {
     }
 
-    /// Record one canonical velocity-sweep evidence record for offline audit.
     #[cfg(feature = "trace")]
     fn record_velocity_sweep_trace_record(
         _channel: u8,
@@ -921,10 +781,6 @@ where
 
         let tmc = self.tmc_state();
         let last_pass_failed = report.failed_writes > 0;
-        // Every restore pass leaves the compound latch set: a clean pass
-        // alone does not confirm the chip is safe to arm, only a fresh
-        // sentinel pass does (see arm_motor_electrical). Only that sentinel
-        // success clears safe_state_incomplete.
         tmc.safe_state_incomplete.store(true, Relaxed);
         tmc.safe_state_last_pass_failed
             .store(last_pass_failed, Relaxed);
@@ -1009,10 +865,6 @@ where
     }
 
     fn adc_offsets_ready(&self) -> bool {
-        // The ADC-calibration phase captures a non-zero motor sentinel before
-        // any later phase energizes. Electrical identification (which runs the
-        // resistance sweep) is sequenced strictly after that phase, so a
-        // non-zero sentinel reflects that ADC offsets have been established.
         self.tmc_state()
             .motor_sentinel
             .load(core::sync::atomic::Ordering::Relaxed)
@@ -1638,10 +1490,6 @@ mod tests {
             &TEST_TMC_STATE,
         );
 
-        // Channel 3's TEST_FEEDBACK_CONFIGS entry is deliberately distinct from
-        // every other channel's — this only passes if the lookup is
-        // genuinely indexed by `self.channel`, not a hard-coded index or a
-        // channel-blind constant.
         assert_eq!(
             backend.feedback_config(),
             crate::config::FeedbackConfig {

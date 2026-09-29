@@ -1,18 +1,9 @@
 //! Cooperative unreset-reversal robustness phase.
 //!
-//! Measures reversal robustness of the retained acceptance operating point. For
-//! each reversal direction the phase runs up to
-//! [`ROBUSTNESS_CYCLES_PER_DIRECTION`] probe cycles; each cycle establishes a
-//! settled cruise with the velocity integrator cleared, then reverses the
-//! commanded target **without** clearing the integrator and measures how the
-//! loop reconverges. Clearing the integrator on the measured leg would
-//! silently turn the robustness test back into a fresh identification run, so
-//! the establish leg is the only leg that clears -- see the write-log
-//! invariant test. Each cycle's metrics fold into a per-direction
-//! [`CycleLedger`]; the gate compares each direction's median metric against
-//! the absolute thresholds and rejects a second conclusive tail cycle.
-//!
-//! The phase reads the accepted point read-only; it never advances or closes
+//! For each reversal direction, runs up to [`ROBUSTNESS_CYCLES_PER_DIRECTION`] probe
+//! cycles: an establish leg (integrator cleared) then a measured reversal leg
+//! (integrator not cleared). Metrics fold into a per-direction [`CycleLedger`]. The
+//! accepted point is read-only; the phase never advances
 //! [`FixedGainAmplitudeProgress`](super::integral_reproduction::FixedGainAmplitudeProgress).
 
 use crate::autotune::CommissionError;
@@ -77,24 +68,14 @@ use super::sweep_plan::{
 use super::velocity_clamp::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
 use super::{clear_velocity_error_sum, clear_velocity_offset};
 
-/// Extra in-band capture after band entry, in microseconds, so the ring's
-/// settled tail holds at least the 64-sample shortest stationary suffix for the
-/// residual analysis. The 48 ms band-entry dwell alone falls short of 64
-/// samples at the ~1 ms observation cadence, so band entry stops the search but
-/// this tail keeps sampling the settled cruise before analysis.
 const ROBUSTNESS_SETTLE_TAIL_US: u32 = 80_000;
 
-/// Confidence family size for the settled-rate interval reconstruction, matching
-/// the shared scored-rest reconstruction default.
 const ROBUSTNESS_CONFIDENCE_FAMILY_SIZE: u16 = 3;
 
-/// Number of reversal directions probed: forward->reverse and reverse->forward.
 const DIRECTION_COUNT: usize = 2;
 
-/// Borrowed single-leg scratch space: capture ring, stationarity analysis,
-/// dyadic blocker, the online band-entry/IAE accumulator, and the running
-/// encoder/time anchors. Never allocates on the heap; every field is
-/// fixed-size.
+/// Borrowed single-leg scratch space for capture, stationarity analysis, and band-entry/IAE
+/// accumulation.
 #[derive(Debug)]
 pub(crate) struct RobustnessReversalWorkspace {
     observations: VelocityObservationRing,
@@ -126,9 +107,6 @@ impl RobustnessReversalWorkspace {
         }
     }
 
-    /// Arm the current observer against the operational limit: this phase
-    /// installs no probe clamp of its own, so the limit already mirrored
-    /// into `torque_cap` by setup is the one in force.
     fn reset_current_observer_from_operational_limit<B: CommissioningBackend>(
         &mut self,
         backend: &B,
@@ -140,18 +118,12 @@ impl RobustnessReversalWorkspace {
     }
 }
 
-// The workspace holds measurement scratch buffers (observation ring, dyadic
-// blocker, stationarity work) that do not implement `defmt::Format`, so it
-// cannot derive it. `OuterPhase` requires every field be `Format`, so emit an
-// opaque marker instead of the buffer contents, which carry no diagnostic value.
 impl defmt::Format for RobustnessReversalWorkspace {
     fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(fmt, "RobustnessReversalWorkspace");
     }
 }
 
-/// A conclusive cycle measured at the reversal leg, held until the
-/// between-cycles rest confirms and the ledger records it.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 struct PendingCycle {
     /// Raw per-cycle metrics folded into the ledger.
@@ -178,12 +150,9 @@ pub(crate) struct RobustnessReversalSession {
     peak_overshoot_counts: [u16; DIRECTION_COUNT],
     /// Per-cycle wire triples, mirroring each ledger's filled slots.
     cycle_wires: [[Option<CycleWire>; ROBUSTNESS_CYCLES_PER_DIRECTION]; DIRECTION_COUNT],
-    /// The grace-retried (displaced) tail cycle's wire triple, per direction.
-    /// It never fills a slot, so its overshoot and forward-settle would
-    /// otherwise be lost -- only its reconvergence survives, in the ledger max.
+    /// The grace-retried (displaced) tail cycle wire triple, per direction.
     displaced_tail_wires: [Option<CycleWire>; DIRECTION_COUNT],
-    /// Slot cursor mirroring each ledger's own cursor, so a filled wire lands
-    /// in the same slot the ledger filled.
+    /// Slot cursor mirroring each ledger cursor.
     cycle_cursor: [usize; DIRECTION_COUNT],
     pending_forward_settle_us: u32,
     /// The conclusive cycle awaiting the between-cycles rest confirmation.
@@ -281,20 +250,15 @@ enum TickFault {
     Safety(OuterSafetyFault),
 }
 
-/// Absolute establish-cruise magnitude, in signed TMC mechanical RPM.
 fn amplitude_rpm(point: &AcceptancePoint) -> i32 {
     point.target_velocity_rpm.saturating_abs()
 }
 
-/// Unsigned cruise target of the probe legs, [`ROBUSTNESS_LEG_AMPLITUDE_PCT`]
-/// of the campaign amplitude, rounded to the nearest RPM.
 fn leg_amplitude_rpm(point: &AcceptancePoint) -> i32 {
     let scaled = i64::from(amplitude_rpm(point)) * i64::from(ROBUSTNESS_LEG_AMPLITUDE_PCT) + 50;
     i32::try_from(scaled / 100).unwrap_or(i32::MAX)
 }
 
-/// Signed establish-cruise target for `direction`. Index 0 establishes forward
-/// (measures forward->reverse); index 1 establishes reverse.
 fn establish_target_rpm(point: &AcceptancePoint, direction: usize) -> i32 {
     let amplitude = leg_amplitude_rpm(point);
     if direction == 0 {
@@ -304,7 +268,6 @@ fn establish_target_rpm(point: &AcceptancePoint, direction: usize) -> i32 {
     }
 }
 
-/// Signed measured-leg target for `direction`: the reverse of the establish leg.
 fn reverse_target_rpm(point: &AcceptancePoint, direction: usize) -> i32 {
     -establish_target_rpm(point, direction)
 }
@@ -338,9 +301,6 @@ fn remaining_headroom_counts(
     u32::try_from(remaining.max(0)).unwrap_or(u32::MAX)
 }
 
-/// Whether one probe cycle fits from `unwrapped_position`: the establish leg
-/// forward and, at worst, a full leg's travel back past the start on the
-/// reverse leg, which keeps cruising through its settle tail and analysis.
 fn cycle_fits(
     rate_counts_per_ms: u32,
     unwrapped_position: i32,
@@ -359,9 +319,6 @@ fn cycle_fits(
     })
 }
 
-/// Per-tick rate-Q value corresponding to a signed RPM target, in the same
-/// fixed-point convention as [`per_tick_rate_q`]
-/// (`VELOCITY_RATE_Q_SCALE`, counts per second scaled by 1000).
 fn target_rate_q(signed_target_rpm: i32, counts_per_rev: u32) -> i64 {
     let numerator = i128::from(signed_target_rpm)
         .saturating_mul(i128::from(counts_per_rev))
@@ -374,15 +331,12 @@ fn target_rate_q(signed_target_rpm: i32, counts_per_rev: u32) -> i64 {
     })
 }
 
-/// Settle-band half-width for `target_rate_q`, `|target| * PCT / 100`.
 fn band_q_for(target_rate_q: i64) -> i64 {
     let magnitude = i128::from(target_rate_q.unsigned_abs());
     let band = magnitude * i128::from(ROBUSTNESS_BAND_FRACTION_PCT) / 100;
     i64::try_from(band).unwrap_or(i64::MAX)
 }
 
-/// Reconvergence time expressed as parts-per-million of the forward settle time,
-/// guarding a zero denominator.
 fn reconvergence_ratio_ppm(reconvergence_time_us: u32, forward_settle_time_us: u32) -> u32 {
     if forward_settle_time_us == 0 {
         return 0;
@@ -392,7 +346,6 @@ fn reconvergence_ratio_ppm(reconvergence_time_us: u32, forward_settle_time_us: u
     u32::try_from(ratio).unwrap_or(u32::MAX)
 }
 
-/// Reconstruct the settled-rate confidence interval from a stationary suffix.
 fn settled_rate_interval_q(
     suffix: &crate::autotune::velocity_measurement::StationarySuffix,
 ) -> Result<(i64, i64), CommissionError> {
@@ -411,13 +364,6 @@ fn settled_rate_interval_q(
     ))
 }
 
-/// Grouped inputs for scoring one measured reversal leg. Bundles the borrowed
-/// accepted point and settled-tail suffix with the online-accumulator metrics so
-/// [`score_reversal_leg`] stays within the project's parameter budget.
-///
-/// `reconvergence_time_us` and `recovery_iae` come from the online accumulator
-/// (the ring cannot retain the full transient); the suffix supplies only the
-/// settled residual.
 struct LegScore<'a> {
     point: &'a AcceptancePoint,
     direction: usize,
@@ -429,10 +375,6 @@ struct LegScore<'a> {
     ring: &'a VelocityObservationRing,
 }
 
-/// Score one measured reversal leg into its raw per-cycle
-/// [`ReversalMetrics`] from the online band-entry/IAE measurement and the
-/// settled-tail suffix. The gate applies its thresholds to the per-direction
-/// median of these metrics at assembly, not to a single leg.
 fn score_reversal_leg(input: LegScore<'_>) -> Result<ReversalMetrics, CommissionError> {
     let LegScore {
         point,
@@ -466,8 +408,6 @@ fn score_reversal_leg(input: LegScore<'_>) -> Result<ReversalMetrics, Commission
     Ok(metrics)
 }
 
-/// Sample one observation tick into the capture ring, enforcing the shared
-/// gap and quarter-turn safety gates.
 async fn observe_tick<B: CommissioningBackend>(
     workspace: &mut RobustnessReversalWorkspace,
     safety: &mut OuterSafetyLimits,
@@ -518,10 +458,8 @@ async fn observe_tick<B: CommissioningBackend>(
 
 /// Advance the robustness-reversal phase by one cooperative step.
 ///
-/// `state`, `workspace`, and `session` are caller-owned; none are allocated
-/// here. The engine runs [`crate::commissioning::outer::check_outer_safety`]
-/// against `safety` between ticks, exactly as it does for every other outer
-/// phase; this stepper never performs that check itself.
+/// The caller owns `state`, `workspace`, and `session`; the engine runs outer safety
+/// checks between ticks.
 pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
     state: &mut RobustnessReversalState,
     workspace: &mut RobustnessReversalWorkspace,
@@ -553,10 +491,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     counts_per_rev,
                 );
             }
-            // Arm the shared outer-safety envelope check for the ticks that
-            // follow: `check_outer_safety` returns early while `torque_cap == 0`,
-            // so the dispatch only begins enforcing the envelope once the encoder
-            // baseline exists, exactly as the Integral sweep does in its own setup.
             safety.torque_cap = u16::from(backend.current_limit());
             let now_us = backend.elapsed_us();
             if safety.arm_safety_observation(now_us).is_err() {
@@ -720,8 +654,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 budget_deadline_us,
                 settle_deadline_us,
             );
-            // I2: forward_settle is the establish leg's actual band entry, not
-            // the window duration. Latch it as soon as band entry is measured.
             if let Some(entry) = workspace.capture.band_entry_us() {
                 session.pending_forward_settle_us = entry;
             }
@@ -754,8 +686,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     StepResult::ReadyNow
                 }
                 CaptureAdvance::Exhausted => {
-                    // I3: the establish leg never confirmed a settle within the
-                    // budget; retry from a fresh entry rather than proceed.
                     let velocity_offset = backend
                         .read_register(PID_VELOCITY_OFFSET)
                         .await
@@ -815,8 +745,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 }
             };
             match stationarity {
-                // I3: the establish leg must confirm a Usable settle before the
-                // reversal is measured against it.
                 StationarityResult::Usable(_) => {
                     *state = RobustnessReversalState::ReverseCommandTarget;
                     StepResult::ReadyNow
@@ -829,8 +757,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
         }
         RobustnessReversalState::ReverseCommandTarget => {
             let target = reverse_target_rpm(&session.point, session.direction);
-            // Deliberately no clear_velocity_error_sum here: the reversal is
-            // measured against the integrator state established by the entry leg.
             match begin_capture(session, workspace, safety, backend, target, false).await {
                 Ok((next_sample_us, budget_deadline_us)) => {
                     *state = RobustnessReversalState::ReverseCapture {
@@ -893,8 +819,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     StepResult::ReadyNow
                 }
                 CaptureAdvance::Exhausted => {
-                    // I1: no band entry within the full budget is the
-                    // inconclusive signal; retry from the establish leg.
                     defmt::info!(
                         "robustness_reversal reverse leg exhausted: dir={} slot={} read_us={} budget_deadline_us={} elapsed_us={} retries_used={}",
                         session.direction,
@@ -984,8 +908,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     StepResult::ReadyNow
                 }
                 StationarityResult::Excluded(_) => {
-                    // Settled tail not stationary: retry from the establish leg
-                    // so every attempt begins from a freshly confirmed settle.
                     retry_or_finalize_inconclusive(state, session);
                     StepResult::ReadyNow
                 }
@@ -1242,7 +1164,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
     }
 }
 
-/// Validated accepted proportional/integral gain pair for the point.
 fn accepted_gains(point: &AcceptancePoint) -> Result<(PidPGain, PidIGain), CommissionError> {
     let p = PidPGain::new(point.selected_p).map_err(|_| CommissionError::PidGainInvalid)?;
     let i = PidIGain::new(point.selected_i).map_err(|_| CommissionError::PidGainInvalid)?;
@@ -1250,11 +1171,6 @@ fn accepted_gains(point: &AcceptancePoint) -> Result<(PidPGain, PidIGain), Commi
 }
 
 fn planned_velocity_mrev_s(point: &AcceptancePoint) -> Result<u32, CommissionError> {
-    // Unreachable: amplitude_rpm is target_velocity_rpm.saturating_abs(),
-    // which is always non-negative and, since i32::MIN.saturating_abs()
-    // saturates to i32::MAX rather than staying negative, never exceeds
-    // i32::MAX either. u32::try_from on a value already in [0, i32::MAX]
-    // can never fail.
     let target =
         u32::try_from(amplitude_rpm(point)).map_err(|_| CommissionError::InvalidSchedule)?;
     let velocity = target
@@ -1292,10 +1208,6 @@ fn robustness_recovery_plan(
     .map_err(|_| CommissionError::RecoveryPlanFailed)
 }
 
-/// The return direction after an inconclusive or refused leg: back toward
-/// the origin from wherever the axis currently sits, not the direction the
-/// probe was establishing — an inconclusive reverse leg can leave the axis
-/// on either side of the origin.
 fn return_direction_from_offset(start_offset_counts: i32) -> VelocityDirection {
     if start_offset_counts > 0 {
         VelocityDirection::Reverse
@@ -1364,7 +1276,6 @@ fn enter_origin_recovery<B: CommissioningBackend>(
     }
 }
 
-/// Command a signed cruise target and open a fresh capture window.
 async fn begin_capture<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     workspace: &mut RobustnessReversalWorkspace,
@@ -1401,9 +1312,6 @@ async fn begin_capture<B: CommissioningBackend>(
         ));
     }
     if open_primitive {
-        // The establish entry opens the bounded primitive; a retry re-opens after
-        // the idempotent end. The reversal leg continues the open primitive and
-        // never re-opens it.
         safety.end_primitive();
         if safety.begin_primitive(baseline_us).is_err() {
             return Err(fault_terminal(
@@ -1450,7 +1358,6 @@ async fn begin_capture<B: CommissioningBackend>(
     Ok((next_sample_us, budget_deadline_us))
 }
 
-/// Outcome of folding one observation into a capture leg.
 enum CaptureAdvance {
     /// Keep sampling; carry the (possibly newly set) settle-tail deadline.
     Continue {
@@ -1463,13 +1370,6 @@ enum CaptureAdvance {
     Exhausted,
 }
 
-/// Fold one observation into the online accumulator and decide the next capture
-/// transition.
-///
-/// Band entry stops the reconvergence search but opens a bounded settle-tail
-/// window (`ROBUSTNESS_SETTLE_TAIL_US`) so the ring accumulates at least the
-/// shortest stationary suffix before analysis. Without band entry the leg runs
-/// to `budget_deadline_us` and reports [`CaptureAdvance::Exhausted`].
 fn advance_capture(
     accumulator: &mut ReversalOnlineAccumulator,
     read_us: u64,
@@ -1510,14 +1410,6 @@ fn retry_or_finalize_inconclusive(
     };
 }
 
-/// Fold one cycle record into the current direction's ledger, keep the
-/// session's slot cursor in lockstep with the ledger's, and store the cycle's
-/// wire triple when a slot fills. Returns the ledger's routing decision.
-///
-/// `wire` is `Some` for a conclusive cycle, `None` for an inconclusive one. A
-/// retried cycle (an inconclusive retry or the first tail grace) neither fills
-/// a slot nor advances the cursor; every other action advances past the current
-/// slot, filling it only for a conclusive record.
 fn record_cycle(
     session: &mut RobustnessReversalSession,
     record: CycleRecord,
@@ -1537,12 +1429,8 @@ fn record_cycle(
         matches!(record, CycleRecord::Conclusive(_)) && !matches!(action, LedgerAction::RetryTail);
     if filled {
         session.cycle_wires[direction][cursor] = wire;
-        // The mirrored cursor must land on the slot the ledger just filled.
         debug_assert!(session.ledgers[direction].cycles()[cursor].is_some());
     } else if matches!(action, LedgerAction::RetryTail) {
-        // The grace-retried tail never fills a slot; keep its triple so the
-        // evidence reply can still report its overshoot and forward-settle,
-        // which the ledger max cannot recover.
         session.displaced_tail_wires[direction] = wire;
     }
     if !matches!(
@@ -1554,12 +1442,6 @@ fn record_cycle(
     action
 }
 
-/// Route the state machine on a ledger action for a cycle that has already been
-/// recorded (and, for a slot-consuming action, already rested). `DirectionDone`
-/// advances to the next direction or to assembly; every other action re-enters
-/// the establish leg of the current direction. `RejectTail` latches the ledger
-/// rejection but keeps running so both directions complete their cycles -- the
-/// verdict is applied at assembly.
 fn route_action(
     state: &mut RobustnessReversalState,
     session: &mut RobustnessReversalSession,
@@ -1583,8 +1465,6 @@ fn route_action(
     }
 }
 
-/// Record a conclusive cycle and route immediately. The caller has already
-/// performed the between-cycles rest, so this does not enter another one.
 fn apply_cycle_record(
     state: &mut RobustnessReversalState,
     session: &mut RobustnessReversalSession,
@@ -1604,8 +1484,6 @@ fn apply_held_route(state: &mut RobustnessReversalState, session: &mut Robustnes
     }
 }
 
-/// Open a fresh zero-target rest capture window without re-commanding the
-/// target or re-entering the settle phase; the caller does that once per rest.
 async fn open_zero_window<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     workspace: &mut RobustnessReversalWorkspace,
@@ -1651,29 +1529,19 @@ async fn open_zero_window<B: CommissioningBackend>(
     Ok((next_sample_us, deadline_us))
 }
 
-/// Fixed 1 kHz capture cadence, in microseconds.
 const CAPTURE_PERIOD_US: u64 = VELOCITY_SWEEP_SAMPLE_PERIOD_US as u64;
 
-/// Bounded analysis deadline from a capture-completion timestamp.
 fn analysis_deadline(read_us: u64) -> Option<u64> {
     read_us.checked_add(u64::from(SETTLE_ANALYSIS_BUDGET_US))
 }
 
-/// Microseconds per millisecond, for the cycle's saturating ms conversion.
 const MICROS_PER_MILLI: u32 = 1_000;
 
-/// Convert a microsecond duration to milliseconds, rounding up, saturating
-/// into `u16`. Mirrors `robustness_cycles::to_ms_saturating`.
 fn to_ms_saturating(value_us: u32) -> u16 {
     let ms = value_us.div_ceil(MICROS_PER_MILLI);
     u16::try_from(ms).unwrap_or(u16::MAX)
 }
 
-/// Construct this run's plant-adaptive `(plant_rate_q, thresholds)` pair from
-/// the accepted point's identified settled-rate response, shared by the gate
-/// comparison ([`median_tripped`]) and terminal diagnostic reporting so the
-/// reported `plant_rate_q`/`iae_max_q` can never drift from what the gate
-/// actually compared against.
 fn constructed_thresholds(
     point: &AcceptancePoint,
     counts_per_rev: u32,
@@ -1686,15 +1554,6 @@ fn constructed_thresholds(
     )
 }
 
-/// Tripped-threshold bitmask for one direction's median metrics.
-///
-/// Builds a synthetic [`ReversalMetrics`] from the ledger's per-direction
-/// medians in the units [`tripped_mask`] expects (reconvergence and
-/// forward-settle in microseconds, IAE back in rate-Q microseconds from the
-/// ledger's rate-Q-seconds median) and gates it against thresholds built from
-/// the accepted point's own identified plant response
-/// ([`robustness_thresholds_for`]), rather than the fixed plant-independent
-/// const. An empty ledger yields all-zero medians, which trip nothing.
 fn median_tripped(ledger: &CycleLedger, point: &AcceptancePoint, counts_per_rev: u32) -> u8 {
     let median_metrics = ReversalMetrics {
         reconvergence_time_us: u32::from(ledger.median_reconvergence_ms()).saturating_mul(1_000),
@@ -1708,9 +1567,6 @@ fn median_tripped(ledger: &CycleLedger, point: &AcceptancePoint, counts_per_rev:
     tripped_mask(&median_metrics, &thresholds)
 }
 
-/// Reduce one direction's ledger into its schema-2 wire summary. `trip_count`
-/// marks whether the direction contributed a rejection (a median trip or a
-/// latched tail); `inconclusive` marks a direction below the valid-cycle floor.
 fn direction_summary(
     ledger: &CycleLedger,
     peak_overshoot_counts: u16,
@@ -1730,7 +1586,6 @@ fn direction_summary(
     }
 }
 
-/// Reduce both directions' ledgers into the schema-2 wire evidence.
 fn assembled_evidence(
     session: &RobustnessReversalSession,
     counts_per_rev: u32,
@@ -1771,12 +1626,6 @@ fn assembled_evidence(
     }
 }
 
-/// Build the successful/rejected/inconclusive terminal from the ledgers.
-///
-/// A latched tail rejection in either direction outranks every median trip and
-/// reports [`ROBUSTNESS_CAUSE_TAIL_REPEATED`]; otherwise a median trip in
-/// either direction rejects with its threshold cause (time > residual > IAE), a
-/// below-floor direction reports inconclusive, and a clean run passes.
 fn complete_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
@@ -1788,8 +1637,6 @@ fn complete_terminal<B: CommissioningBackend>(
     let (plant_rate_q, thresholds) = constructed_thresholds(&session.point, counts_per_rev);
     let inconclusive_a = !session.ledgers[0].meets_floor();
     let inconclusive_b = !session.ledgers[1].meets_floor();
-    // A latched tail rejection means exactly the second (or later) conclusive
-    // tail cycle occurred, so the tail count is at least two.
     debug_assert_eq!(
         session.ledgers[0].tail_rejected(),
         session.ledgers[0].tail_count() >= 2
@@ -1829,7 +1676,6 @@ fn complete_terminal<B: CommissioningBackend>(
     })
 }
 
-/// Build a `Failed` terminal stamping an explicit cause and safety fault.
 fn failed_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
@@ -1855,11 +1701,6 @@ fn failed_terminal<B: CommissioningBackend>(
     })
 }
 
-/// Build a `Failed` terminal. A populated `safety_fault` is a real envelope
-/// trip (`ROBUSTNESS_CAUSE_SAFETY_FAULT`, and `internal_cause` is ignored);
-/// `None` reports `internal_cause`, the caller's specific non-envelope fault
-/// classification, so the host can disambiguate internal faults instead of
-/// seeing one generic bucket.
 fn fault_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
@@ -1875,10 +1716,6 @@ fn fault_terminal<B: CommissioningBackend>(
     failed_terminal(session, backend, cause, safety_fault, counts_per_rev)
 }
 
-/// Build a `Failed` terminal for the between-legs rest that was never confirmed,
-/// even after the one bounded re-opened rest window. Distinct from the
-/// dedicated internal-fault causes so the host can surface this specific,
-/// operator-actionable condition.
 fn rest_not_confirmed_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
@@ -1907,7 +1744,6 @@ fn origin_not_recovered_terminal<B: CommissioningBackend>(
     )
 }
 
-/// Resolve a per-tick fault into the owning `Failed` terminal.
 fn tick_fault_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
@@ -1933,11 +1769,8 @@ fn tick_fault_terminal<B: CommissioningBackend>(
 
 /// Build a `Failed` robustness terminal for a dispatch-level outer-safety abort.
 ///
-/// Mirrors `integral_fault_terminal`: it reconstructs the terminal from the live
-/// phase session without a backend, so the shared outer dispatch can turn a
-/// pre-tick envelope trip into the phase-appropriate robustness terminal instead
-/// of a generic `OuterFailed`. `run_completed_us` mirrors `run_started_us`
-/// because the abort preempts the phase before it records its own completion.
+/// Reconstructs the terminal from the live session without a backend, so outer dispatch can
+/// report a pre-tick envelope trip as a robustness terminal.
 pub(crate) fn robustness_reversal_fault_terminal(
     phase: &crate::commissioning::outer::OuterPhase,
     error: CommissionError,
@@ -1979,15 +1812,9 @@ pub(crate) fn robustness_reversal_fault_terminal(
 
 /// Assemble the deployable outer tune for a passed reversal-robustness gate.
 ///
-/// Joins the robustness-selected velocity gains from `terminal` with the entry
-/// snapshot's position gains, velocity limit, and biquad cutoffs, and fills the
-/// firmware-authored provenance from the run's diagnostic evidence. The
-/// mechanical-identification fields stay zero: the breakaway-seeded path that
-/// reaches this gate never runs mechanical identification. A passed gate is
-/// always reported as `Accepted`: the retained point's operating-point
-/// qualifiers are measurement/capability provenance surfaced in the
-/// acceptance evidence, not a status verdict, so they never gate the tune
-/// status here.
+/// Joins the terminal robustness-selected velocity gains with the entry snapshot position
+/// gains, velocity limit, and biquad cutoffs. Mechanical-identification fields stay zero.
+/// A passed gate is always reported as `Accepted`.
 pub(crate) fn robustness_pass_outer_result(
     terminal: &RobustnessReversalTerminal,
     entry: &OuterGainRollbackSnapshot,
@@ -1996,9 +1823,6 @@ pub(crate) fn robustness_pass_outer_result(
     let status = CommissionStatus::Accepted;
     let provenance = TuneProvenance {
         probed_velocity_mrev_s: terminal.target_velocity_rpm.unsigned_abs() * 1_000 / 60,
-        // Settled-rate-Q reduction of the accepted point's response intervals,
-        // already computed as the gate's plant rate; the same encoder-rate-Q
-        // domain the provenance field documents. Always non-negative.
         d_eq_q: i32::try_from(terminal.plant_rate_q).unwrap_or(i32::MAX),
         confidence_q: point.confidence_q,
         band_lower_percent: CONFIRMATION_BAND_LOWER_PERCENT,
@@ -2085,8 +1909,6 @@ mod tests {
         backend
     }
 
-    /// Encoder counts/rev used to build each test session's `iae_max_q`,
-    /// matching `test_backend()`'s configured value.
     const COUNTS_PER_REV: u32 = 4_000;
 
     fn test_point() -> AcceptancePoint {
@@ -2109,7 +1931,6 @@ mod tests {
         }
     }
 
-    /// Which capture leg is scheduling the current sample.
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum CapturePhase {
         Establish,
@@ -2222,9 +2043,6 @@ mod tests {
                         .unwrap_or(&0) as i32;
                     let phase = phase.expect("At is scheduled only from a capture state");
                     encoder_count += motion(phase, leg_tick, target);
-                    // Model the TMC4671 decoder register, which wraps within
-                    // [0, counts_per_rev); feeding raw signed counts would alias
-                    // against EncoderDomain's u32 modulo at the 2^32 boundary.
                     let raw = encoder_count.rem_euclid(4_000);
                     parts.backend.set_abn_decoder_count(raw);
                     leg_tick += 1;
@@ -2284,7 +2102,7 @@ mod tests {
     #[test]
     fn robustness_recovery_plan_rejects_missing_return_lower_rate() {
         let mut point = test_point();
-        point.selected_response_intervals_q = [[0, 0], [0, 0]]; // both directions None
+        point.selected_response_intervals_q = [[0, 0], [0, 0]];
         let safety = test_safety();
 
         let error = robustness_recovery_plan(&point, &safety).unwrap_err();
@@ -2295,10 +2113,6 @@ mod tests {
     #[test]
     fn robustness_recovery_plan_reports_recovery_plan_failed_on_planner_rejection() {
         let mut safety = test_safety();
-        // Force `plan_rung_origin_recovery`'s own `InvalidRequest` rejection
-        // (reserve must be strictly less than the stroke budget) while both
-        // directions still resolve a settled-rate lower bound, so the error
-        // observed here is only the discarded planner failure at this site.
         safety.budget.settle_travel_reserve_mrev = safety.budget.max_stroke_travel_mrev;
 
         let result = robustness_recovery_plan(&test_point(), &safety);
@@ -2316,8 +2130,6 @@ mod tests {
         assert_eq!(result, Err(CommissionError::MissingCaptureState));
     }
 
-    /// A session past the missing-capture-state gate, with a recovery plan
-    /// already computed from a point whose return-rate table resolves.
     fn test_session_with_recovery_plan() -> RobustnessReversalSession {
         let point = recovery_point();
         let safety = test_safety();
@@ -2338,9 +2150,6 @@ mod tests {
         assert_eq!(error, CommissionError::MissingRateTableEntry);
     }
 
-    /// Drive a run where establish and zero legs behave, and the measured
-    /// reversal legs either settle cleanly (`noisy_reversal == false`) or jitter
-    /// so wildly they never enter the band (`true`).
     fn drive(
         point: AcceptancePoint,
         noisy_reversal: bool,
@@ -2411,9 +2220,6 @@ mod tests {
         }
     }
 
-    /// The reverse leg's band is judged the same way as the establish leg's:
-    /// per-tick ripple faster than the meter filter must not keep a
-    /// reconverged reversal from ever entering the band.
     #[test]
     fn reverse_leg_settles_through_per_tick_ripple_around_target() {
         let mut high = false;
@@ -2456,9 +2262,6 @@ mod tests {
         }
     }
 
-    /// A direction that never recorded any leg (a fault preempted the run
-    /// before either leg was measured) must report `valid_cycles = 0`, not
-    /// fabricate a cycle that never ran.
     #[test]
     fn never_ran_direction_reports_zero_valid_cycles() {
         let session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
@@ -2476,9 +2279,6 @@ mod tests {
         assert_eq!(evidence.iae_medians_qs, [0, 0]);
     }
 
-    /// The reversal is a full sign flip, twice the step the velocity envelope
-    /// was sized for, so the probe legs run below the campaign amplitude to
-    /// keep the reversal's overshoot under the machine ceiling.
     #[test]
     fn probe_legs_run_at_the_leg_fraction_of_the_amplitude() {
         let point = test_point();
@@ -2521,15 +2321,8 @@ mod tests {
         assert!(!cycle_fits(12, window as i32 + 5, window, window, 0));
     }
 
-    /// A recorded cycle with extreme values must saturate, not wrap or panic,
-    /// through both the ms conversion and the i64 -> i32 conversion the
-    /// ledger's median accessors apply when reducing raw cycles into the
-    /// schema-2 wire evidence. `iae_max_q` is set to `i64::MAX` so the
-    /// extreme `recovery_iae_q` values themselves are never classed as tail
-    /// (which would displace a cycle from a slot instead of filling one).
     #[test]
     fn assembled_evidence_saturates_extreme_cycle_values() {
-        // 200 s = 200_000 ms, well past u16::MAX (65_535) milliseconds.
         const HUGE_DURATION_US: u32 = 200_000_000;
 
         let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
@@ -2564,14 +2357,8 @@ mod tests {
         assert_eq!(evidence.iae_medians_qs, [i32::MAX, i32::MIN]);
     }
 
-    /// The load-bearing invariant: the integrator is cleared exactly once per
-    /// establish-cruise leg and never on the measured reversal leg. A stray
-    /// clear on the reversal would silently re-run identification and make the
-    /// gate vacuous.
     #[test]
     fn integrator_clears_only_on_establish_never_on_reversal() {
-        // Clean run: one establish clear per cycle, no retries -> one clear per
-        // cycle across both directions.
         let (_terminal, backend, _session) = drive(test_point(), false);
         assert_eq!(
             backend.pid_velocity_error_sum_clears,
@@ -2579,8 +2366,6 @@ mod tests {
             "clean run clears the integrator once per establish leg"
         );
 
-        // The last commanded nonzero target is the final direction's reversal
-        // target; no integrator clear may appear between it and the terminal.
         let clear_addr = PID_ERROR_PID_VELOCITY_ERROR_SUM.data.addr();
         let target_addr = PID_VELOCITY_TARGET.addr();
         let last_reversal = backend
@@ -2598,10 +2383,6 @@ mod tests {
             "no integrator clear may follow the measured reversal target write"
         );
 
-        // Noisy run: every cycle slot is attempted at least once and the two
-        // inconclusive retries add two more attempts, so each direction runs
-        // ROBUSTNESS_CYCLES_PER_DIRECTION + ROBUSTNESS_MAX_RETRIES establish
-        // legs -- still zero clears on any reversal leg.
         let (_terminal, noisy_backend, _noisy_session) = drive(test_point(), true);
         let attempts_per_direction =
             ROBUSTNESS_CYCLES_PER_DIRECTION + usize::from(ROBUSTNESS_MAX_RETRIES);
@@ -2612,8 +2393,6 @@ mod tests {
         );
     }
 
-    /// Every establish leg zeroes PID_VELOCITY_OFFSET; clear_velocity_error_sum
-    /// clears only the velocity error sum, so a stale offset would bias the leg.
     #[test]
     fn establish_leg_clears_the_velocity_offset() {
         let (_terminal, backend, _session) = drive(test_point(), false);
@@ -2632,9 +2411,6 @@ mod tests {
         );
     }
 
-    // This test checks a slot the phase never receives (the session holds a
-    // copy), so it is tautological; the real guarantee is the
-    // `&IntegralRetentionSlot` shared-ref signatures on the dispatch entry points.
     #[test]
     fn run_leaves_acceptance_matrix_progress_untouched() {
         for (noisy, expected) in [(false, false), (true, true)] {
@@ -2649,8 +2425,6 @@ mod tests {
                 expected
             );
 
-            // The phase holds only a copy of the point; the candidate slot's
-            // fixed-gain-amplitude progress is never advanced or closed.
             assert_eq!(
                 slot.acceptance_point().expect("point retained").progress,
                 before
@@ -2659,11 +2433,6 @@ mod tests {
         }
     }
 
-    /// I1: a slow-but-clean reconvergence -- band entry between `t_max_us`
-    /// and the budget-minus-dwell censoring point -- now yields a real
-    /// `TRIP_TIME` + `Rejected` verdict. Under the old fixed 100 ms window
-    /// this was physically unreachable: the window ended before band entry,
-    /// aliasing the leg to Inconclusive.
     #[test]
     fn slow_reconvergence_trips_time_and_rejects() {
         let (terminal, _backend, _session) = drive_scripted(test_point(), |phase, tick, target| {
@@ -2671,8 +2440,6 @@ mod tests {
                 return 0;
             }
             match phase {
-                // Stall past t_max but short of the budget-minus-dwell censoring
-                // point, then converge in-band.
                 CapturePhase::Reverse if tick < 620 => 0,
                 _ => target.signum() * STEADY_DELTA,
             }
@@ -2695,35 +2462,24 @@ mod tests {
         }
     }
 
-    /// I5 anti-aliasing, end to end: a run where one direction TRIPS a
-    /// threshold and the other is INCONCLUSIVE must reject with the trip cause,
-    /// never fold the reject and inconclusive verdicts into one another. This
-    /// is the exact mixed regime the hardware characterization produces.
     #[test]
     fn mixed_trip_and_inconclusive_yields_rejected_with_trip_cause() {
         let mut jitter_high = false;
         let (terminal, _backend, _session) =
-            drive_scripted(test_point(), move |phase, tick, target| {
-                match phase {
-                    // Direction 0 reversal (negative target): stall past t_max but
-                    // short of the budget-minus-dwell censoring point, then
-                    // converge in band -> a real TRIP_TIME rejection.
-                    CapturePhase::Reverse if target < 0 => {
-                        if tick < 620 {
-                            0
-                        } else {
-                            target.signum() * STEADY_DELTA
-                        }
+            drive_scripted(test_point(), move |phase, tick, target| match phase {
+                CapturePhase::Reverse if target < 0 => {
+                    if tick < 620 {
+                        0
+                    } else {
+                        target.signum() * STEADY_DELTA
                     }
-                    // Direction 1 reversal (positive target): jitter so wildly it
-                    // never enters the band -> inconclusive after the retry budget.
-                    CapturePhase::Reverse if target > 0 => {
-                        jitter_high = !jitter_high;
-                        if jitter_high { 300 } else { -300 }
-                    }
-                    _ if target != 0 => target.signum() * STEADY_DELTA,
-                    _ => 0,
                 }
+                CapturePhase::Reverse if target > 0 => {
+                    jitter_high = !jitter_high;
+                    if jitter_high { 300 } else { -300 }
+                }
+                _ if target != 0 => target.signum() * STEADY_DELTA,
+                _ => 0,
             });
         assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
         assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED);
@@ -2738,10 +2494,6 @@ mod tests {
         );
     }
 
-    /// I3: an establish leg whose settled tail fails stationarity (Excluded)
-    /// must retry from a fresh entry, counting against the retry budget, rather
-    /// than silently proceeding to measure the reversal against an unconfirmed
-    /// settle.
     #[test]
     fn excluded_establish_settle_retries_and_counts() {
         let (terminal, _backend, _session) = drive_scripted(test_point(), |phase, tick, target| {
@@ -2750,8 +2502,6 @@ mod tests {
             }
             match phase {
                 CapturePhase::Establish => {
-                    // In-band long enough to reach band entry, then a clear drift
-                    // so the settled tail resolves a slope and is Excluded.
                     if tick < 80 {
                         target.signum() * STEADY_DELTA
                     } else {
@@ -2771,33 +2521,24 @@ mod tests {
         }
     }
 
-    /// I4: a rejected between-legs rest re-opens exactly one fresh bounded rest
-    /// window; if that window confirms, the run proceeds normally.
     #[test]
     fn rejected_between_legs_rest_reopens_one_window_then_proceeds() {
         let mut zero_windows = 0u32;
         let (terminal, _backend, _session) =
-            drive_scripted(test_point(), move |phase, tick, target| {
-                match phase {
-                    CapturePhase::Zero => {
-                        if tick == 0 {
-                            zero_windows += 1;
-                        }
-                        // Reject only the first rest window with sustained motion;
-                        // the re-opened window is at rest and confirms.
-                        if zero_windows == 1 { 8 } else { 0 }
+            drive_scripted(test_point(), move |phase, tick, target| match phase {
+                CapturePhase::Zero => {
+                    if tick == 0 {
+                        zero_windows += 1;
                     }
-                    _ if target != 0 => target.signum() * STEADY_DELTA,
-                    _ => 0,
+                    if zero_windows == 1 { 8 } else { 0 }
                 }
+                _ if target != 0 => target.signum() * STEADY_DELTA,
+                _ => 0,
             });
         assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
         assert!(terminal.safety_fault.is_none());
     }
 
-    /// I4: a rest that is still rejected after the one bounded re-open faults
-    /// the run with the dedicated rest-not-confirmed cause rather than folding
-    /// into the generic internal-fault bucket or silently proceeding.
     #[test]
     fn rest_rejected_beyond_retry_faults() {
         let (terminal, _backend, _session) =
@@ -2811,7 +2552,6 @@ mod tests {
         assert!(terminal.safety_fault.is_none());
     }
 
-    /// Median of a fully filled direction's five per-cycle reconvergence wires.
     fn wire_reconvergence_median(
         cycles: &[Option<CycleWire>; ROBUSTNESS_CYCLES_PER_DIRECTION],
     ) -> u16 {
@@ -2823,9 +2563,6 @@ mod tests {
         values[ROBUSTNESS_CYCLES_PER_DIRECTION / 2]
     }
 
-    /// K=5 clean cycles per direction, each with a distinct reconvergence time,
-    /// complete with the per-direction median reported on the summary matching
-    /// the median of the cycle's own wire triples.
     #[test]
     fn five_clean_cycles_per_direction_complete_with_median_summaries() {
         const STALLS_MS: [u32; ROBUSTNESS_CYCLES_PER_DIRECTION] = [60, 110, 80, 130, 70];
@@ -2854,7 +2591,6 @@ mod tests {
             assert_eq!(summary.valid_cycles, ROBUSTNESS_CYCLES_PER_DIRECTION as u8);
             let expected = wire_reconvergence_median(&terminal.evidence.cycles[index]);
             assert_eq!(summary.median_reconvergence_ms, expected);
-            // The five scripted stalls are distinct, so their wires are too.
             let mut sorted = [0u16; ROBUSTNESS_CYCLES_PER_DIRECTION];
             for (slot, cycle) in terminal.evidence.cycles[index].iter().enumerate() {
                 sorted[slot] = cycle.expect("filled cycle").reconvergence_ms;
@@ -2866,8 +2602,6 @@ mod tests {
         }
     }
 
-    /// A per-direction reconvergence median above `t_max` rejects on the time
-    /// cause even when individual cycles are fast.
     #[test]
     fn slow_median_rejects_with_time_cause() {
         const STALLS_MS: [u32; ROBUSTNESS_CYCLES_PER_DIRECTION] = [580, 615, 605, 595, 610];
@@ -2902,9 +2636,6 @@ mod tests {
         }
     }
 
-    /// An accepted point whose identified plant response is well above the
-    /// near-zero/degenerate cut-in, so its derived `iae_max_q` actually scales
-    /// with the coefficient rather than falling open to the retired seed.
     fn plant_identified_point() -> AcceptancePoint {
         AcceptancePoint {
             selected_response_intervals_q: [[50_000, 60_000], [-60_000, -50_000]],
@@ -2912,9 +2643,6 @@ mod tests {
         }
     }
 
-    /// Build a `ReversalMetrics` with a fixed reconvergence time and residual
-    /// (both well under their carried-over seeds) and a caller-chosen IAE, so
-    /// IAE tests can reason about the IAE gate alone.
     fn iae_metrics(recovery_iae_q: i64) -> ReversalMetrics {
         ReversalMetrics {
             reconvergence_time_us: 50_000,
@@ -2926,11 +2654,6 @@ mod tests {
         }
     }
 
-    /// Fill both directions' ledgers with `ROBUSTNESS_CYCLES_PER_DIRECTION`
-    /// identical conclusive cycles at the given IAE and drive the run to its
-    /// terminal via `complete_terminal`, mirroring the tail-grace tests' direct
-    /// ledger construction (a conclusive cycle's IAE cannot be driven through
-    /// real capture motion without also entangling reconvergence timing).
     fn complete_with_uniform_iae(
         point: AcceptancePoint,
         recovery_iae_q: i64,
@@ -2950,16 +2673,8 @@ mod tests {
         terminal
     }
 
-    /// A median `recovery_iae_q` above the accepted point's plant-derived
-    /// `iae_max_q` can only occur if at least 3 of 5 cycles individually
-    /// exceed `iae_max_q`; the second such cycle latches a tail rejection
-    /// before a third could ever be recorded, so a genuinely IAE-exceeding
-    /// median always surfaces as `ROBUSTNESS_CAUSE_TAIL_REPEATED`, not a
-    /// median-only IAE trip.
     #[test]
     fn median_iae_exceeding_plant_derived_bound_trips_and_rejects() {
-        // plant_rate_q 60_000, non-degenerate: iae_max_q = 4_350_000_000;
-        // 5_000_000_000 exceeds it.
         let terminal = complete_with_uniform_iae(plant_identified_point(), 5_000_000_000);
         assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
         assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_TAIL_REPEATED);
@@ -2969,14 +2684,8 @@ mod tests {
         }
     }
 
-    /// The same plant-derived bound as
-    /// [`median_iae_exceeding_plant_derived_bound_trips_and_rejects`], but with
-    /// a median `recovery_iae_q` under it: the run completes cleanly, proving
-    /// the adaptive threshold does not reject on IAE alone.
     #[test]
     fn median_iae_within_plant_derived_bound_completes() {
-        // Same plant as the trip case (iae_max_q = 4_350_000_000);
-        // 4_000_000_000 stays under it.
         let terminal = complete_with_uniform_iae(plant_identified_point(), 4_000_000_000);
         assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
         assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_PASS);
@@ -2986,8 +2695,6 @@ mod tests {
         }
     }
 
-    /// The passed gate's tune provenance must report the accepted point's
-    /// held-out confirmation confidence and band position, not stubs.
     #[test]
     fn robustness_pass_provenance_carries_confidence_and_band_position() {
         let point = AcceptancePoint {
@@ -3005,22 +2712,13 @@ mod tests {
         assert_eq!(result.provenance.band_position_q, 20_000);
     }
 
-    /// `test_point()`'s degenerate plant response gives `iae_max_q =
-    /// 23_466_666_000_000` (the seed bound, see `ROBUSTNESS_IAE_SEED_MAX_Q`).
-    /// `NON_TAIL_IAE_Q` stays far under it; `TAIL_IAE_Q` sits far over it.
     const NON_TAIL_IAE_Q: i64 = 100_000;
     const TAIL_IAE_Q: i64 = 25_000_000_000_000;
 
-    /// Build a `ReversalMetrics` with a given reconvergence time in ms and a
-    /// non-tail `recovery_iae_q`; the other fields are fixed so tail/median
-    /// tests can reason about reconvergence alone.
     fn cycle_metrics(reconvergence_ms: u32) -> ReversalMetrics {
         cycle_metrics_with_iae(reconvergence_ms, NON_TAIL_IAE_Q)
     }
 
-    /// Build a `ReversalMetrics` with a given reconvergence time in ms and a
-    /// caller-chosen `recovery_iae_q`, so tail tests can drive `is_tail()`
-    /// directly.
     fn cycle_metrics_with_iae(reconvergence_ms: u32, recovery_iae_q: i64) -> ReversalMetrics {
         ReversalMetrics {
             reconvergence_time_us: reconvergence_ms.saturating_mul(1_000),
@@ -3032,13 +2730,6 @@ mod tests {
         }
     }
 
-    /// A single tail cycle spends the one-shot grace, the fast replacement fills
-    /// the slot, and the run still passes; the displaced tail still shows in max.
-    ///
-    /// A conclusive tail cycle's `recovery_iae_q` exceeds the accepted point's
-    /// `iae_max_q`, which real capture motion would only produce on a genuine
-    /// outlier -- the ledger is driven directly to exercise the tail grace and
-    /// the assembly gate.
     #[test]
     fn single_tail_cycle_retries_then_passes() {
         const TAIL_MS: u32 = 900;
@@ -3080,20 +2771,12 @@ mod tests {
         }
     }
 
-    /// A second conclusive tail cycle latches the tail rejection with the
-    /// dedicated cause, and the run continues so both directions still measure
-    /// their cycles (the latch is applied at assembly, not mid-run). Driven at
-    /// the ledger for the same reason as
-    /// [`single_tail_cycle_retries_then_passes`]: a genuine `recovery_iae_q`
-    /// outlier above `iae_max_q`.
     #[test]
     fn second_tail_cycle_rejects_with_tail_cause_and_both_directions_measured() {
         const TAIL_MS: u32 = 900;
         const FAST_MS: u32 = 60;
         let backend = test_backend();
         let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
-        // Direction 0: two tail cycles latch the rejection; the slot fills on the
-        // second tail and the remaining four cycles fill normally.
         assert_eq!(
             session.ledgers[0].record(CycleRecord::Conclusive(cycle_metrics_with_iae(
                 TAIL_MS, TAIL_IAE_Q,
@@ -3109,7 +2792,6 @@ mod tests {
         for _ in 0..(ROBUSTNESS_CYCLES_PER_DIRECTION - 1) {
             session.ledgers[0].record(CycleRecord::Conclusive(cycle_metrics(FAST_MS)));
         }
-        // Direction 1: fully clean.
         for _ in 0..ROBUSTNESS_CYCLES_PER_DIRECTION {
             session.ledgers[1].record(CycleRecord::Conclusive(cycle_metrics(FAST_MS)));
         }
@@ -3129,13 +2811,6 @@ mod tests {
         }
     }
 
-    /// The tail arms of `apply_cycle_record` itself: `RetryTail` skips the wire
-    /// and holds the cursor, `RejectTail` fills the slot, advances the cursor,
-    /// latches the rejection, and still routes back into the same direction so
-    /// the run does not short-circuit. This is the cause-10 routing glue; a
-    /// tail is driven directly at the record boundary via a caller-chosen
-    /// `recovery_iae_q` above the session's `iae_max_q`, rather than through
-    /// real capture motion.
     #[test]
     fn apply_cycle_record_tail_arms_skip_grace_then_latch_and_continue() {
         const TAIL_MS: u32 = 900;
@@ -3151,8 +2826,6 @@ mod tests {
         assert_eq!(session.direction, 0);
         assert_eq!(session.cycle_cursor[0], 0);
 
-        // First tail -> RetryTail arm: the displaced tail is not written to a
-        // slot, the cursor stays put, and the ledger keeps it only for max.
         apply_cycle_record(
             &mut state,
             &mut session,
@@ -3178,9 +2851,6 @@ mod tests {
             "the ledger still carries the displaced tail in max"
         );
 
-        // Second tail -> RejectTail arm: fills slot 0, advances the cursor by
-        // one (mirroring the ledger), latches the rejection, and still routes
-        // back into direction 0 rather than short-circuiting to Assemble.
         apply_cycle_record(
             &mut state,
             &mut session,
@@ -3204,7 +2874,6 @@ mod tests {
             "RejectTail files the second tail's wire"
         );
 
-        // The mirrored cursor tracks the ledger's own slot fills exactly.
         assert_eq!(session.ledgers[0].valid_cycles(), 1);
         for slot in 0..ROBUSTNESS_CYCLES_PER_DIRECTION {
             assert_eq!(
@@ -3214,8 +2883,6 @@ mod tests {
             );
         }
 
-        // The assembled evidence carries the tail count and the displaced
-        // tail's full triple for the reply, not just its reconvergence via max.
         let evidence = assembled_evidence(&session, test_safety().counts_per_rev());
         assert_eq!(
             evidence.tail_counts[0], 2,
@@ -3224,34 +2891,26 @@ mod tests {
         assert_eq!(evidence.displaced_tails[0], Some(tail_wire));
     }
 
-    /// A direction that exhausts its inconclusive budget and leaves two slots
-    /// unfilled falls below the valid-cycle floor and reports inconclusive.
     #[test]
     fn floor_breach_reports_inconclusive() {
         let mut attempt = [0usize; DIRECTION_COUNT];
         let mut jitter = false;
         let (terminal, _backend, _session) =
-            drive_scripted(test_point(), move |phase, tick, target| {
-                match phase {
-                    CapturePhase::Reverse => {
-                        let dir = if target < 0 { 0 } else { 1 };
-                        if tick == 0 {
-                            attempt[dir] += 1;
-                        }
-                        // The first six reverse legs never enter the band: the
-                        // first five spend the per-direction retry budget on slot
-                        // 0, the sixth leaves slot 1 unfilled, leaving three valid
-                        // cycles below the floor.
-                        if attempt[dir] <= 6 {
-                            jitter = !jitter;
-                            if jitter { 300 } else { -300 }
-                        } else {
-                            target.signum() * STEADY_DELTA
-                        }
+            drive_scripted(test_point(), move |phase, tick, target| match phase {
+                CapturePhase::Reverse => {
+                    let dir = if target < 0 { 0 } else { 1 };
+                    if tick == 0 {
+                        attempt[dir] += 1;
                     }
-                    _ if target != 0 => target.signum() * STEADY_DELTA,
-                    _ => 0,
+                    if attempt[dir] <= 6 {
+                        jitter = !jitter;
+                        if jitter { 300 } else { -300 }
+                    } else {
+                        target.signum() * STEADY_DELTA
+                    }
                 }
+                _ if target != 0 => target.signum() * STEADY_DELTA,
+                _ => 0,
             });
 
         assert_eq!(terminal.outcome, RobustnessOutcome::Inconclusive);
@@ -3262,31 +2921,22 @@ mod tests {
         }
     }
 
-    /// A safety-envelope violation mid-cycle still fails with the safety cause
-    /// and a populated safety-fault context.
     #[test]
     fn safety_fault_mid_cycle_still_fails_with_envelope_cause() {
         use crate::commission_dispatch::robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT;
 
-        let (terminal, _backend, _session) = drive_scripted(test_point(), |phase, tick, target| {
-            match phase {
-                // A single quarter-turn jump on the first reverse tick trips the
-                // shared outer-safety envelope.
+        let (terminal, _backend, _session) =
+            drive_scripted(test_point(), |phase, tick, target| match phase {
                 CapturePhase::Reverse if tick == 0 => 1_500,
                 _ if target != 0 => target.signum() * STEADY_DELTA,
                 _ => 0,
-            }
-        });
+            });
 
         assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
         assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_SAFETY_FAULT);
         assert!(terminal.safety_fault.is_some());
     }
 
-    /// Distinct per-cycle residual and recovery-IAE values reduce to the correct
-    /// medians in the assembled evidence. The IAE case is even-count and chosen
-    /// so converting each cycle to rate-Q seconds *before* the median (the
-    /// ledger's order) differs from converting the median afterward.
     #[test]
     fn assembled_evidence_medians_convert_iae_before_median() {
         let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
@@ -3306,12 +2956,8 @@ mod tests {
 
         let evidence = assembled_evidence(&session, test_safety().counts_per_rev());
 
-        // Residual median (rate-Q, no unit change): median of [10,20,30,40] = 25.
         assert_eq!(evidence.residual_medians_q[0], 25);
-        // IAE median converting each to seconds first: floors [1,2,3,4] -> 2,
-        // not median-then-convert (3M us -> 3).
         assert_eq!(evidence.iae_medians_qs[0], 2);
-        // Direction 1 never ran: all-zero medians.
         assert_eq!(evidence.residual_medians_q[1], 0);
         assert_eq!(evidence.iae_medians_qs[1], 0);
     }
@@ -3335,21 +2981,9 @@ mod tests {
         let evidence = assembled_evidence(&session, test_safety().counts_per_rev());
 
         assert_eq!(evidence.dac_rms_medians_q[0], 250);
-        // Direction 1 never ran: all-zero median.
         assert_eq!(evidence.dac_rms_medians_q[1], 0);
     }
 
-    /// The call site reads `reversal_overshoot_counts()` directly -- no stroke
-    /// or window reference enters into it at all (superseding
-    /// `overshoot_reference_is_the_stroke_not_the_reopened_window`, whose
-    /// stroke-relative premise this redesign removes). A reverse leg that
-    /// genuinely runs ahead of its commanded target rate for a few ticks, even
-    /// if it settles back onto the target rate before band entry, must reach
-    /// the terminal's per-direction wire summary as a nonzero
-    /// `overshoot_peak_counts` -- proving the new accumulator value actually
-    /// propagates through `PendingCycle`/`session.peak_overshoot_counts` to the
-    /// terminal, not just that the accumulator computes it correctly in
-    /// isolation (the `robustness_metrics` overshoot tests already cover that).
     #[test]
     fn overshoot_reaches_the_terminal_when_a_reverse_leg_outpaces_its_target() {
         let (terminal, _backend, session) =
@@ -3358,9 +2992,6 @@ mod tests {
                     return 0;
                 }
                 match phase {
-                    // 2x steady rate for the first 3 ticks of every reverse leg,
-                    // well under quarter_turn_fault_counts (1_000 at this test's
-                    // 4_000 counts/rev) so it never trips the safety fault.
                     CapturePhase::Reverse if leg_tick < 3 => target.signum() * STEADY_DELTA * 2,
                     _ => target.signum() * STEADY_DELTA,
                 }
@@ -3558,10 +3189,6 @@ mod tests {
         assert_eq!(nonzero_target_writes(&parts.backend), 0);
     }
 
-    /// The reverse leg runs back through the origin and, at worst, a full
-    /// leg's travel beyond the establish start, so a cycle whose establish leg
-    /// fits can still trip the absolute window on the far side. The
-    /// precondition must size the whole cycle and route to origin recovery.
     #[test]
     fn precondition_refuses_a_cycle_whose_reverse_leg_would_not_fit() {
         for direction in 0..DIRECTION_COUNT {
@@ -3667,11 +3294,6 @@ mod tests {
         );
     }
 
-    /// Conclusive cycles drift the axis without recovering origin, and the two
-    /// absolute windows are not symmetric, so the axis can sit past the
-    /// smaller window on the larger side when a direction switch needs a
-    /// return. The recovery must judge its start against the window on the
-    /// side it occupies.
     #[test]
     fn origin_recovery_starts_from_drift_beyond_the_smaller_absolute_window() {
         let mut parts = RunParts::new(recovery_point());
@@ -4106,8 +3728,6 @@ mod tests {
         assert_eq!(error, CommissionError::PidGainInvalid);
     }
 
-    /// A target whose *1000 conversion overflows u32 is an arithmetic
-    /// fault, not the generic schedule fault.
     #[test]
     fn planned_velocity_mrev_s_rejects_overflowing_conversion() {
         let mut point = test_point();

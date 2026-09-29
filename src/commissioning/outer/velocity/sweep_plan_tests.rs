@@ -118,9 +118,6 @@ fn combined_target_execution_stays_inside_the_declared_travel_cap() {
         i64::from(plan.target_velocity_rpm.raw()) * 4_000 * 1_000 / 60,
         17_533_333
     );
-    // 263 is the correct floor, not an off-by-one: 263 * 512 = 134_656 is under the
-    // travel-cap numerator (max_stroke_travel_mrev - settle_travel_reserve_mrev) * 60
-    // = 2_250 * 60 = 135_000, while 264 * 512 = 135_168 is over it.
 }
 
 #[test]
@@ -301,9 +298,6 @@ fn ceiling_binding_source_reports_current_limit_when_it_binds() {
 
 #[test]
 fn ceiling_binding_source_reports_representability_clamp_when_it_binds() {
-    // A tiny target and a near-maximal torque limit push the current-limit
-    // candidate (256 * usable / target) far past PidPGain::MAX, so the
-    // representability clamp -- not the current limit -- binds p_top.
     let (p_start, p_top, _usable, ceiling_binding_source) =
         current_gain_span(TmcMechanicalRpm::from_register(1), 32_767).unwrap();
     assert_eq!(
@@ -501,13 +495,6 @@ fn primitive_budget_must_cover_one_moving_and_settle_window() {
     );
 }
 
-/// A centred stroke reaches only half its displacement from the origin.
-///
-/// The travel envelope limits how far the axis may get from where it started,
-/// not how far it moves. An origin-anchored stroke spends its whole displacement
-/// going one way, so the two are equal. A stroke running symmetrically about the
-/// origin reaches only half its displacement in either direction, so the same
-/// envelope admits twice the stroke.
 #[test]
 fn centred_strokes_admit_twice_the_displacement_of_origin_anchored_ones() {
     for (window, reserve, stroke_us) in [
@@ -519,9 +506,6 @@ fn centred_strokes_admit_twice_the_displacement_of_origin_anchored_ones() {
             .expect("anchored cap");
         let centred = travel_cap(StrokeGeometry::OriginCentred, window, reserve, stroke_us)
             .expect("centred cap");
-        // Doubling the window before dividing loses less to truncation, so the
-        // centred cap can exceed twice the anchored one by a single unit. The
-        // invariant is that half a centred stroke is a whole anchored stroke.
         assert_eq!(centred / 2, anchored, "window {window} stroke {stroke_us}");
         assert!(
             centred >= anchored * 2,
@@ -529,7 +513,6 @@ fn centred_strokes_admit_twice_the_displacement_of_origin_anchored_ones() {
         );
     }
 
-    // Peak excursion is what the envelope actually bounds.
     assert_eq!(
         StrokeGeometry::OriginAnchored.peak_excursion_mrev(2_250),
         2_250
@@ -539,7 +522,6 @@ fn centred_strokes_admit_twice_the_displacement_of_origin_anchored_ones() {
         1_125
     );
 
-    // The historical caps are unchanged for the anchored geometry.
     assert_eq!(
         travel_cap(StrokeGeometry::OriginAnchored, 1_000, 100, 256_000),
         Ok(3_515)
@@ -549,7 +531,6 @@ fn centred_strokes_admit_twice_the_displacement_of_origin_anchored_ones() {
         Ok(1_757)
     );
 
-    // Rejections do not depend on geometry.
     for geometry in [
         StrokeGeometry::OriginAnchored,
         StrokeGeometry::OriginCentred,
@@ -563,11 +544,7 @@ fn centred_strokes_admit_twice_the_displacement_of_origin_anchored_ones() {
 
 #[test]
 fn half_octave_candidate_uses_ceiling_rounding_not_truncation() {
-    // 4 * 181 = 724; 724 >> 7 truncates to 5, but the generator's ceiling
-    // rounding (+127 before the shift) yields 6.
     assert_eq!(half_octave_candidate(4), Some(6));
-    // 512 * 181 = 92672, exactly divisible by 128, so ceiling and
-    // truncation agree here — this is today's real P=724 evidence value.
     assert_eq!(half_octave_candidate(512), Some(724));
 }
 
@@ -584,8 +561,6 @@ fn build_gain_ladder_generic_over_pid_i_gain_matches_p_gain_shape() {
 
 #[test]
 fn build_gain_ladder_generic_include_exact_top_false_omits_non_octave_cap() {
-    // Mirrors today's I-ladder behavior: with a non-power-of-two top and
-    // include_exact_top=false, the exact top is never force-appended.
     let ladder: heapless::Vec<PidPGain, MAX_SWEEP_RUNGS> =
         build_gain_ladder_generic(4, 1310, false).unwrap();
     assert_eq!(ladder.last().unwrap().raw(), 1024);
@@ -594,8 +569,6 @@ fn build_gain_ladder_generic_include_exact_top_false_omits_non_octave_cap() {
 
 #[test]
 fn build_gain_ladder_p_wrapper_byte_identical_after_generify() {
-    // Regression: the existing public build_gain_ladder(p_start, p_top) name
-    // and behavior are completely unchanged by introducing the generic core.
     let ladder = build_gain_ladder(4, 1024).unwrap();
     let raw: heapless::Vec<u16, MAX_SWEEP_RUNGS> = ladder.iter().map(|g| g.raw()).collect();
     assert_eq!(

@@ -76,28 +76,15 @@ const INTEGRAL_CAUSE_NONE: u8 = 0;
 const INTEGRAL_CAUSE_TOO_FEW_RUNGS: u8 = 1;
 const INTEGRAL_CAUSE_CURRENT_BEFORE_SUFFICIENCY: u8 = 2;
 const INTEGRAL_CAUSE_CURRENT_AFTER_SUFFICIENCY: u8 = 3;
-// Code 4 was the generic INTEGRAL_CAUSE_INTEGRITY bucket, split into
-// dedicated causes below; not reused for a new meaning.
 const INTEGRAL_CAUSE_RECOVERY: u8 = 5;
 pub(super) const INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE: u8 = 8;
 pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY: u8 = 9;
 pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY: u8 = 10;
-/// A sufficient run was rejected by rest confirmation while a fixed-gain
-/// amplitude observation or recovery already owned the rest selection.
 pub(super) const INTEGRAL_CAUSE_FIXED_GAIN_REST_OWNERSHIP: u8 = 6;
-/// A raw interval had reversed bounds during run-evidence assessment.
 const INTEGRAL_CAUSE_EVIDENCE_INVALID_INTERVAL: u8 = 7;
-/// An observation's direction, gain, or interval was inconsistent during
-/// run-evidence assessment.
 const INTEGRAL_CAUSE_EVIDENCE_MISMATCHED_OBSERVATION: u8 = 11;
-/// An exact i64 rate bound did not fit Integral's retained i32 domain during
-/// run-evidence assessment.
 const INTEGRAL_CAUSE_EVIDENCE_CONVERSION: u8 = 14;
-/// A direction, rung, mask bit, or terminus exceeded the declared ladder
-/// during run-evidence assessment.
 const INTEGRAL_CAUSE_EVIDENCE_MASK_OUT_OF_RANGE: u8 = 15;
-/// The same direction/rung cell was retained twice during run-evidence
-/// assessment.
 const INTEGRAL_CAUSE_EVIDENCE_DUPLICATE_RUNG: u8 = 16;
 const OPENING_WORD_BASE: usize = 0;
 const AMPLITUDE_MEAN_WORD_BASE: usize = 0;
@@ -163,9 +150,6 @@ pub(super) const fn integral_slot_direction(order: IntegralSlotOrder, slot: u8) 
     }
 }
 
-/// Signed target rate for one rung/slot pair, classifying each failure the way
-/// `CommandTarget` needs: a missing rate-table entry, an out-of-range slot, or
-/// a target/direction product overflowing `i32`.
 pub(super) fn command_target_signed_target(
     plan: VelocityIntegralExecutionPlan,
     rung_index: u8,
@@ -180,15 +164,11 @@ pub(super) fn command_target_signed_target(
         .ok_or(CommissionError::TargetRateInvalid)
 }
 
-/// Fixed-gain amplitude bit for one rung index, rejecting a rung index whose
-/// bit position exceeds `u8`'s shift range.
 pub(super) fn fixed_gain_amplitude_bit(rung_index: u8) -> Result<u8, CommissionError> {
     1_u8.checked_shl(u32::from(rung_index))
         .ok_or(CommissionError::RungIndexOutOfRange)
 }
 
-/// Next-sample and stroke-end deadlines measured from `started_us`, reporting
-/// a `u64` overflow as a schedule-deadline overflow.
 pub(super) fn command_target_deadlines(
     started_us: u64,
     moving_stroke_us: u32,
@@ -305,19 +285,6 @@ pub(super) fn record_integral_target_if_reached(
     }
 }
 
-/// Record the breakaway target terminus on a closure that bypasses
-/// `retain_rung`.
-///
-/// The terminus recorder is otherwise wired only into `retain_rung`, reachable
-/// only from `AnalyzeRung`. Breakaway's peak rung drives the native integral to
-/// its cap, never settles, and closes through the positive-I-rest-boundary or
-/// current-headroom diversion instead -- neither reaches `retain_rung`, so the
-/// terminus for the target-reaching rung would never install. This mirrors the
-/// positive-rung branch of `retain_rung`: it reconstructs both directional
-/// deficit consensuses from the retained per-slot evidence and records the
-/// terminus when the deficit reaches the target. It is a no-op unless the plan
-/// records a terminus and both directions reach an eligible consensus, so it is
-/// safe on a diversion that consumed a partially swept rung.
 fn record_diverted_target_terminus(
     data: &mut VelocityIntegralRuntime,
 ) -> Result<(), CommissionError> {
@@ -507,7 +474,6 @@ pub(super) fn fixed_gain_amplitude_report(
             .map(i32::from);
     let slot_order = data.plan.slot_order;
     let directions: [Result<_, CommissionError>; 2] = core::array::from_fn(|direction| {
-        // Must mirror the write side: evidence is stored by raw slot index.
         let slot = |observation: usize| usize::from(slot_order.slot_for(observation, direction));
         let classes = core::array::from_fn(|observation| data.rung_classes[slot(observation)]);
         let intervals = core::array::from_fn(|observation| {
@@ -540,17 +506,6 @@ pub(super) fn fixed_gain_amplitude_report(
         })
         .map_err(|error| match error {
             FixedGainAmplitudeEvidenceError::InvalidInterval => CommissionError::MalformedInterval,
-            // Arithmetic is unreachable (see robust_rate_location's own
-            // comment). InvalidMasks cannot be constructed by this call
-            // path either -- it is only ever returned by
-            // fixed_gain_amplitude_run_sufficient (see that function's own
-            // comment on why it stays a live check against its direct
-            // callers), a separate function this classify_fixed_gain_amplitude
-            // call never invokes. fixed_gain_amplitude_run_sufficient's
-            // actual production caller, fixed_gain_amplitude_terminal, maps
-            // an InvalidMasks failure to FixedGainAmplitudeCause::EvidenceIntegrity,
-            // not CommissionError, so this arm was never reachable from that
-            // path either.
             FixedGainAmplitudeEvidenceError::Arithmetic
             | FixedGainAmplitudeEvidenceError::InvalidMasks => CommissionError::InvalidSchedule,
         })
@@ -698,13 +653,6 @@ fn load_interval(
     workspace: &TransientBuffer,
     word_index: usize,
 ) -> Result<ExactRateInterval, CommissionError> {
-    // Every writer of these words (`store_interval`, the only caller found in
-    // this file) is passed an `ExactRateInterval` that already passed
-    // `ExactRateInterval::new`'s own inversion check at construction time, and
-    // `TransientBuffer` exposes no other write path to these words -- an
-    // inverted pair read back here would require the underlying u32 words to
-    // be corrupted independently of any typed write, which cannot happen
-    // through this API. Unreachable in practice; kept as a defensive check.
     ExactRateInterval::new(
         workspace
             .workspace_word(word_index)
@@ -1127,7 +1075,6 @@ pub(super) fn analyze_rung(
         VelocityDirection::Forward => 0,
         VelocityDirection::Reverse => 1,
     };
-    // Must mirror the write side: evidence is stored by raw slot index.
     let observations = core::array::from_fn(|index| {
         let slot = usize::from(data.plan.slot_order.slot_for(index, direction_index));
         compact_summary(data, slot, direction)
@@ -1145,24 +1092,8 @@ fn map_integral_evidence_error(error: IntegralEvidenceError) -> CommissionError 
     match error {
         IntegralEvidenceError::MismatchedObservation => CommissionError::MismatchedObservation,
         IntegralEvidenceError::Conversion => CommissionError::TargetRateInvalid,
-        // Unreachable from either ExactRateInterval::new call site inside
-        // analyze_integral_direction. The per-observation narrowing loop's
-        // precondition check already requires deficit_interval_q[0] <=
-        // deficit_interval_q[1] for every observation before that loop can
-        // run, and i32::try_from on an in-range i64 preserves ordering
-        // exactly, so that call site can never see an inverted pair. The
-        // second call site, in the consensus-components loop, narrows
-        // depth_three_consensus's output: intersect_triple only returns
-        // Some([low, high]) when low <= high, merge_intersections only ever
-        // widens a component's upper bound (never touches the lower bound),
-        // and unpopulated slots stay [0, 0] -- so that call site can not see
-        // an inverted pair either. Left as InvalidSchedule; no code allocated
-        // since no input, real or artificial, can reach either arm.
         IntegralEvidenceError::InvalidInterval => CommissionError::InvalidSchedule,
         IntegralEvidenceError::MaskOutOfRange | IntegralEvidenceError::DuplicateRung => {
-            // Not returned by analyze_integral_direction (verified by reading its
-            // full body); kept exhaustive because IntegralEvidenceError is also
-            // returned by retain_rung/materialize_run_evidence call paths.
             CommissionError::RungIndexOutOfRange
         }
     }
@@ -1203,32 +1134,12 @@ fn retain_rung(
             let positive_rung = usize::from(data.rung_index - 1);
             for (direction, evidence) in directions.iter().enumerate() {
                 if let Some(interval) = evidence.interval {
-                    // The following checks are provably unreachable:
-                    // - `u32::try_from(positive_rung)` can never fail: this
-                    //   firmware's only compiled targets are
-                    //   thumbv7em-none-eabi(hf) (32-bit), where usize == u32.
-                    // - The checked_shl bit-position overflow below can never
-                    //   trip: positive_rung is bounded by
-                    //   INTEGRAL_MAX_POSITIVE_RUNGS = 30
-                    //   (integral_plan.rs), never reaching the 32 needed to
-                    //   overflow a 32-bit shift.
-                    // Both are kept as defensive checks.
                     let bit = 1_u32
                         .checked_shl(u32::try_from(positive_rung).unwrap_or(u32::MAX))
                         .unwrap_or(0);
-                    // Unreachable: data.rung_index only ever advances via
-                    // saturating_add(1) (this file's advance_integral_cursor,
-                    // apply_integral_current_headroom), never decrements or
-                    // resets mid-run, so the same positive_rung bit can never
-                    // already be set here. Defensive check retained.
                     if data.eligible_masks[direction] & bit != 0 {
                         return Err(CommissionError::RungIndexOutOfRange);
                     }
-                    // Unreachable: interval_word_index only rejects
-                    // direction >= 2 or rung >= INTEGRAL_MAX_POSITIVE_RUNGS
-                    // (30); direction here is always 0 or 1 (a 2-element
-                    // enumerate()) and positive_rung is bounded below 30 by
-                    // the same construction invariant as the checks above.
                     let word_index = interval_word_index(direction, positive_rung)
                         .expect("direction and positive_rung are in range");
                     store_interval(workspace, word_index, interval)?;
@@ -1519,10 +1430,6 @@ fn retain_analyzed_observation(
     Ok(())
 }
 
-/// Advance the Integral response sweep by one cooperative state-machine step.
-///
-/// This step compiles into the default (production) build; only the raw
-/// trace emission it may call into is gated behind the `trace` feature.
 pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     workspace: &mut TransientBuffer,
@@ -1777,11 +1684,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             };
             data.current_observer.observe_moving_output(torque_target);
             let _moving_peak = data.current_observer.moving_pid_output_peak();
-            // Unreachable: elapsed_us was already narrowed to
-            // 1..=MAX_SAFETY_OBSERVATION_GAP_US by the checked_sub guard
-            // above (this state's read_us.checked_sub(data.previous_read_us)
-            // match), so push's only failure arm (elapsed_us == 0) can never
-            // fire here.
             if data
                 .observations
                 .push(delta.signed_counts(), elapsed_us as u16)
@@ -2076,11 +1978,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             {
                 return fail_integral(phase, backend, error).await;
             }
-            // Unreachable: elapsed_us was already narrowed to
-            // 1..=MAX_SAFETY_OBSERVATION_GAP_US by the checked_sub guard
-            // above (this state's read_us.checked_sub(data.previous_read_us)
-            // match), so push's only failure arm (elapsed_us == 0) can never
-            // fire here.
             if data
                 .observations
                 .push(delta.signed_counts(), elapsed_us as u16)
@@ -2244,7 +2141,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                         IntegralRungKind::OpeningAnchor | IntegralRungKind::ClosingBookend => {
                             RestSelectionOwner::IntegralAnchor
                         }
-                        // The sibling if-branch above already claims every Positive rung.
                         IntegralRungKind::Positive => unreachable!(),
                         IntegralRungKind::FixedGainAmplitude => {
                             RestSelectionOwner::FixedGainAmplitudeObservation
@@ -2277,9 +2173,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     IntegralRungKind::Positive
                 ) && positive_directional_floors_exist(data)
                 {
-                    // Breakaway current-headroom exit is the sibling
-                    // `retain_rung` bypass; record the target terminus before
-                    // the current terminus consumes the rung.
                     if let Err(error) = record_diverted_target_terminus(data) {
                         return fail_integral(phase, backend, error).await;
                     }
@@ -2435,11 +2328,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             {
                 return fail_integral(phase, backend, error).await;
             }
-            // Unreachable: elapsed_us was already narrowed to
-            // 1..=MAX_SAFETY_OBSERVATION_GAP_US by the checked_sub guard
-            // above (this state's read_us.checked_sub(data.previous_read_us)
-            // match), so push's only failure arm (elapsed_us == 0) can never
-            // fire here.
             if data
                 .observations
                 .push(delta.signed_counts(), elapsed_us as u16)
@@ -2538,13 +2426,10 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             }
             data.positive_i_rest_boundary_after_sufficiency =
                 positive_directional_floors_exist(data);
-            if data.positive_i_rest_boundary_after_sufficiency {
-                // This is the breakaway peak-rung closure that never reaches
-                // `retain_rung`; record the target terminus here so a
-                // target-reaching, non-settling rung still installs it.
-                if let Err(error) = record_diverted_target_terminus(data) {
-                    return fail_integral(phase, backend, error).await;
-                }
+            if data.positive_i_rest_boundary_after_sufficiency
+                && let Err(error) = record_diverted_target_terminus(data)
+            {
+                return fail_integral(phase, backend, error).await;
             }
             if data.positive_i_rest_boundary_after_sufficiency {
                 match plan_integral_recovery(data, workspace, safety) {
@@ -2562,15 +2447,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 &mut data.slot,
                 integral_rung_count(data.plan).unwrap_or(0),
             );
-            // Unreachable: this state is entered only when
-            // `data.slot + 1 < INTEGRAL_SLOT_COUNT` already held at the prior
-            // step, and nothing mutates `data.slot` before this call.
-            // advance_integral_cursor's own identical precondition (this
-            // file, `advance_integral_cursor`) therefore always takes its
-            // early-return branch here: `finished` is always false and
-            // `data.slot` after increment is always in
-            // `1..INTEGRAL_SLOT_COUNT`, never 0. Both operands of the guard
-            // below are provably always false. Defensive check retained.
             if finished || data.slot == 0 {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
@@ -2653,8 +2529,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             };
             match step_rung_origin_recovery(runtime, &mut resources, backend).await {
                 RungOriginRecoveryStep::ReadyNow => StepResult::ReadyNow,
-                // Breakaway-only diagnostic; the fault it precedes arrives
-                // on the following tick and is handled below unchanged.
                 RungOriginRecoveryStep::OriginMismatch(_) => StepResult::ReadyNow,
                 RungOriginRecoveryStep::At(deadline_us) => StepResult::At(deadline_us),
                 RungOriginRecoveryStep::RestSelection {
@@ -2859,20 +2733,18 @@ mod tests {
         }
     }
 
-    /// An inverted deficit interval (low bound above high bound) is a
-    /// malformed-interval fault, not the generic schedule fault.
     #[test]
     fn record_integral_target_if_reached_rejects_inverted_deficit_interval() {
         let mut plan = plan();
         plan.positive_rung_count = 5;
         plan.acceptance_source = AcceptanceSource::Breakaway;
         let mut data = VelocityIntegralRuntime::new(1, plan);
-        data.rung_index = 1; // Positive rung kind
+        data.rung_index = 1;
         let intervals = [
             ExactRateInterval {
                 low_q: 10,
                 high_q: 5,
-            }, // inverted: low above high
+            },
             ExactRateInterval {
                 low_q: 0,
                 high_q: 100,
@@ -2884,10 +2756,6 @@ mod tests {
         assert_eq!(result, Err(CommissionError::MalformedInterval));
     }
 
-    /// An inverted settled-rate interval on one eligible observation is a
-    /// malformed-interval fault, not the generic schedule fault -- the
-    /// arithmetic and mask-contradiction causes at the same call site remain
-    /// under the generic code.
     #[test]
     fn fixed_gain_amplitude_report_rejects_inverted_interval_distinctly() {
         let mut data = VelocityIntegralRuntime::new(1, plan());
@@ -2903,16 +2771,13 @@ mod tests {
         data.rung_intervals[0] = ExactRateInterval {
             low_q: 10,
             high_q: 5,
-        }; // inverted: low above high
+        };
 
         let error = fixed_gain_amplitude_report(&mut data, &workspace).unwrap_err();
 
         assert_eq!(error, CommissionError::MalformedInterval);
     }
 
-    /// A slot or level outside its declared range is a caller bug, not a
-    /// missing or exhausted workspace write -- must be reported as an
-    /// out-of-range rung index.
     #[test]
     fn set_rung_blocking_level_rejects_out_of_range_slot_or_level() {
         let mut data = VelocityIntegralRuntime::new(1, plan());
@@ -2924,9 +2789,6 @@ mod tests {
         assert_eq!(level_error, CommissionError::RungIndexOutOfRange);
     }
 
-    /// The second workspace word of an interval write lands one past the
-    /// fixed `TransientBuffer` capacity: the write cannot be accepted, which
-    /// is a distinct fault from a caller-supplied out-of-range index.
     #[test]
     fn store_interval_reports_evidence_buffer_full_at_the_workspace_boundary() {
         let mut workspace = TransientBuffer::new();
@@ -2937,8 +2799,6 @@ mod tests {
         assert_eq!(error, CommissionError::EvidenceBufferFull);
     }
 
-    /// Reading either half of an interval past the fixed `TransientBuffer`
-    /// capacity finds no retained state there.
     #[test]
     fn load_interval_reports_missing_capture_state_past_the_workspace_boundary() {
         let workspace = TransientBuffer::new();
@@ -2950,9 +2810,6 @@ mod tests {
         assert_eq!(second_word_error, CommissionError::MissingCaptureState);
     }
 
-    /// A positive rung at or past `INTEGRAL_MAX_POSITIVE_RUNGS` has no
-    /// workspace word reserved for it; retaining its evidence is an
-    /// out-of-range rung index, not the generic schedule fault.
     #[test]
     fn materialize_run_evidence_reports_rung_index_out_of_range_past_the_positive_ladder() {
         let mut plan = plan();
@@ -2966,9 +2823,6 @@ mod tests {
         assert_eq!(error, CommissionError::RungIndexOutOfRange);
     }
 
-    /// A slot at or past `INTEGRAL_SLOT_COUNT` has no direction, forward or
-    /// reverse, defined for it -- an out-of-range rung index, not the
-    /// generic schedule fault.
     #[test]
     fn direction_for_slot_reports_rung_index_out_of_range_past_the_slot_count() {
         let error =
@@ -2977,16 +2831,11 @@ mod tests {
         assert_eq!(error, CommissionError::RungIndexOutOfRange);
     }
 
-    /// A frozen target at `i32::MIN` cannot be negated by a reverse-slot
-    /// direction sign; that is a target-rate fault, not the generic
-    /// schedule fault.
     #[test]
     fn moving_analysis_reports_target_rate_invalid_on_signed_target_overflow() {
         let mut plan = plan();
         plan.target_velocity_rpm = i32::MIN;
         let mut data = VelocityIntegralRuntime::new(1, plan);
-        // ForwardFirst slot 1 is the first reverse slot (signed direction -1),
-        // the sign that overflows an `i32::MIN` magnitude.
         data.slot = 1;
         data.analysis.reset_with_structured_diagnostics();
         for _ in 0..256 {
@@ -3010,15 +2859,11 @@ mod tests {
         assert_eq!(error, CommissionError::TargetRateInvalid);
     }
 
-    /// A rung index past the response-ladder's rung count has no target-rate
-    /// table entry -- a missing table entry, not the generic schedule fault.
-    /// The sibling arithmetic-overflow cause at the same call site remains
-    /// under `TargetRateInvalid`.
     #[test]
     fn moving_analysis_rejects_missing_target_rate_table_entry() {
         let plan = plan();
         let mut data = VelocityIntegralRuntime::new(1, plan);
-        data.rung_index = u8::MAX; // past the response-ladder rung count
+        data.rung_index = u8::MAX;
         data.analysis.reset_with_structured_diagnostics();
         for _ in 0..256 {
             data.observations.push(1, 1_000).unwrap();
@@ -3041,9 +2886,6 @@ mod tests {
         assert_eq!(error, CommissionError::MissingRateTableEntry);
     }
 
-    /// A missing rate-table entry is a table-lookup fault, not the generic
-    /// schedule fault — the same classification this crate already uses for
-    /// integral_target_rpm_at's other call site (moving_analysis).
     #[test]
     fn integral_target_rpm_at_rejects_out_of_range_rung() {
         let mut plan = plan();
@@ -3051,8 +2893,6 @@ mod tests {
         assert_eq!(integral_target_rpm_at(plan, 5), None);
     }
 
-    /// A slot beyond INTEGRAL_SLOT_COUNT is an index fault, not the generic
-    /// schedule fault.
     #[test]
     fn integral_slot_direction_rejects_out_of_range_slot() {
         assert_eq!(
@@ -3061,8 +2901,6 @@ mod tests {
         );
     }
 
-    /// A missing rate-table entry through the real CommandTarget call path is
-    /// classified as MissingRateTableEntry, not the generic schedule fault.
     #[test]
     fn command_target_signed_target_rejects_missing_rate_table_entry() {
         let mut plan = plan();
@@ -3071,20 +2909,12 @@ mod tests {
         assert_eq!(error, CommissionError::MissingRateTableEntry);
     }
 
-    /// A slot beyond INTEGRAL_SLOT_COUNT through the real CommandTarget call
-    /// path is classified as RungIndexOutOfRange, not the generic schedule
-    /// fault.
     #[test]
     fn command_target_signed_target_rejects_out_of_range_slot() {
         let error = command_target_signed_target(plan(), 0, INTEGRAL_SLOT_COUNT).unwrap_err();
         assert_eq!(error, CommissionError::RungIndexOutOfRange);
     }
 
-    /// A target/direction product overflowing i32 through the real
-    /// CommandTarget call path is classified as TargetRateInvalid, not the
-    /// generic schedule fault. Slot 1 under ForwardFirst has signed_direction
-    /// -1 (direction_index(1) == 1 ^ parity_twist(0) == 1), so
-    /// i32::MIN * -1 overflows i32.
     #[test]
     fn command_target_signed_target_rejects_overflowing_product() {
         let mut target_plan = plan();
@@ -3093,32 +2923,23 @@ mod tests {
         assert_eq!(error, CommissionError::TargetRateInvalid);
     }
 
-    /// A rung index whose bit position exceeds u8's shift range, through the
-    /// real fixed-gain-amplitude call path, is classified as
-    /// RungIndexOutOfRange, not the generic schedule fault.
     #[test]
     fn fixed_gain_amplitude_bit_rejects_out_of_range_rung() {
         let error = fixed_gain_amplitude_bit(8).unwrap_err();
         assert_eq!(error, CommissionError::RungIndexOutOfRange);
     }
 
-    /// A next_sample_us computation overflowing u64 through the real
-    /// CommandTarget deadline call path is classified as
-    /// ScheduleDeadlineOverflow, not the generic schedule fault.
     #[test]
     fn command_target_deadlines_rejects_overflowing_next_sample() {
         let error = command_target_deadlines(u64::MAX, 0).unwrap_err();
         assert_eq!(error, CommissionError::ScheduleDeadlineOverflow);
     }
 
-    /// A negative-encoding fixed-P or derived-I gain table entry is a PID
-    /// gain fault, not the generic schedule fault.
     #[test]
     fn prepare_moving_slot_reports_pid_gain_invalid_on_negative_fixed_p() {
         let mut plan = plan();
-        plan.fixed_p = 0x8000; // top bit set -> PidGainOutOfRange
+        plan.fixed_p = 0x8000;
         let error = PidPGain::new(plan.fixed_p).unwrap_err();
-        // Exercises the same validation the call site maps into CommissionError.
         assert_eq!(error.raw(), 0x8000);
     }
 
@@ -3130,7 +2951,6 @@ mod tests {
 
     #[test]
     fn fixed_p_and_derived_i_construction_reject_negative_encoding() {
-        // A negative-encoded integral gain is a PID gain fault.
         let i_result = PidIGain::new(0x8000_u16).map_err(|_| CommissionError::PidGainInvalid);
         assert_eq!(i_result, Err(CommissionError::PidGainInvalid));
     }
@@ -3152,9 +2972,6 @@ mod tests {
         }
     }
 
-    /// A deficit-interval bound past `i32` cannot be retained in the exact
-    /// rate interval that backs a response-ladder rung; that is a
-    /// target-rate fault, not the generic schedule fault.
     #[test]
     fn retain_analyzed_observation_reports_target_rate_invalid_for_an_unrepresentable_low_bound() {
         let mut data = VelocityIntegralRuntime::new(1, plan());
@@ -3179,24 +2996,18 @@ mod tests {
         assert_eq!(error, CommissionError::TargetRateInvalid);
     }
 
-    /// An inverted deficit interval (low bound above high bound, both
-    /// representable) is a malformed-interval fault, not the generic
-    /// schedule fault.
     #[test]
     fn retain_analyzed_observation_rejects_inverted_interval() {
         let mut data = VelocityIntegralRuntime::new(1, plan());
         let mut workspace = TransientBuffer::new();
         let mut summary = observation_summary();
-        summary.deficit_interval_q = [10, 5]; // inverted: low above high
+        summary.deficit_interval_q = [10, 5];
 
         let error = retain_analyzed_observation(&mut data, &mut workspace, summary).unwrap_err();
 
         assert_eq!(error, CommissionError::MalformedInterval);
     }
 
-    /// An eligible amplitude rung's settled-rate mean past `i32` cannot be
-    /// stored in the amplitude workspace word; that is a target-rate fault,
-    /// not the generic schedule fault.
     #[test]
     fn retain_analyzed_observation_reports_target_rate_invalid_for_an_unrepresentable_mean() {
         let mut amplitude_plan = plan();
@@ -3237,15 +3048,11 @@ mod tests {
         )
     }
 
-    /// A fixed-gain-amplitude recovery plan with a zeroed lower-rate table
-    /// entry for the current direction has no settled rate to recover
-    /// toward; that is a missing rate-table entry, not the generic schedule
-    /// fault.
     #[test]
     fn plan_integral_recovery_rejects_missing_lower_rate_entry() {
         let mut plan = plan();
         plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-        plan.recovery_lower_rate_q = [0, 0]; // zero -> filtered out -> None
+        plan.recovery_lower_rate_q = [0, 0];
         let mut data = VelocityIntegralRuntime::new(1, plan);
         let workspace = TransientBuffer::new();
         let safety = test_safety();
@@ -3255,9 +3062,6 @@ mod tests {
         assert_eq!(error, CommissionError::MissingRateTableEntry);
     }
 
-    /// A zeroed settle-travel reserve makes `plan_rung_origin_recovery`
-    /// reject the recovery geometry; that is a recovery-plan failure, not
-    /// the generic schedule fault.
     #[test]
     fn plan_integral_recovery_rejects_a_failed_recovery_plan() {
         let mut plan = plan();
@@ -3291,9 +3095,6 @@ mod tests {
             drift_ratio_ppm: 0,
             initial_lead_in: false,
         }; 4];
-        // Artificial input, per operator direction: compact_summary (analyze_rung's
-        // only caller) always passes the same direction to every observation in one
-        // call, so this disagreement cannot arise through the real production path.
         observations[1].direction = VelocityDirection::Reverse;
 
         let error = analyze_integral_direction(
@@ -3306,8 +3107,6 @@ mod tests {
         assert_eq!(error, IntegralEvidenceError::MismatchedObservation);
     }
 
-    /// A rate-conversion overflow inside integral-direction analysis is an
-    /// arithmetic fault, not the generic schedule fault.
     #[test]
     fn map_integral_evidence_error_reports_conversion_as_target_rate_invalid() {
         let error = map_integral_evidence_error(IntegralEvidenceError::Conversion);
@@ -3351,45 +3150,29 @@ mod tests {
         assert_eq!(result, Err(CommissionError::MismatchedObservation));
     }
 
-    /// A finish timestamp before the start timestamp means the clock ran
-    /// backward relative to this transition — an early-invocation fault,
-    /// not the generic schedule fault.
     #[test]
     fn transition_elapsed_us_rejects_backward_clock() {
         let error = transition_elapsed_us(1_000, 500).unwrap_err();
         assert_eq!(error, CommissionError::ScheduleEarlyInvocation);
     }
 
-    /// An elapsed duration too large for u32 microseconds is a deadline
-    /// overflow fault, not the generic schedule fault.
     #[test]
     fn transition_elapsed_us_rejects_overflowing_duration() {
         let error = transition_elapsed_us(0, u64::from(u32::MAX) + 1).unwrap_err();
         assert_eq!(error, CommissionError::ScheduleDeadlineOverflow);
     }
 
-    /// Pins the two sub-conditions of Setup's campaign-plan-cause predicate
-    /// (`plan.plan_digest == 0 || integral_rung_count(plan).is_none_or(|count|
-    /// count < 3)`) in isolation from each other: a zero digest with an
-    /// otherwise-valid rung count, and a short rung count with an otherwise-
-    /// valid digest. It does not construct or exercise the separate
-    /// torque-limit-mismatch `if` that follows the campaign-plan check in the
-    /// real Setup code.
     #[test]
     fn setup_precondition_fixture_shapes_are_distinguishable() {
         let mut zero_digest_plan = plan();
         zero_digest_plan.plan_digest = 0;
-        // campaign-plan cause is plan_digest alone here
         assert!(integral_rung_count(zero_digest_plan).is_some());
 
         let mut short_plan = plan();
-        // integral_rung_count = positive_rung_count + 2 for ResponseLadder, so this yields 2 (< 3)
         short_plan.positive_rung_count = 0;
-        // campaign-plan cause is rung count alone here
         assert!(integral_rung_count(short_plan).is_none_or(|count| count < 3));
 
         let matched_plan = plan();
-        // neither sub-condition fires for this plan
         assert!(
             matched_plan.plan_digest != 0
                 && integral_rung_count(matched_plan).is_none_or(|count| count >= 3)

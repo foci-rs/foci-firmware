@@ -1,26 +1,3 @@
-//! FTRC trace-stream encoders for breakaway-campaign evidence.
-//!
-//! Mirrors `sweep_reporting`'s per-event canonical-record encoders: each
-//! function here takes one already-assembled `breakaway_reporting` wire
-//! record and pushes its fields, in a fixed order, into a
-//! [`VelocitySweepCanonicalRecord`] -- the same bounded byte-buffer type the
-//! velocity-sweep and fixed-gain-amplitude encoders already use, despite its
-//! name (it is a generic canonical-record primitive, not sweep-specific; see
-//! its own doc comment). `commissioning::mod::emit_trace_after_step` hands
-//! each encoded record to `CommissioningBackend::record_velocity_sweep_trace_record`,
-//! which writes it onto the dedicated FTRC bulk USB interface -- a physically
-//! separate stream from the Klipper command-reply connection
-//! `commission_dispatch::replies::emit_breakaway_campaign_event` feeds. Both
-//! paths carry the same evidence; this module is the trace-stream half.
-//!
-//! Each record's leading byte is a local tag distinguishing record kinds
-//! *within* the breakaway family -- it is only meaningful alongside the
-//! `EVENT_COMMISSION_BREAKAWAY_*` id the surrounding `CommissionTraceEvent`
-//! marker carries (mirroring how `sweep_reporting`'s own tags 0-11 are local
-//! to the velocity-sweep family, and `fixed_gain_amplitude_reporting`'s tags 0-3 are a
-//! separate, independently-numbered family). The frame layouts here are the
-//! contract `foci-trace`'s host-side decoder reconstructs breakaway evidence
-//! from: every layout is pinned by a golden byte-sequence test below.
 use crate::commissioning::types::{
     AdditiveDiscoveryPlanned, AdditiveDiscoveryTerminal, BandConfirmationObservation,
     BandConfirmationPlanned, BandConfirmationTerminal, BreakawayCampaignTerminal,
@@ -45,7 +22,6 @@ fn push_u128(record: &mut VelocitySweepCanonicalRecord, value: u128) {
     push_u64(record, (value >> 64) as u64);
 }
 
-/// Encode the immutable breakaway-probe plan (tag 0).
 pub(crate) fn encode_probe_planned(report: BreakawayProbePlanned) -> VelocitySweepCanonicalRecord {
     let mut record = VelocitySweepCanonicalRecord::new();
     record.push_u8(0);
@@ -67,7 +43,6 @@ pub(crate) fn encode_probe_planned(report: BreakawayProbePlanned) -> VelocitySwe
     record
 }
 
-/// Encode the resolved repeatable-motion rung (tag 1).
 pub(crate) fn encode_probe_resolved(
     report: BreakawayProbeResolved,
 ) -> VelocitySweepCanonicalRecord {
@@ -83,7 +58,6 @@ pub(crate) fn encode_probe_resolved(
     record
 }
 
-/// Encode a probe-campaign terminal that did not resolve a breakaway (tag 2).
 pub(crate) fn encode_probe_terminal(
     report: BreakawayProbeTerminal,
 ) -> VelocitySweepCanonicalRecord {
@@ -98,7 +72,6 @@ pub(crate) fn encode_probe_terminal(
     record
 }
 
-/// Encode the immutable additive discovery plan (tag 3).
 pub(crate) fn encode_discovery_planned(
     report: AdditiveDiscoveryPlanned,
 ) -> VelocitySweepCanonicalRecord {
@@ -121,7 +94,6 @@ pub(crate) fn encode_discovery_planned(
     record
 }
 
-/// Encode which `p_top` candidate bound the discovery authority ceiling (tag 4).
 pub(crate) fn encode_ceiling_source(
     report: BreakawayCeilingSource,
 ) -> VelocitySweepCanonicalRecord {
@@ -134,14 +106,6 @@ pub(crate) fn encode_ceiling_source(
     record
 }
 
-/// Encode one collected observation's raw settled-rate evidence (tag 5).
-///
-/// Tag 5 previously carried a per-rung resolved-ladder record; that fan-out was
-/// dropped (its 34-frame burst could overflow the board trace queue, and the
-/// discovery-plan summary already pins the whole ladder through `plan_digest`).
-/// The tag is reused here for the raw-observation stream that lets an offline
-/// decoder independently recompute the nomination margins and confirmation
-/// containment.
 pub(crate) fn encode_raw_observation(
     report: BreakawayRawObservation,
 ) -> VelocitySweepCanonicalRecord {
@@ -157,8 +121,6 @@ pub(crate) fn encode_raw_observation(
     push_i64(&mut record, report.mean_rate_q);
     push_u128(&mut record, report.variance_of_mean_q2);
     push_i64(&mut record, report.target_rate_q);
-    // Frozen classify/consensus inputs, so an offline decoder derives the
-    // consensus masks itself. Order is the decode contract.
     record.push_u8(report.stationarity_code);
     push_i64(&mut record, report.settled_rate_low_q);
     push_i64(&mut record, report.settled_rate_high_q);
@@ -175,15 +137,10 @@ pub(crate) fn encode_raw_observation(
     record.push_i32(report.stroke_min_displacement_counts);
     record.push_i32(report.stroke_max_displacement_counts);
     record.push_u32(report.capture_max_interval_us);
-    // Appended rather than placed beside `predicted_torque_target_abs`, whose
-    // `max` it decomposes, so every earlier field keeps its byte offset and an
-    // offline decoder reads it as one trailing conditional block -- the same
-    // shape every prior addition to this record used.
     record.push_u16(report.moving_pid_output_peak);
     record
 }
 
-/// Encode one post-recovery probe decision (tag 13).
 pub(crate) fn encode_probe_decision(
     report: BreakawayProbeDecision,
 ) -> VelocitySweepCanonicalRecord {
@@ -198,7 +155,6 @@ pub(crate) fn encode_probe_decision(
     record
 }
 
-/// Encode a discovery-campaign terminal (tag 6).
 pub(crate) fn encode_discovery_terminal(
     report: AdditiveDiscoveryTerminal,
 ) -> VelocitySweepCanonicalRecord {
@@ -217,7 +173,6 @@ pub(crate) fn encode_discovery_terminal(
     record
 }
 
-/// Encode one in-band discovery rung's nomination bounds and margin (tag 7).
 pub(crate) fn encode_discovery_rung_margin(
     report: BreakawayDiscoveryRungMargin,
 ) -> VelocitySweepCanonicalRecord {
@@ -236,7 +191,6 @@ pub(crate) fn encode_discovery_rung_margin(
     record
 }
 
-/// Encode whether the additive ladder's rung zero itself showed motion (tag 8).
 pub(crate) fn encode_rung_zero_diagnostic(
     report: BreakawayRungZeroDiagnostic,
 ) -> VelocitySweepCanonicalRecord {
@@ -250,7 +204,6 @@ pub(crate) fn encode_rung_zero_diagnostic(
     record
 }
 
-/// Encode the immutable held-out confirmation plan (tag 9).
 pub(crate) fn encode_confirmation_planned(
     report: BandConfirmationPlanned,
 ) -> VelocitySweepCanonicalRecord {
@@ -271,7 +224,6 @@ pub(crate) fn encode_confirmation_planned(
     record
 }
 
-/// Encode a confirmation-block terminal (tag 10).
 pub(crate) fn encode_confirmation_terminal(
     report: BandConfirmationTerminal,
 ) -> VelocitySweepCanonicalRecord {
@@ -297,7 +249,6 @@ pub(crate) fn encode_confirmation_terminal(
     record
 }
 
-/// Encode one fresh held-out confirmation stroke's response interval (tag 11).
 pub(crate) fn encode_confirmation_observation(
     report: BandConfirmationObservation,
 ) -> VelocitySweepCanonicalRecord {
@@ -314,8 +265,6 @@ pub(crate) fn encode_confirmation_observation(
     record
 }
 
-/// Encode the canonical closure record for one complete breakaway campaign
-/// (tag 12).
 pub(crate) fn encode_campaign_terminal(
     report: BreakawayCampaignTerminal,
 ) -> VelocitySweepCanonicalRecord {
@@ -331,12 +280,6 @@ pub(crate) fn encode_campaign_terminal(
     record
 }
 
-/// Encode one rejected recovery-rest scoring window (tag 14).
-///
-/// Carries the scored-rest selector's own per-suffix verdicts alongside the
-/// settle-window displacement bounds that gate the one-count fallback, so a
-/// decoder can attribute the rejection to the statistical route, the fallback
-/// route, or both without re-running the selector.
 pub(crate) fn encode_recovery_rest_rejected(
     report: BreakawayRecoveryRestRejected,
 ) -> VelocitySweepCanonicalRecord {
@@ -370,10 +313,6 @@ pub(crate) fn encode_recovery_rest_rejected(
     record
 }
 
-/// Encode one recovery refused because its origin moved (tag 15).
-///
-/// Carries both offsets and their exact difference, so a decoder can separate
-/// a single-sample race from a real runaway without re-deriving either.
 pub(crate) fn encode_recovery_origin_mismatch(
     report: BreakawayRecoveryOriginMismatch,
 ) -> VelocitySweepCanonicalRecord {

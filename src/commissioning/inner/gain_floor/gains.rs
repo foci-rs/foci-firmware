@@ -1,27 +1,9 @@
-//! velocity_p / position_p derivation from measured accel_per_count and a
-//! fixed reference bandwidth.
-
-/// Bandwidth the outer-loop floor is derived from. The outer loops are bounded
-/// by the mechanics and the torque limit, not by the current loop, so this
-/// does not track the measured current-loop bandwidth.
 pub(crate) const OUTER_FLOOR_REFERENCE_BANDWIDTH_HZ: u32 = 1000;
 
-/// Velocity-loop target bandwidth as a fraction of the reference bandwidth.
 const REFERENCE_TO_VELOCITY_BANDWIDTH_RATIO: f32 = 17.0;
-/// Velocity integral gain as a multiple of velocity_p. Without an
-/// integrator the steady velocity lag at homing speed lands in position
-/// error and trips the stall detector (0.53 mm against a 0.5 mm
-/// stall_distance on the live CoreXY); at two thirds of P it winds up too
-/// slowly to matter inside the first homing stage (0.51 mm). The hand tune
-/// that homes reliably runs 1280 at P 350, so the floor uses that ratio.
 const VELOCITY_I_TO_P_NUMERATOR: u32 = 3;
 const VELOCITY_I_TO_P_DENOMINATOR: u32 = 1;
 
-/// Position-loop target as a fraction of the reference bandwidth. The
-/// register-scaling formula below labels this a bandwidth, but a much larger
-/// ratio let the axis lag enough at homing speed to trip the position-error
-/// stall detector; this one holds the homing error well inside the stall
-/// distance.
 const REFERENCE_TO_POSITION_BANDWIDTH_RATIO: f32 = 9.0;
 
 pub(crate) fn compute_velocity_p(
@@ -76,8 +58,6 @@ pub(crate) fn compute_position_p(
     Ok(gain)
 }
 
-/// Convert a plant gain in raw position units per microsecond^2 per
-/// torque-register count to `accel_per_count` (rad/s^2 per count).
 pub(crate) fn accel_raw_per_count_to_accel_per_count(
     accel_raw_per_us2_per_count: f64,
     position_units_per_rev: f64,
@@ -127,8 +107,6 @@ mod tests {
 
     #[test]
     fn position_p_reproduces_the_hand_tune_at_the_live_rig_bandwidth() {
-        // 2pi*600/9 rad/s * 60 * 256 / 65536 = 98.2 -> 99, against a hand
-        // tune of 100 that homes with under 0.1 mm of following error.
         assert_eq!(compute_position_p(600).expect("representable").raw(), 99);
     }
 
@@ -152,14 +130,6 @@ mod tests {
 
     #[test]
     fn accel_raw_q32_conversion_is_dimensionally_correct() {
-        // A synthetic Q32 value representing exactly 0.0001 counts/us^2, a
-        // 4000-count-per-rev encoder, and i_target=2000. Worked by hand:
-        // accel_raw_true = 0.0001; * 1e12 (the (1e6)^2 time-scale term this
-        // test exists specifically to catch if it's missing or duplicated)
-        // = 1e8; * 2*pi/4000 = 157,079.6; / 2000 = 78.54 rad/s^2 per count.
-        // A tight tolerance here fails if the 1e12 term is dropped (result
-        // would be ~7.85e-5, off by 12 orders of magnitude) or duplicated
-        // (result would be ~7.85e13).
         let result = accel_raw_per_count_to_accel_per_count(0.0001 / 2000.0, 4000.0)
             .expect("valid conversion");
         assert!(

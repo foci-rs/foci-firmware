@@ -1,12 +1,4 @@
 //! Phase 8: Closed-loop entry.
-//!
-//! Final phase before motion: writes the inner-loop (flux/torque/velocity/
-//! position) PID gains and velocity limit, raises the post-calibration
-//! voltage limit, locks `PHI_E_SELECTION` to the ABN encoder, zeros the
-//! position registers and PID integrators, programs `STEP_WIDTH` and
-//! biquad filters, enters position mode, waits for the velocity meter to
-//! read quiet before raising the enable pin, and runs a 30 ms two-sample
-//! stability check that aborts on runaway or large drift.
 
 use super::InnerPhase;
 use crate::autotune::{
@@ -28,55 +20,16 @@ use crate::tmc_register_values::{
 };
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
-/// `phi_m_abn` feedback (low byte) with the standard velocity meter (high byte).
-///
-/// Datasheet 4.6.11 offers two velocity algorithms. Meter 1 synchronises
-/// sampling to the PWM carrier, giving a 40 us update but a quantum of one
-/// encoder count per carrier period -- 375 RPM at 25 kHz and 4000 counts/rev.
-/// That put the commissioning target below the `389/2` crossover, where the
-/// velocity loop's error is dominated by the quantisation excursion instead of
-/// by the target, inflating measured peak controller output 3.47x.
-///
-/// Meter 0 differentiates at ~4369.067 Hz for a 229 us update and a 65.5 RPM
-/// quantum, moving the crossover to ~33 RPM -- below the default commissioning
-/// target on any travel and rotation distance. It also removes the reason the
-/// 200 Hz velocity biquad existed, and that filter's ~796 us time constant
-/// dominated loop lag: 229 us total here against roughly 836 us before.
-///
-/// The datasheet pairs meter 0 with the standard PI structure and meter 1 with
-/// the advanced structure this firmware selects (`MODE_PID_TYPE = 1`), warning
-/// that the loop "might tend to be unstable due to non-matched sampling". That
-/// pairing is untested rather than prohibited, and the alternatives were worse:
-/// shortening `MOVING_STROKE_US` cannot reach the crossover at default travel
-/// (it needs a stroke below the 256-sample analysis tail), and adopting the
-/// standard PI structure would invalidate the advanced-PI decay constant
-/// `tau = 65536 / (I_raw * f_pwm)` that the I-rung seeding depends on.
-/// Closed-loop entry's stability and runaway thresholds are the gate.
 const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0009;
-/// Velocity quantum of the standard meter selected above, in encoder counts per
-/// minute: one count per 65536/15 Hz differentiation sample, so `60 * 65536 / 15`
-/// exactly. Meter 1 would instead quantise at one count per PWM period.
 pub(crate) const STANDARD_VELOCITY_METER_COUNTS_PER_MINUTE: u32 = 262_144;
-// phi_m_abn selects the mechanical ABN angle directly; no pole-pair scaling applies.
 const CLOSED_LOOP_POSITION_SELECTION: u32 = 9;
 const CLOSED_LOOP_PHI_E_SELECTION: u32 = 3;
 const CLOSED_LOOP_ACTIVATION_STABILITY_THRESHOLD: u32 = 2;
 const CLOSED_LOOP_ACTIVATION_BOUNDED_DRIFT_WARN_THRESHOLD: u32 = 64;
-const CLOSED_LOOP_ACTIVATION_RUNAWAY_THRESHOLD: u32 = 32760; // ~40 steps
+const CLOSED_LOOP_ACTIVATION_RUNAWAY_THRESHOLD: u32 = 32760;
 
-/// Number of attempts allowed for a bounded-drift `ClosedLoopActivationUnstable`
-/// failure before surfacing a hard failure. Runaway failures (position error
-/// large and still growing -- the signature of wrong-sign feedback or genuine
-/// instability) never retry regardless of this budget.
 const CLOSED_LOOP_ACTIVATION_MAX_ATTEMPTS: u8 = 3;
 
-/// Quiet band for the pre-enable velocity settle, in the RPM units of
-/// `PID_VELOCITY_ACTUAL`.
-///
-/// The standard velocity meter differentiates phi_m through a 20 Hz low-pass
-/// that cannot be switched off (datasheet 4.8.2), so the `ABN_DECODER_COUNT`
-/// rewrite at encoder-alignment commit reads back as a decaying phantom
-/// velocity well after the rotor is already still.
 const CLOSED_LOOP_ACTIVATION_VELOCITY_QUIET_RPM: u32 = 4;
 const CLOSED_LOOP_ACTIVATION_VELOCITY_QUIET_SAMPLES: u8 = 3;
 const CLOSED_LOOP_ACTIVATION_VELOCITY_SAMPLE_PERIOD_US: u64 = 2_000;
@@ -142,7 +95,6 @@ async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
             PID_TORQUE_FLUX_LIMITS,
             backend.current_limit().register_value(),
         ),
-        // STEP_WIDTH consumes position units per emitted physical TMC pulse.
         (STEP_WIDTH, physical_step_width),
     ];
 
@@ -328,7 +280,6 @@ async fn fail_closed_loop_activation<B: CommissioningBackend>(
     ))
 }
 
-/// Advance closed-loop entry sub-state by one cooperative tick.
 pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,
@@ -410,7 +361,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                     velocity_i,
                 },
             );
-            // 1. Flux and torque PID gains.
             if backend
                 .write_register(PID_FLUX_P_FLUX_I, flux_reg)
                 .await
@@ -423,7 +373,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            // 2. Velocity PID gains.
             if backend
                 .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
                 .await
@@ -432,7 +381,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            // 3. Position PID gains.
             if backend
                 .write_register(PID_POSITION_P_POSITION_I, position_reg)
                 .await
@@ -446,7 +394,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
         }
 
         ClosedLoopActivationState::WriteLimits => {
-            // 4. Velocity limit.
             if backend
                 .write_register(PID_VELOCITY_LIMIT, velocity_limit)
                 .await
@@ -455,8 +402,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            // 5. Raise voltage limit for actual operation.
-            // ADC cal sets it to 1024 as a safety measure.
             let voltage_limit = backend.operational_voltage_limit();
             if backend
                 .write_register(PIDOUT_UQ_UD_LIMITS, voltage_limit)
@@ -479,10 +424,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
         }
 
         ClosedLoopActivationState::VerifyPhiE => {
-            // Set PHI_E_SELECTION to ABN encoder (3). For Calibrate this
-            // is already 3 from EncoderAlign::Commit; for Commission the
-            // intervening ElectricalIdentification/CurrentTune phases reset it to 1
-            // (external phi_e for voltage-mode sweeps).
             if backend
                 .write_register(PHI_E_SELECTION, CLOSED_LOOP_PHI_E_SELECTION)
                 .await
@@ -506,7 +447,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
         }
 
         ClosedLoopActivationState::ZeroAndClear => {
-            // 6. Zero position (also zeros target per datasheet 0x6B).
             if backend
                 .write_register(PID_POSITION_ACTUAL, 0)
                 .await
@@ -515,8 +455,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            // Clear PID integrators. These must succeed — entering
-            // position mode with stale error sums causes transients.
             let integrators_ok = async {
                 crate::commissioning::helpers::write_sub_register_checked(
                     backend,
@@ -557,10 +495,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
         }
 
         ClosedLoopActivationState::WritePositionConfig => {
-            // 7. Explicit selection setup:
-            // - velocity source 9 uses ABN mechanical angle
-            // - velocity meter 1 uses the advanced/PWM-synchronized meter
-            // - position source 9 uses ABN mechanical angle
             if backend
                 .write_register(VELOCITY_SELECTION, CLOSED_LOOP_VELOCITY_SELECTION)
                 .await
@@ -580,7 +514,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 }
             }
 
-            // 8. STEP_WIDTH consumes position units per emitted physical TMC pulse.
             let physical_step_width = match backend.configured_physical_step_width() {
                 Some(value) if value != 0 => value,
                 _ => {
@@ -595,7 +528,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
-            // Readback verification.
             match backend.read_register(STEP_WIDTH).await {
                 Ok(val) if val == physical_step_width => {}
                 _ => {
@@ -612,7 +544,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
         ClosedLoopActivationState::WriteFilters => {
             let pwm_maxcnt = backend.pwm_maxcnt();
 
-            // Best-effort filter writes (warn on failure, don't abort).
             if velocity_filter_hz > 0 {
                 crate::commissioning::helpers::write_biquad_velocity(
                     backend,
@@ -682,7 +613,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
         }
 
         ClosedLoopActivationState::EnterPositionMode => {
-            // MODE_PID_TYPE=1 (bit 31), MODE_MOTION=3 (position).
             if backend
                 .write_register(MODE_RAMP_MODE_MOTION, MOTION_POSITION_ADVANCED_PI)
                 .await
@@ -764,7 +694,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
             }
             backend.set_enable_pin(true);
 
-            // Schedule stability check after 10ms.
             let now = backend.elapsed_us();
             let Some(deadline_us) = now.checked_add(10_000) else {
                 return super::fail_inner(phase, CommissionError::InvalidSchedule);
@@ -784,7 +713,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 return StepResult::At(*deadline_us);
             }
 
-            // Read first position sample.
             let pos1 = match backend.read_register(PID_POSITION_ACTUAL).await {
                 Ok(val) => val as i32,
                 Err(_) => return super::fail_inner(phase, CommissionError::Spi),
@@ -808,7 +736,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 return StepResult::At(*deadline_us);
             }
 
-            // Read second position sample and check for runaway.
             let pos2 = match backend.read_register(PID_POSITION_ACTUAL).await {
                 Ok(val) => val as i32,
                 Err(_) => {
@@ -816,8 +743,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 }
             };
 
-            // Runaway detection: if position error is large and growing,
-            // the feedback sign is wrong.
             if pos2.unsigned_abs() > CLOSED_LOOP_ACTIVATION_RUNAWAY_THRESHOLD
                 && pos2.unsigned_abs() > position_1.unsigned_abs()
             {
@@ -863,13 +788,6 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::ClosedLoopActivationUnstable);
             }
 
-            // Stability check: a small two-sample drift can be a bounded
-            // hunt at entry. Every sequence that reaches this phase accepts
-            // it rather than treating it as a hard failure -- Commission
-            // additionally carries it into the longer sustained-hold window
-            // as evidence; Calibrate (which has no sustained-hold path)
-            // simply completes normally, same as a clean pass. Only
-            // drift beyond the bounded band remains a hard failure.
             let drift = (pos2.wrapping_sub(*position_1)).unsigned_abs();
             let bounded_hunt = drift > CLOSED_LOOP_ACTIVATION_STABILITY_THRESHOLD
                 && drift <= CLOSED_LOOP_ACTIVATION_BOUNDED_DRIFT_WARN_THRESHOLD;
@@ -1148,11 +1066,6 @@ mod tests {
 
         let selection = VelocitySelection::from(CLOSED_LOOP_VELOCITY_SELECTION);
 
-        // Datasheet 4.6.11: meter 0 differentiates at ~4369.067 Hz, giving a
-        // 65.5 RPM quantum at 4000 counts/rev against meter 1's PWM-synchronous
-        // 375 RPM. The 375 RPM quantum put the commissioning target below the
-        // 389/2 crossover, where the velocity loop's error is dominated by the
-        // quantisation excursion rather than by the target.
         assert_eq!(
             selection.velocity_meter_selection(),
             0,
@@ -1168,9 +1081,6 @@ mod tests {
             0,
             "the build must declare the standard-meter quantum it gates with"
         );
-        // The feedback source stays the mechanical ABN angle. `TmcMechanicalRpm`
-        // documents that this field, not the meter, fixes the RPM domain shared
-        // by PID_VELOCITY_TARGET and PID_VELOCITY_ACTUAL.
         assert_eq!(
             selection.velocity_selection(),
             9,
@@ -2108,8 +2018,6 @@ mod tests {
                 (MOTOR_TYPE_N_POLE_PAIRS.addr(), 3 << 16),
                 (PHI_E_SELECTION.addr(), 1),
                 (POSITION_SELECTION.addr(), 8),
-                // The superseded PWM-synchronous meter: a chip that retained it
-                // must not pass the armed-state readback.
                 (VELOCITY_SELECTION.addr(), 0x0000_0109),
                 (ABN_DECODER_PPR.addr(), 3999),
                 (ADC_I_SELECT.addr(), 0),
@@ -2296,9 +2204,6 @@ mod tests {
             });
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
-            // Above CLOSED_LOOP_ACTIVATION_BOUNDED_DRIFT_WARN_THRESHOLD (64):
-            // a bounded hunt inside that band is now accepted for every
-            // sequence, so this exercises genuinely excessive drift.
             backend
                 .registers
                 .insert(PID_POSITION_ACTUAL.addr(), 100)

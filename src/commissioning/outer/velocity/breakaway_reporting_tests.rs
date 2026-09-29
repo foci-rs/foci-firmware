@@ -1,10 +1,3 @@
-//! Tests for the breakaway-campaign wire-record assembly functions.
-//!
-//! Numeric fixtures reuse the rung-17/rung-18 measurements from
-//! `band_confirmation_tests.rs` (spec section 2) where a physically grounded
-//! value matters, so the reported percent/SE fields are checked against the
-//! same production formulas the confirmation acceptance gate itself uses.
-
 use foci_tmc4671::pid::PidPGain;
 
 use super::super::band_confirmation::{
@@ -30,8 +23,6 @@ fn gain(raw: u16) -> PidPGain {
     PidPGain::new(raw).expect("raw gain within PidPGain range")
 }
 
-/// Canonical acquisition context for probe-plan fixtures; exact values are
-/// arbitrary but fixed.
 fn probe_context() -> BreakawayProbeContext {
     BreakawayProbeContext {
         workflow_digest: 0xA1B2_C3D4_E5F6_0718,
@@ -76,7 +67,6 @@ fn atom(
 }
 
 const TARGET: i64 = 1_000_000;
-/// Rung 18 (gain 724): relative SE exactly 1.022% at mean 750,000 (`r = 75%`).
 const RUNG18_MEAN: i64 = 750_000;
 const RUNG18_VARIANCE: u128 = 58_752_225;
 
@@ -123,8 +113,6 @@ fn confirmation_input(
     }
 }
 
-// --- Probe plan --------------------------------------------------------
-
 #[test]
 fn probe_plan_report_carries_plan_digest_and_endpoints() {
     let p_start = gain(1);
@@ -154,8 +142,6 @@ fn probe_plan_report_carries_plan_digest_and_endpoints() {
     assert_eq!(report.max_capture_interval_us, plan.max_capture_interval_us);
 }
 
-// --- Resolved upward probe ----------------------------------------------
-
 #[test]
 fn probe_resolved_report_resolves_the_grid_gain() {
     let plan = plan_upward_breakaway_probe(gain(1), gain(1024), probe_context())
@@ -168,8 +154,6 @@ fn probe_resolved_report_resolves_the_grid_gain() {
     assert_eq!(report.motion_threshold_counts, plan.motion_threshold_counts);
     assert_eq!(report.observation_count, 17);
 }
-
-// --- Probe terminal ------------------------------------------------------
 
 #[test]
 fn breakaway_terminal_cause_wire_values_preserve_reserved_probe_slots() {
@@ -235,9 +219,6 @@ fn probe_terminal_cause_maps_every_non_found_variant() {
     assert_eq!(cause, BreakawayTerminalCause::ProbeSafetyFault);
     assert_eq!(has_fault, 1);
 
-    // An internal fault carries no safety fault, so it must not be reported as
-    // one. A `*_safety_fault` cause paired with `has_safety_fault = 0` reads as
-    // a safety event to anyone inspecting a capture, and is not.
     let (cause, has_fault) = probe_terminal_cause(&BreakawayProbeOutcome::SafetyFault {
         error: CommissionError::Spi,
         safety: None,
@@ -299,8 +280,6 @@ fn probe_terminal_report_carries_plan_identity_and_cause() {
     );
 }
 
-// --- Discovery plan and ladder -------------------------------------------
-
 fn discovery_fixture() -> (
     AdditiveDiscoveryRequest,
     super::super::breakaway_plan::AdditiveDiscoveryPlan,
@@ -339,8 +318,6 @@ fn discovery_plan_report_carries_floor_breakaway_ceiling_and_step() {
     assert_eq!(report.maximum_workflow_ms, request.workflow_envelope_ms);
     assert!(report.first_additive_step_raw > 0);
 
-    // The reconstructed step matches the realized gap between the breakaway
-    // rung and the rung immediately after it in the resolved ladder.
     let breakaway_position = plan.gains[..usize::from(plan.rung_count)]
         .iter()
         .position(|g| g.raw() == 91)
@@ -398,9 +375,6 @@ fn raw_observation_report_carries_atom_inputs_verbatim() {
         9,
     );
 
-    // The raw atom's family-free inputs pass through byte-for-byte -- this is
-    // what lets an offline decoder recompute r/SE/L/U/M_i and the [70, 80]
-    // containment itself rather than trusting the firmware's reduced bounds.
     assert_eq!(report.run_sequence, 7);
     assert_eq!(report.evidence_sequence, 9);
     assert_eq!(report.plan_digest, 0x1122_3344_5566_7788);
@@ -417,8 +391,6 @@ fn raw_observation_report_carries_atom_inputs_verbatim() {
     assert_eq!(report.mean_rate_q, -RUNG18_MEAN);
     assert_eq!(report.variance_of_mean_q2, RUNG18_VARIANCE);
     assert_eq!(report.target_rate_q, TARGET);
-    // The frozen classify/consensus inputs also pass through verbatim, so the
-    // offline decoder derives the consensus masks itself.
     assert_eq!(report.stationarity_code, 3);
     assert_eq!(report.settled_rate_low_q, -11);
     assert_eq!(report.settled_rate_high_q, 22);
@@ -434,8 +406,6 @@ fn raw_observation_report_carries_atom_inputs_verbatim() {
     assert_eq!(report.stroke_max_displacement_counts, 127);
     assert_eq!(report.capture_max_interval_us, 2_001);
 }
-
-// --- Discovery margins -----------------------------------------------------
 
 fn nominatable_bounds(
     p_raw: u16,
@@ -460,9 +430,7 @@ fn discovery_rung_margin_report_computes_margin_and_half_width() {
     assert_eq!(report.p_raw, 362);
     assert_eq!(report.lower_percent_milli, 71_000);
     assert_eq!(report.upper_percent_milli, 79_000);
-    // margin = min(71 - 70, 80 - 79) = min(1, 1) = 1 percent
     assert_eq!(report.margin_percent_milli, 1_000);
-    // half-width = (79 - 71) / 2 = 4 percent
     assert_eq!(report.half_width_percent_milli, 4_000);
     assert_eq!(report.adjacent_rate_step_percent_milli, 0);
 }
@@ -470,8 +438,8 @@ fn discovery_rung_margin_report_computes_margin_and_half_width() {
 #[test]
 fn discovery_rung_margin_report_computes_adjacent_step_from_previous_midpoint() {
     let bounds = [
-        nominatable_bounds(362, 71.0, 79.0), // midpoint 75.0
-        nominatable_bounds(512, 73.0, 77.0), // midpoint 75.0
+        nominatable_bounds(362, 71.0, 79.0),
+        nominatable_bounds(512, 73.0, 77.0),
     ];
 
     let second = discovery_rung_margin_report(&bounds, 1, 0x11, 3, 2).expect("nominatable rung");
@@ -479,8 +447,8 @@ fn discovery_rung_margin_report_computes_adjacent_step_from_previous_midpoint() 
     assert_eq!(second.adjacent_rate_step_percent_milli, 0);
 
     let bounds_shifted = [
-        nominatable_bounds(362, 71.0, 79.0), // midpoint 75.0
-        nominatable_bounds(512, 76.0, 80.0), // midpoint 78.0
+        nominatable_bounds(362, 71.0, 79.0),
+        nominatable_bounds(512, 76.0, 80.0),
     ];
     let shifted =
         discovery_rung_margin_report(&bounds_shifted, 1, 0x11, 3, 2).expect("nominatable rung");
@@ -500,8 +468,6 @@ fn discovery_rung_margin_report_rejects_non_nominatable_and_out_of_range() {
     assert!(discovery_rung_margin_report(&bounds, 5, 0x11, 3, 2).is_none());
 }
 
-// --- Rung-zero diagnostic --------------------------------------------------
-
 #[test]
 fn rung_zero_diagnostic_report_flags_each_direction_independently() {
     let (_, plan) = discovery_fixture();
@@ -518,8 +484,6 @@ fn rung_zero_diagnostic_report_flags_each_direction_independently() {
     assert_eq!(report.forward_moved, 0);
     assert_eq!(report.reverse_moved, 1);
 }
-
-// --- Discovery terminal -----------------------------------------------------
 
 #[test]
 fn discovery_terminal_cause_maps_every_non_selected_variant() {
@@ -587,10 +551,6 @@ fn discovery_terminal_report_matches_the_field_level_assembly() {
 fn discovery_safety_fault_terminal_reports_the_rungs_already_collected() {
     let (_, plan) = discovery_fixture();
 
-    // Discovery collected three in-band rungs, then a stroke faulted. The
-    // rungs are measured evidence and survive in the session; the terminal
-    // must say so, otherwise a capture cannot distinguish a fault that lost
-    // nothing from one that discarded a qualifying candidate.
     let outcome = AdditiveDiscoveryOutcome::SafetyFault {
         error: CommissionError::SafetyEnvelopeViolation,
         safety: Some(zero_safety_fault()),
@@ -606,8 +566,6 @@ fn discovery_safety_fault_terminal_reports_the_rungs_already_collected() {
         BreakawayTerminalCause::DiscoverySafetyFault as u8
     );
 }
-
-// --- Confirmation plan ------------------------------------------------------
 
 #[test]
 fn confirmation_plan_report_carries_band_and_margin() {
@@ -628,8 +586,6 @@ fn confirmation_plan_report_carries_band_and_margin() {
     assert_eq!(report.nominated_margin_percent_milli, 4_500);
 }
 
-// --- Confirmation observations ----------------------------------------------
-
 #[test]
 fn confirmation_observation_report_matches_evaluate_band_confirmation_math() {
     let observation = atom(
@@ -649,9 +605,6 @@ fn confirmation_observation_report_matches_evaluate_band_confirmation_math() {
         direction_report_code(VelocityDirection::Forward)
     );
 
-    // response_percent = 75%, relative SE = sqrt(58_752_225) / 750_000 =
-    // 7665 / 750_000 = 1.022% exactly. h = m(8) * SE, m(8) = 3.177104
-    // (`CONFIDENCE_MULTIPLIERS_95_DF15[7]`, family-8 index).
     let multiplier = confidence_multiplier_95_df15(8).expect("family 8 within table");
     let relative_se = 7_665.0_f32 / 750_000.0;
     let half_width_fraction = multiplier * relative_se;
@@ -674,9 +627,6 @@ fn confirmation_observation_report_matches_evaluate_band_confirmation_math() {
         expected_se_permille
     );
 
-    // The same atom, judged by the real acceptance gate at family 8 with
-    // three identical siblings per direction, must accept: this is exactly
-    // the physical claim the reported interval makes.
     let forward = confirmation_input(
         VelocityDirection::Forward,
         RUNG18_MEAN,
@@ -697,15 +647,12 @@ fn confirmation_observation_report_matches_evaluate_band_confirmation_math() {
 
 #[test]
 fn confirmation_observation_report_rejects_non_representable_mean() {
-    // Forward direction with a non-positive mean is not representable.
     let observation = atom(VelocityDirection::Forward, 0, RUNG18_VARIANCE, TARGET);
     assert!(
         confirmation_observation_report(0x33, 0, VelocityDirection::Forward, observation, 1, 0)
             .is_none()
     );
 }
-
-// --- Confirmation terminal ----------------------------------------------------
 
 #[test]
 fn confirmation_evaluated_terminal_report_accepted_carries_masks_and_gain() {
@@ -775,15 +722,9 @@ fn confirmation_evaluated_terminal_report_inconclusive_carries_failure_cause() {
     assert_eq!(report.confirmed_p_raw, 0);
 }
 
-/// FIX D(b): `ConfirmationEvidenceExcluded` after earlier strokes already
-/// folded evidence must report that partial evidence, not the empty fixture
-/// [`confirmation_zero_stroke_terminal_report`] reserves for the outcomes
-/// reachable before any stroke ever ran.
 #[test]
 fn confirmation_partial_evidence_terminal_report_carries_the_collected_masks() {
     let plan = plan_band_confirmation(0x44, gain(724)).expect("valid confirmation plan");
-    // Only the forward direction ran a stroke before exclusion; reverse never
-    // started, so its masks are honestly still zero.
     let forward = confirmation_input(
         VelocityDirection::Forward,
         RUNG18_MEAN,
@@ -820,25 +761,15 @@ fn confirmation_partial_evidence_terminal_report_carries_the_collected_masks() {
     assert_eq!(report.accepted, 0);
     assert_eq!(report.confirmed_p_raw, 0);
     assert_eq!(report.has_safety_fault, 0);
-    // The forward direction's real evidence survives, unlike the all-zero
-    // zero-stroke path.
     assert_eq!(report.forward_collected_mask, 0b1111);
     assert_eq!(report.forward_eligible_mask, 0b1111);
     assert_eq!(report.forward_included_mask, 0b1111);
     assert!(report.max_relative_se_permille > 0);
-    // The reverse direction genuinely never ran, so its masks are still zero
-    // -- distinct from the forward direction's real partial evidence.
     assert_eq!(report.reverse_collected_mask, 0);
     assert_eq!(report.reverse_eligible_mask, 0);
     assert_eq!(report.reverse_included_mask, 0);
 }
 
-/// A mid-block `SafetyFault`'s retained-evidence flag must survive the
-/// partial-evidence path exactly like it does on the zero-stroke path
-/// ([`confirmation_zero_stroke_terminal_report_zeroes_every_mask`] and
-/// friends): `has_safety_fault` is caller-supplied, not hardcoded, so it is
-/// not silently dropped when the reporter switches from the empty fixture to
-/// real collected evidence.
 #[test]
 fn confirmation_partial_evidence_terminal_report_carries_the_safety_fault_flag() {
     let plan = plan_band_confirmation(0x44, gain(724)).expect("valid confirmation plan");
@@ -876,8 +807,6 @@ fn confirmation_partial_evidence_terminal_report_carries_the_safety_fault_flag()
         BreakawayTerminalCause::ConfirmationSafetyFault as u8
     );
     assert_eq!(report.has_safety_fault, 1);
-    // The forward direction's real evidence still survives on the safety-fault
-    // path, not just the exclusion path.
     assert_eq!(report.forward_eligible_mask, 0b1111);
 }
 
@@ -931,7 +860,6 @@ fn confirmation_zero_stroke_cause_maps_every_zero_stroke_variant() {
         assert_eq!(has_fault, 0);
     }
 
-    // The wire value the host cause-name maps (klipper-foci, foci-trace) key on.
     assert_eq!(
         BreakawayTerminalCause::ConfirmationNoTransitionCapableCandidate as u8,
         27
@@ -969,8 +897,6 @@ fn confirmation_zero_stroke_cause_maps_every_zero_stroke_variant() {
     assert_eq!(cause, BreakawayTerminalCause::ConfirmationSafetyFault);
     assert_eq!(has_fault, 1);
 }
-
-// --- Campaign terminal --------------------------------------------------------
 
 #[test]
 fn campaign_terminal_report_carries_owning_phase_and_integral_digest() {
@@ -1033,8 +959,6 @@ fn campaign_terminal_report_names_the_owning_discovery_phase() {
         BreakawayTerminalCause::DiscoveryInsufficientAdditiveSpan as u8
     );
 }
-
-// --- Required-SE derivation self-check ---------------------------------------
 
 #[test]
 fn required_half_width_fraction_matches_the_public_band_edges() {

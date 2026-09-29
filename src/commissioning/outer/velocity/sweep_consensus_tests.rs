@@ -81,11 +81,6 @@ fn disconnected_depth_three_components_are_ambiguous() {
 
 #[test]
 fn a_fourth_eligible_observation_can_split_a_settled_component() {
-    // Sibling of disconnected_depth_three_components_are_ambiguous, which covers the
-    // four-eligible half with these same intervals. With only three eligible, one
-    // triple is wholly eligible and the component is its intersection. The drift
-    // bound makes previously excluded observations eligible, so moving between these
-    // two states is a reachable consequence of this change, not a hypothetical.
     let result = consensus(
         0b1111,
         [

@@ -1,13 +1,4 @@
 //! Cooperative commissioning state machine.
-//!
-//! [`CommissioningEngine`] is the entry point. Current-loop commissioning
-//! (diagnostics, electrical identification, current-loop tuning, and
-//! closed-loop entry) lives in [`inner`]. Installed tuning (outer-loop
-//! mechanical identification, velocity / position / filter tuning) lives in
-//! [`outer`].
-//! Shared low-level register helpers live in [`helpers`]. The public data
-//! types live in [`types`], while hardware capability traits live in
-//! [`backend`].
 
 pub mod backend;
 pub mod capture_timing;
@@ -45,8 +36,6 @@ use crate::trace::events::{
     EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION, EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG,
     TraceEventLevel, u32_arg,
 };
-// Raw FTRC trace-channel event ids: used only inside the raw-trace helpers
-// kept on `trace` (Integral/amplitude/breakaway terminal and evidence emission).
 #[cfg(feature = "trace")]
 use crate::trace::events::{
     EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL, EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN,
@@ -64,7 +53,6 @@ use crate::trace::events::{
 };
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
-// Re-export public API surface for downstream consumers.
 pub use crate::commissioning::backend::{
     CommissionBoardConfig, CommissionEncoderRead, CommissionMotorControl, CommissionRegisterIo,
     CommissionTiming, CommissionTrace, CommissioningBackend, CommissioningBackend as Backend,
@@ -74,70 +62,42 @@ pub use crate::commissioning::types::{
     StepResult as Step,
 };
 
-/// Trace status code for a phase that ended without an error.
 const PHASE_END_OK: u8 = 0;
 
 /// Parameters for outer (mechanical) commissioning engine construction.
-///
-/// Groups the inner-loop characterization results and operating mode
-/// the outer engine constructors need beyond `oid` and `entry_snapshot`.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub struct OuterAutotuneInputs {
-    /// Commissioning profile (conservative / balanced / aggressive).
     pub profile: CommissionProfile,
-    /// Operating mode (step/dir vs position).
     pub mode: OperatingMode,
-    /// Inner-loop time scale from current-loop commissioning (microseconds).
     pub inner_lambda_us: u32,
-    /// Theta-E delay from current-loop commissioning (microseconds).
     pub theta_e_us: u32,
-    /// Current-loop bandwidth from current-loop commissioning (Hz).
     pub current_bandwidth_hz: u32,
-    /// Inner-confidence warning bitfield carried from current-loop commissioning.
     pub inner_warning_flags: u8,
-    /// Host-requested mechanical velocity amplitude in milli-revolutions/s.
     pub requested_velocity_mrev_s: u32,
-    /// Kinematics-derived absolute machine velocity ceiling.
     pub machine_velocity_ceiling_mrev_s: u32,
-    /// Whether the requested amplitude was explicit or host-defaulted.
     pub requested_velocity_source:
         crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource,
-    /// Full displacement window spanning a moving stroke and its settle.
     pub max_stroke_travel_mrev: u32,
-    /// Host planning reserve for braking and settle drift.
     pub settle_travel_reserve_mrev: u32,
     /// Negative absolute-position headroom from the installed-tuning entry anchor.
     pub negative_position_headroom_mrev: u32,
-    /// Positive absolute-position headroom from the installed-tuning entry anchor.
     pub positive_position_headroom_mrev: u32,
-    /// Host-computed max primitive duration in milliseconds.
     pub max_duration_ms: u16,
     /// Axis homing speed, mrev/s; the homing bound's speed.
     pub homing_speed_mrev_s: u32,
     /// Machine acceleration, mrev/s^2; the stroke ramp rate.
     pub max_accel_mrev_s2: u32,
-    /// Requested execution order of the forward and reverse observation slots.
     pub slot_order: crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder,
 }
 
 /// Snapshot of outer gains at installed-tuning entry, for soft-failure restoration.
-///
-/// Current-loop gains are not included because installed tuning never mutates them.
-/// Built by the caller in `main.rs` from firmware atomics and passed to
-/// the outer engine constructors.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub struct OuterGainRollbackSnapshot {
-    /// Velocity P gain (Q8.8).
     pub velocity_p: PidPGain,
-    /// Velocity I gain (Q4.12).
     pub velocity_i: PidIGain,
-    /// Position P gain (Q8.8).
     pub position_p: PidPGain,
-    /// Position I gain (Q4.12).
     pub position_i: PidIGain,
-    /// PID velocity limit register value.
     pub velocity_limit: u32,
-    /// PIDOUT_UQ_UD_LIMITS operational value.
     pub voltage_limit: u32,
     /// Velocity biquad filter cutoff (Hz), 0 = disabled.
     pub velocity_filter_hz: u16,
@@ -149,22 +109,15 @@ pub struct OuterGainRollbackSnapshot {
     pub flux_filter_hz: u16,
 }
 
-/// Gain snapshot used by the calibrate-on-enable closed-loop entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct CalibrateEntryGains {
-    /// Inner current-loop gains to use during closed-loop entry.
     pub inner: InnerLoopGains,
     /// Validated outer-loop gains, or `None` when retained storage was corrupt.
     pub outer: Option<crate::pid::OuterLoopGains>,
-    /// PID velocity limit register value.
     pub velocity_limit: u32,
-    /// Velocity biquad filter cutoff (Hz), 0 = disabled.
     pub velocity_filter_hz: u16,
-    /// Torque biquad filter cutoff (Hz), 0 = disabled.
     pub torque_filter_hz: u16,
-    /// Position biquad filter cutoff (Hz), 0 = disabled.
     pub position_filter_hz: u16,
-    /// Flux biquad filter cutoff (Hz), 0 = disabled.
     pub flux_filter_hz: u16,
 }
 
@@ -194,7 +147,6 @@ impl CalibrateEntryGains {
     }
 }
 
-/// Which commissioning mode is active.
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum EngineMode {
@@ -209,15 +161,10 @@ pub(crate) enum EngineMode {
         phase: OuterPhase,
         profile: CommissionProfile,
         mode: OperatingMode,
-        /// Inner-loop time scale in microseconds.
         inner_lambda_us: u32,
-        /// Electrical transport delay in microseconds.
         theta_e_us: u32,
-        /// Current-loop effective bandwidth Hz from inner commissioning.
         current_bandwidth_hz: u32,
-        /// Inner-confidence warning bitfield carried from current-loop commissioning.
         inner_warning_flags: u8,
-        /// Gains snapshot at entry for soft-failure restoration.
         entry_snapshot: OuterGainRollbackSnapshot,
     },
 }
@@ -244,33 +191,18 @@ impl TraceRunState {
 }
 
 /// Cooperative commissioning state machine.
-///
-/// Created when a `foci_commission`, `foci_tune`, or `foci_calibrate`
-/// command arrives. Stored as `Option<CommissioningEngine>` in the
-/// P1 `tmc_control` task. Each 1kHz tick calls `step()`.
 pub struct CommissioningEngine {
     oid: u8,
     tmc_state: &'static TmcChannelState,
     engine_mode: EngineMode,
     buf: TransientBuffer,
-    /// Per-stage results collected during a selftest run. Populated only
-    /// when `sequence == InnerSequence::Selftest`; unused otherwise.
     selftest_results: crate::selftest::SelftestResults,
-    /// Structured diagnostics retained for host-visible troubleshooting.
     diagnostics: crate::selftest::CommissionDiagnostics,
     trace_run: TraceRunState,
     trace_summary_seqs: TraceSummarySeqs,
-    /// Last phase reported to the host, so an outer workflow boundary is
-    /// detected once rather than on every tick.
     last_emitted_phase: Option<CommissionPhase>,
 }
 
-/// Phase-independent assembly shared by every outer constructor.
-///
-/// Derives the outer safety envelope from the motion budget and carries the
-/// engine fields that do not depend on the chosen [`OuterPhase`], so each
-/// entry point can build its own phase directly instead of constructing a
-/// carrier phase and replacing it in place.
 struct OuterScaffold {
     oid: u8,
     tmc_state: &'static TmcChannelState,
@@ -282,7 +214,6 @@ struct OuterScaffold {
     inner_warning_flags: u8,
     entry_snapshot: OuterGainRollbackSnapshot,
     trace_engine_seq: u32,
-    /// Independent outer safety envelope derived from the motion budget.
     safety: OuterSafetyLimits,
 }
 
@@ -292,7 +223,6 @@ impl CommissioningEngine {
         Self::new_calibrate_with_trace_seq(oid, 0)
     }
 
-    /// Create an engine for calibration with a caller-assigned trace sequence.
     #[cfg(test)]
     pub(crate) fn new_calibrate_with_trace_seq(oid: u8, trace_engine_seq: u32) -> Self {
         Self::new_calibrate_for_tmc_with_trace_seq(
@@ -302,7 +232,6 @@ impl CommissioningEngine {
         )
     }
 
-    /// Create a calibration engine bound to a TMC channel state with a trace sequence.
     #[cfg(test)]
     pub(crate) fn new_calibrate_for_tmc_with_trace_seq(
         oid: u8,
@@ -318,7 +247,6 @@ impl CommissioningEngine {
         )
     }
 
-    /// Create a calibration engine bound to a TMC channel state and stored gains.
     #[cfg(test)]
     pub(crate) fn new_calibrate_for_tmc_with_gains(
         oid: u8,
@@ -331,8 +259,6 @@ impl CommissioningEngine {
     /// Create a calibration engine (re-enable path) bound to a TMC channel state, stored gains,
     /// and trace sequence.
     ///
-    /// Runs ADC calibration, encoder alignment, and closed-loop entry
-    /// with saved gains. Skips coil/wiring/encoder diagnostics.
     /// Returns `StepResult::CalibrateDone` on success.
     pub fn new_calibrate_for_tmc_with_gains_and_trace_seq(
         oid: u8,
@@ -370,7 +296,6 @@ impl CommissioningEngine {
         Self::new_selftest_with_trace_seq(oid, 0)
     }
 
-    /// Create a selftest engine with a caller-assigned trace sequence.
     #[cfg(test)]
     pub(crate) fn new_selftest_with_trace_seq(oid: u8, trace_engine_seq: u32) -> Self {
         Self::new_selftest_for_tmc_with_trace_seq(
@@ -380,7 +305,6 @@ impl CommissioningEngine {
         )
     }
 
-    /// Create a selftest engine bound to a TMC channel state.
     #[cfg(test)]
     pub(crate) fn new_selftest_for_tmc(oid: u8, tmc_state: &'static TmcChannelState) -> Self {
         Self::new_selftest_for_tmc_with_trace_seq(oid, tmc_state, 0)
@@ -389,9 +313,7 @@ impl CommissioningEngine {
     /// Create a selftest engine (diagnostics + electrical ID) bound to a TMC channel state with a
     /// trace sequence.
     ///
-    /// Runs ADC calibration, coil check, phase wiring, encoder check,
-    /// encoder alignment, and electrical identification, then stops with
-    /// `StepResult::SelftestDone` after restoring safe state.
+    /// Stops with `StepResult::SelftestDone` after restoring safe state.
     pub fn new_selftest_for_tmc_with_trace_seq(
         oid: u8,
         tmc_state: &'static TmcChannelState,
@@ -421,7 +343,6 @@ impl CommissioningEngine {
         Self::new_commission_with_trace_seq(oid, profile, 0)
     }
 
-    /// Create a current-loop commissioning engine with a caller-assigned trace sequence.
     #[cfg(test)]
     pub(crate) fn new_commission_with_trace_seq(
         oid: u8,
@@ -438,8 +359,6 @@ impl CommissioningEngine {
 
     /// Create a current-loop commissioning engine bound to a TMC channel state and trace sequence.
     ///
-    /// Full diagnostics, electrical ID, current tune/validate, then
-    /// closed-loop entry with fallback outer gains.
     /// Returns `StepResult::CommissionDone` on success.
     pub fn new_commission_for_tmc_with_trace_seq(
         oid: u8,
@@ -466,11 +385,6 @@ impl CommissioningEngine {
         }
     }
 
-    /// Derive the outer safety envelope and phase-independent engine fields.
-    ///
-    /// The safety limits start with placeholder values; the entry phase's
-    /// `Setup` sub-state reads the actual encoder position and current limit
-    /// from the backend on the first `step()`.
     fn outer_scaffold(
         oid: u8,
         tmc_state: &'static TmcChannelState,
@@ -525,7 +439,6 @@ impl CommissioningEngine {
         }
     }
 
-    /// Finish an outer engine from a scaffold and its chosen entry phase.
     fn assemble_outer(scaffold: OuterScaffold, phase: OuterPhase) -> Self {
         let OuterScaffold {
             oid,
@@ -564,14 +477,6 @@ impl CommissioningEngine {
 
     /// Create a breakaway-campaign engine from an admitted, pre-planned campaign.
     ///
-    /// The campaign is built and its command-level workflow envelope reserved by
-    /// [`crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command`]
-    /// before this call, so construction here is pure state assembly: it derives
-    /// the outer safety envelope from the motion budget, configures it for the
-    /// campaign's encoder domain and velocity ceiling, and builds
-    /// [`OuterPhase::BreakawayCampaign`] directly. No motion is commanded; the
-    /// probe's first stroke is only reachable through the engine step loop.
-    ///
     /// # Errors
     ///
     /// Returns [`CommissionError::EncoderFault`] when the campaign's frozen encoder
@@ -608,11 +513,6 @@ impl CommissioningEngine {
         Ok(Self::assemble_outer(scaffold, phase))
     }
 
-    /// Return the live breakaway execution plan used by terminal retention.
-    ///
-    /// `Some` only for a breakaway acceptance run, so a `Some` return is itself
-    /// the "run is breakaway" discriminator the install site needs; any other
-    /// acceptance source returns `None`.
     pub(crate) fn breakaway_integral_execution_plan(
         &self,
     ) -> Option<crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan>
@@ -629,12 +529,6 @@ impl CommissioningEngine {
         (data.plan.acceptance_source == AcceptanceSource::Breakaway).then_some(data.plan)
     }
 
-    /// Trace diagnostic read at the acceptance-point install seam: the live
-    /// velocity-integral plan's acceptance source and whether that phase is
-    /// still resident. Returns `(source_code, phase_live)` with source_code
-    /// 1=Breakaway, 2=NonBreakaway, 0=phase not resident. Lets a skipped
-    /// install be attributed to phase liveness versus plan source without
-    /// re-deriving either from the terminal.
     #[cfg(feature = "trace")]
     pub(crate) fn integral_promotion_source_diagnostic(&self) -> (u8, bool) {
         use crate::commissioning::outer::velocity::integral_plan::AcceptanceSource;
@@ -706,12 +600,6 @@ impl CommissioningEngine {
 
     /// Create a reversal-standstill robustness engine from a preflighted point.
     ///
-    /// Mirrors [`Self::new_outer_for_tmc_with_fixed_gain_amplitude_preflight`] but
-    /// configures the outer safety envelope up front from the accepted point's
-    /// own probe velocity, because the robustness stepper's `Setup` -- unlike the
-    /// Integral/acceptance stepper -- assumes the encoder domain and velocity
-    /// envelope are already installed and only reads the encoder baseline itself.
-    ///
     /// # Errors
     ///
     /// Returns [`CommissionError::EncoderFault`] for an invalid encoder domain,
@@ -765,14 +653,6 @@ impl CommissioningEngine {
         Ok(Self::assemble_outer(scaffold, phase))
     }
 
-    /// Create a two-bound position-P ladder engine over the installed tune.
-    ///
-    /// Takes no preflight and configures no safety envelope, unlike
-    /// [`Self::new_outer_for_tmc_with_robustness`]: this phase's own
-    /// `MeasuringFloor` entry reads the encoder resolution, torque cap, and
-    /// live velocity gains from the backend and installs the encoder domain
-    /// and velocity envelope itself, so there is nothing for a caller to
-    /// supply or for construction to reject.
     pub(crate) fn new_outer_for_tmc_with_position_tune(
         oid: u8,
         tmc_state: &'static TmcChannelState,
@@ -791,7 +671,6 @@ impl CommissioningEngine {
         Self::assemble_outer(scaffold, phase)
     }
 
-    /// Return the order of the active fixed-I fixed-gain amplitude run.
     pub(crate) fn fixed_gain_amplitude_order(
         &self,
     ) -> Option<
@@ -818,7 +697,6 @@ impl CommissioningEngine {
         }
     }
 
-    /// Return the exact digest of the active fixed-I fixed-gain amplitude plan.
     pub(crate) fn fixed_gain_amplitude_plan_digest(&self) -> Option<u64> {
         let EngineMode::Outer {
             phase: OuterPhase::VelocityIntegral { data, .. },
@@ -842,11 +720,6 @@ impl CommissioningEngine {
         self.oid
     }
 
-    /// Complete an active breakaway cancellation before removing its engine.
-    ///
-    /// Only the live [`OuterPhase::BreakawayCampaign`] phase owns an active
-    /// campaign breadcrumb. Terminal and Integral phases are deliberately left
-    /// unchanged so their completed evidence cannot be overwritten.
     pub(crate) fn take_after_handled_stop(slot: &mut Option<Self>) -> Option<Self> {
         if matches!(
             slot.as_ref().map(|engine| &engine.engine_mode),
@@ -864,9 +737,6 @@ impl CommissioningEngine {
     }
 
     /// Identify which constructor produced this engine.
-    ///
-    /// Used by the dispatch to choose the right reply payload at terminal arms,
-    /// and at trace-start gating in PhaseChanged.
     pub fn kind(&self) -> EngineKind {
         match &self.engine_mode {
             EngineMode::Inner {
@@ -885,7 +755,6 @@ impl CommissioningEngine {
         }
     }
 
-    /// Operational velocity-output limit owned by an active trace velocity workflow.
     pub(crate) fn velocity_operational_torque_limit(&self) -> Option<u16> {
         let EngineMode::Outer { phase, .. } = &self.engine_mode else {
             return None;
@@ -896,10 +765,6 @@ impl CommissioningEngine {
             {
                 Some(data.plan.hard_torque_limit)
             }
-            // The breakaway campaign energizes the motor with an active torque
-            // limit (the frozen `hard_torque_limit` it later hands to Integral),
-            // so safe-state restoration of an armed campaign phase must report
-            // it rather than falling through to `None`.
             OuterPhase::BreakawayCampaign { campaign, .. } if campaign.hard_torque_limit() != 0 => {
                 Some(campaign.hard_torque_limit())
             }
@@ -907,17 +772,12 @@ impl CommissioningEngine {
         }
     }
 
-    /// Mark a completed trace velocity exit after disarm and checked restoration.
     pub(crate) fn mark_velocity_limit_restored(&mut self) {
         let EngineMode::Outer { phase, .. } = &mut self.engine_mode else {
             return;
         };
         match phase {
             OuterPhase::VelocityIntegral { data, .. } => data.plan.hard_torque_limit = 0,
-            // The campaign's operational limit lives in its frozen inputs, which
-            // the Integral hand-off still reads, so it must not be cleared. The
-            // engine is consumed or replaced immediately after a checked
-            // restoration, so no idempotent re-query occurs on this phase.
             OuterPhase::BreakawayCampaign { .. } => {}
             _ => {}
         }
@@ -975,12 +835,6 @@ impl CommissioningEngine {
 
     /// Wire code of the position-P sweep's specific failure outcome, or `0`
     /// when this run is not a failed position-P sweep.
-    ///
-    /// The terminal reply's generic status carries only
-    /// `CommissionError::PositionTuneFailed`; this is the only channel that
-    /// tells the host which of the sweep's outcomes it was. Read at the same
-    /// point in the failure restore as [`Self::outer_safety_fault`], while the
-    /// engine still holds its terminal phase.
     pub fn position_tune_outcome_code(&self) -> u8 {
         match &self.engine_mode {
             EngineMode::Outer {
@@ -993,8 +847,7 @@ impl CommissioningEngine {
 
     /// The position-P sweep's evidence at the moment of failure, from either
     /// `PositionTuneFailed` or `FailedWithSafety`; `Default` (all-zero)
-    /// otherwise. Read at the same point in the failure restore as
-    /// [`Self::position_tune_outcome_code`].
+    /// otherwise.
     pub fn position_tune_failure_provenance(
         &self,
     ) -> crate::commissioning::types::PositionTuneProvenance {
@@ -1011,11 +864,6 @@ impl CommissioningEngine {
         }
     }
 
-    /// The resident `PositionTune` phase's current sub-step, for tests that
-    /// need to script registers per tick while driving the full engine
-    /// (rather than the bare `OuterPhase`) through a multi-rung sweep.
-    /// `None` once the phase is no longer `PositionTune` (predict not yet
-    /// run, or a terminal already replaced it).
     #[cfg(test)]
     pub(crate) fn position_tune_step_for_test(
         &self,
@@ -1038,7 +886,6 @@ impl CommissioningEngine {
         core::mem::take(&mut self.selftest_results)
     }
 
-    /// Mutably borrow the diagnostics collected during this run.
     #[cfg(test)]
     pub(crate) fn diagnostics_mut(&mut self) -> &mut crate::selftest::CommissionDiagnostics {
         &mut self.diagnostics
@@ -1102,7 +949,6 @@ impl CommissioningEngine {
         }
     }
 
-    /// Attach and return the terminal-sequenced active-I rest-boundary record.
     pub(crate) fn attach_integral_rest_boundary(
         &self,
         terminal: &mut crate::commissioning::types::VelocityIntegralTerminal,
@@ -1172,12 +1018,6 @@ impl CommissioningEngine {
         Some(safety.budget)
     }
 
-    /// The active outer phase, when it has not yet been reported to the host.
-    ///
-    /// Outer steppers report evidence, not transitions: a velocity workflow
-    /// boundary is only visible as a change in the resident phase, so the
-    /// engine detects it here. Inner phases report their own transitions and
-    /// are left alone.
     fn unreported_outer_phase(&self) -> Option<CommissionPhase> {
         let EngineMode::Outer { phase, .. } = &self.engine_mode else {
             return None;
@@ -1300,7 +1140,6 @@ impl CommissioningEngine {
         }
     }
 
-    /// Emit the authoritative Integral terminal after retained-evidence policy.
     #[cfg(feature = "trace")]
     #[inline(never)]
     pub(crate) fn emit_integral_terminal_trace<B: CommissioningBackend>(
@@ -1359,7 +1198,6 @@ impl CommissioningEngine {
         self.trace_run.terminal = true;
     }
 
-    /// Emit the authoritative amplitude terminal after disarm and retained-state policy.
     #[cfg(feature = "trace")]
     pub(crate) fn emit_fixed_gain_amplitude_terminal_trace<B: CommissioningBackend>(
         &mut self,
@@ -1401,9 +1239,6 @@ impl CommissioningEngine {
         match result {
             StepResult::ReadyNow | StepResult::At(_) => {}
             StepResult::PhaseChanged(phase) => {
-                // The span for a run's first phase is already open from
-                // `emit_trace_start`, so reporting that phase to the host must
-                // not close and reopen it. Only a real boundary does.
                 if self.trace_run.current_phase != Some(*phase) {
                     self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                     self.trace_run.phase_seq = self.trace_run.phase_seq.wrapping_add(1);
@@ -1511,17 +1346,7 @@ impl CommissioningEngine {
             #[cfg(not(feature = "trace"))]
             StepResult::FixedGainAmplitudeEvent(_) => {}
             StepResult::FixedGainAmplitudeTerminal(_) => {}
-            // The robustness terminal's Klipper reply is built from the same
-            // evidence over the `commission_dispatch::replies` path, exactly like
-            // the fixed-gain-amplitude terminal above; this FTRC raw-trace hook has
-            // nothing to add for it.
             StepResult::RobustnessReversalTerminal(_) => {}
-            // The campaign engine that produces these
-            // `StepResult` variants runs in the default build, so they are now
-            // reachable without any trace feature. This function's only job is
-            // FTRC raw-trace emission (`commission_dispatch::replies` builds the
-            // real Klipper reply from the same evidence over a separate path),
-            // so production still has nothing to do here: no-op stub.
             #[cfg(not(feature = "trace"))]
             StepResult::BreakawayCampaignEvent(_) => {}
             #[cfg(not(feature = "trace"))]
@@ -1530,11 +1355,6 @@ impl CommissioningEngine {
             StepResult::BreakawayCampaignEvent(event) => {
                 self.emit_breakaway_campaign_trace(backend, *event);
             }
-            // Emit the hand-off's plan trace records here, where every other
-            // engine trace record is emitted, rather than in a transport layer.
-            // The combined path emits the equivalent records from
-            // `commission_dispatch` because its plan rides a reply built there;
-            // a breakaway hand-off has no such reply, so the engine owns it.
             #[cfg(feature = "trace")]
             StepResult::BreakawayIntegralPlanReady { run_sequence, plan } => {
                 for record in
@@ -1568,19 +1388,6 @@ impl CommissioningEngine {
         }
     }
 
-    /// Emit one breakaway-campaign evidence record onto the FTRC trace
-    /// stream: the dedicated bulk USB interface `foci-trace` captures,
-    /// physically separate from the Klipper command-reply connection
-    /// `commission_dispatch::replies::emit_breakaway_campaign_event` feeds
-    /// with the same evidence. Mirrors the `FixedGainAmplitudeEvent` arm above:
-    /// one canonical-record push per wire record, one lightweight
-    /// `CommissionTraceEvent` marker per tick.
-    /// A batch variant (every in-band rung's margin, every resolved ladder
-    /// rung, every held-out stroke) fans out to one canonical-record push per
-    /// item, exactly as `emit_breakaway_campaign_event` fans out on the
-    /// Klipper reply path -- both paths loop over the same retained
-    /// `breakaway_reporting` per-item report functions, so they can never
-    /// disagree about which items exist.
     #[cfg(feature = "trace")]
     fn emit_breakaway_campaign_trace<B: CommissioningBackend>(
         &mut self,
@@ -1764,11 +1571,7 @@ impl CommissioningEngine {
     ///
     /// Returns a [`StepResult`] indicating whether to continue, report
     /// a phase transition, or finalize.
-    ///
-    /// Destructures `engine_mode` to pass `phase` and `buf` separately,
-    /// avoiding a double `&mut self` borrow.
     pub async fn step<B: CommissioningBackend>(&mut self, backend: &mut B) -> StepResult {
-        // E-stop check at the top of every step.
         if backend.is_shutdown_requested() {
             if let EngineMode::Inner { phase, .. } = &self.engine_mode {
                 inner::electrical_identification::push_active_electrical_diagnostics(
@@ -1776,17 +1579,6 @@ impl CommissioningEngine {
                     &mut self.diagnostics,
                 );
             }
-            // Defense in depth: dispatch already restores safe state on
-            // terminal failures, but the shutdown abort path bypasses
-            // step_inner / step_outer entirely, so it never reaches
-            // `fail_position_tune` or any of `dispatch.rs`'s outer-safety
-            // exits. Halt the step-queue stimulus unconditionally, before
-            // anything else, for the same reason those sites do: clearing
-            // `motor_armed` does not itself stop an already-armed step
-            // timer, only `stimulus_stop` does. Unconditional rather than
-            // gated on `OuterPhase::PositionTune` -- `stimulus_stop` and
-            // `set_stimulus_feedforward(false)` are documented idempotent,
-            // so this is a safe no-op whenever no stimulus was ever armed.
             crate::commissioning::outer::position_tune::abort_stimulus(backend);
             self.tmc_state
                 .motor_armed
@@ -1872,7 +1664,6 @@ impl CommissioningEngine {
         )
     }
 
-    /// Drive one deadline capture without unwinding between sample slots.
     pub(crate) async fn step_scheduled<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
@@ -1904,7 +1695,6 @@ impl CommissioningEngine {
         }
     }
 
-    /// Abort commissioning, restoring safe state.
     fn abort(&mut self, error: CommissionError) -> StepResult {
         match &self.engine_mode {
             EngineMode::Inner { .. } => StepResult::InnerFailed(error),
@@ -1985,11 +1775,6 @@ mod tests {
             size_of::<crate::commissioning::outer::velocity::sweep_plan::VelocitySweepExecutionPlan>(
             ) == 32
         );
-        // 224 before observations carried the rejection diagnostic, 256 before
-        // that diagnostic also carried the slope and its half-width, 272 before
-        // the diagnostic also carried the regression span. These events are
-        // transient, built and encoded on the stack, so this does not grow
-        // retained commissioning state. Frame budgets are checked by parity.
         assert_eq!(
             size_of::<crate::commissioning::types::VelocityIntegralEvent>(),
             288
@@ -2012,15 +1797,7 @@ mod tests {
             3_392,
             "the gain-floor capture buffer must stay inside the existing variant slack"
         );
-        // `StepResult` and `CommissioningEngine` absorb `PositionTuneProvenance`
-        // growth without changing size -- the breakaway campaign payload
-        // above stays this enum's largest variant.
         assert_eq!(size_of::<crate::commissioning::types::OuterResult>(), 88);
-        // The breakaway campaign is the largest outer payload: its
-        // probe/discovery/confirmation state machine and borrowed workspace
-        // outweigh the classic VelocitySweep variant. Exact, so retained
-        // engine state cannot grow unnoticed; the audited F407 ceiling is
-        // the `<= 6_144` bound below.
         assert_eq!(size_of::<CommissioningEngine>(), 5_760);
         assert!(size_of::<CommissioningEngine>() <= 5_776);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
@@ -2028,10 +1805,6 @@ mod tests {
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);
         assert_eq!(size_of::<[u16; crate::autotune::TRANSIENT_LEN]>(), 512);
         assert_eq!(size_of::<crate::autotune::DelayTimestampOffsets>(), 514);
-        // Async future sizes are stack, not static allocation, and the F407
-        // budget is roughly 4 KB each. Treat a failure here as a design
-        // question: a future that grows past its bound has overflowed the
-        // interrupt stack on real hardware before.
         assert_eq!(engine_step, 4_400);
         assert!(engine_step <= 4_400);
         assert_eq!(step_inner, 4_352);
@@ -2040,8 +1813,6 @@ mod tests {
         assert!(electrical_id <= 640);
         assert!(electrical_id <= 720);
         assert_eq!(scheduled_step, 4_480);
-        // The hot path keeps nonterminal classification outside the terminal
-        // async dispatch future.
         assert!(scheduled_step <= 4_480);
     }
 
@@ -2228,9 +1999,6 @@ mod tests {
                 0,
                 crate::autotune::CommissionProfile::Balanced,
             );
-            // Focused phase tests cover the earlier current-loop commissioning schedules. Seed the
-            // final phase here to exercise engine dispatch through a successful
-            // terminal result without reproducing analog estimator fixtures.
             let EngineMode::Inner { phase, .. } = &mut engine.engine_mode else {
                 unreachable!();
             };
@@ -2293,10 +2061,6 @@ mod tests {
         });
     }
 
-    /// `OuterResult` field values are arbitrary here: `assert_terminal_trace`
-    /// only inspects the trace events emitted around a `StepResult::OuterDone`,
-    /// not this struct's contents, so any well-formed value exercises the
-    /// terminal-trace path shared by every live outer constructor.
     fn sample_outer_result(status: crate::autotune::CommissionStatus) -> OuterResult {
         OuterResult {
             status,
@@ -2331,9 +2095,6 @@ mod tests {
         }
     }
 
-    /// `breakaway_safety_engine` starts the outer engine in
-    /// `OuterPhase::BreakawayCampaign`, which reports
-    /// `BreakawayProportionalAcquisition`; see `OuterPhase::current_phase_id`.
     fn initial_outer_phase_id() -> CommissionPhase {
         CommissionPhase::BreakawayProportionalAcquisition
     }
@@ -2441,9 +2202,6 @@ mod tests {
         assert_eq!(breakaway_safety_engine(42).kind(), EngineKind::OuterTune,);
     }
 
-    /// The budget-derivation logic in `outer_scaffold` is shared by every
-    /// live outer constructor, so a breakaway-campaign engine is as valid a
-    /// witness for this contract as any other.
     #[test]
     fn new_outer_seeds_host_motion_budget() {
         use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
@@ -2622,8 +2380,6 @@ mod tests {
             backend.current_limit_value = current_limit(2_816);
             backend.mechanical_encoder_position_counts_value = 1_234;
 
-            // The engine names the campaign's workflow before dispatching its
-            // stepper, so the probe plan lands one tick later.
             let entry = engine.step(&mut backend).await;
             assert!(matches!(
                 entry,
@@ -2733,7 +2489,6 @@ mod tests {
             plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, 42)
                 .expect("a valid host request must admit a breakaway campaign");
 
-        // The command discloses the breakaway shape and a well-ordered envelope.
         assert_eq!(
             workflow.shape,
             VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral
@@ -2758,19 +2513,9 @@ mod tests {
                 ..
             }
         ));
-        // Without this limit the terminal disarm skips zeroing the velocity
-        // target and restoring the operational torque clamp.
         assert_eq!(engine.velocity_operational_torque_limit(), Some(2_816));
     }
 
-    /// A live breakaway campaign must dual-emit -- the Klipper
-    /// wire path (`commission_dispatch::replies::emit_breakaway_campaign_event`,
-    /// covered by `breakaway_campaign_tests.rs`) and the FTRC trace path
-    /// covered here. Drives a real `CommissioningEngine` through its
-    /// workflow-entry phase change to the probe plan, which freezes before any
-    /// stroke, and confirms `emit_trace_after_step` is no longer a no-op for
-    /// `StepResult::BreakawayCampaignEvent`: both the canonical detail record
-    /// and the lightweight marker land on the `MockBackend`.
     #[cfg(feature = "trace")]
     #[fixture_test]
     async fn a_live_campaign_emits_its_probe_plan_onto_the_ftrc_trace_stream() {
@@ -2835,14 +2580,6 @@ mod tests {
             .expect(
                 "no tag-0 (breakaway probe-planned) canonical record reached the FTRC trace stream",
             );
-        // Canonical record layout: tag(1) + run_sequence(4) + evidence_sequence(2)
-        // + plan_digest(8) + max_observations(1) + search_count(1)
-        // + p_start_raw(2) + p_top_raw(2) + workflow_digest(8)
-        // + target_velocity_rpm(4) + hard_torque_limit(2)
-        // + usable_torque_limit(2) + pwm_hz(4)
-        // + encoder_counts_per_rev(4) + motion_threshold_counts(4)
-        // + max_capture_interval_us(4) = 53 bytes; see
-        // `breakaway_trace_reporting::encode_probe_planned` and its own golden test.
         assert_eq!(detail.as_bytes().len(), 53);
     }
 
@@ -2936,9 +2673,6 @@ mod tests {
             TraceEventLevel::Info,
         );
         assert_terminal_trace(
-            // 0: assert_terminal_trace's terminal-event assertion hardcodes a
-            // 0 trace-sequence second value, matching every other engine kind
-            // exercised here.
             breakaway_safety_engine(0),
             StepResult::OuterDone(sample_outer_result(
                 crate::autotune::CommissionStatus::Accepted,
@@ -3033,10 +2767,6 @@ mod tests {
         assert!(engine.trace_run.terminal);
     }
 
-    /// Build an Integral `VelocityIntegral` engine already sitting at a rest
-    /// boundary, plus a matching terminal ready for
-    /// [`CommissioningEngine::attach_integral_rest_boundary`] and the
-    /// boundary the engine was seeded with.
     #[cfg(feature = "trace")]
     fn integral_engine_at_rest_boundary_for_test() -> (
         CommissioningEngine,
@@ -3229,16 +2959,6 @@ mod tests {
         (engine, terminal, boundary)
     }
 
-    /// The Integral rest-boundary digest fold happens inside
-    /// `attach_integral_rest_boundary` itself, before any board sink ever sees
-    /// the record. Whether the sink then records the boundary event or drops
-    /// it (as the always-compiled `record_velocity_sweep_trace_record` no-op
-    /// default does outside a `trace` build) cannot retroactively change
-    /// `terminal.digest`. `MockBackend` overrides the sink under `trace` (see
-    /// `commission_dispatch::test_support`), so this exercises the real sink
-    /// rather than the no-op default itself; the no-op default's compile-time
-    /// availability is covered by the plain (non-trace) `cargo test` run
-    /// instead.
     #[cfg(feature = "trace")]
     #[fixture_test]
     async fn integral_terminal_digest_is_independent_of_emission_sink() {
@@ -3253,7 +2973,6 @@ mod tests {
             boundary.slot.checked_add(1).unwrap()
         );
         let folded_digest = terminal.digest;
-        // Emitting or not emitting `record` cannot change the digest already folded.
         let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
         backend.record_velocity_sweep_trace_record(record);
         assert_eq!(terminal.digest, folded_digest);
@@ -3367,7 +3086,6 @@ mod tests {
             TraceEventLevel::Warn,
         );
         assert_terminal_trace(
-            // 0: see the matching comment in terminal_success_trace_covers_all_engine_paths.
             breakaway_safety_engine(0),
             StepResult::OuterDone(sample_outer_result(
                 crate::autotune::CommissionStatus::InnerOnly,

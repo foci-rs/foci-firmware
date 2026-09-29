@@ -89,20 +89,10 @@ fn motion_budget() -> OuterMotionBudget {
     }
 }
 
-// --- Breakaway campaign fixtures --------------------------------------------
-//
-// The half-octave search grid from 1 to 1024 is worked out exactly in spec
-// section 1: 1, 2, 3, 4, 6, 8, 12, 16, 23, 32, 46, 64, 91, 128, 181, 256, 362,
-// 512, 724, 1024. Gain 256 (index 15) has a genuine predecessor, 181 (index
-// 14), so it exercises `GridFloorOrigin::Predecessor` rather than the clamped
-// edge case.
-
 fn breakaway_gain(raw: u16) -> PidPGain {
     PidPGain::new(raw).expect("raw gain within PidPGain range")
 }
 
-/// Canonical acquisition context for the probe fixture; exact values are
-/// arbitrary but fixed.
 fn breakaway_probe_context() -> BreakawayProbeContext {
     BreakawayProbeContext {
         workflow_digest: 0xA1B2_C3D4_E5F6_0718,
@@ -114,7 +104,6 @@ fn breakaway_probe_context() -> BreakawayProbeContext {
     }
 }
 
-/// Build the probe plan and resolve its floor/breakaway pair around gain 256.
 fn breakaway_probe_and_floor() -> (UpwardBreakawayProbePlan, PidPGain, PidPGain) {
     let p_start = breakaway_gain(1);
     let p_top = breakaway_gain(1_024);
@@ -159,10 +148,6 @@ fn full_directional_consensus() -> DirectionalConsensus {
     }
 }
 
-/// Rung-18-class evidence from spec section 2 (relative SE 1.022% at 75%
-/// response), reproduced exactly via integer `mean_rate_q` /
-/// `variance_of_mean_q2` so the production formulas compute the same
-/// containment as the worked example, not a hand-rounded approximation.
 fn accepted_confirmation_evidence() -> (ConfirmationDirectionalInput, ConfirmationDirectionalInput)
 {
     let mean_rate_q: i64 = 750_000;
@@ -322,7 +307,6 @@ fn integral_plan_freezes_geometry_and_conservative_duration() {
         plan.positive_rungs(),
         &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1_024]
     );
-    // family_size = confidence_family_size(13) = (13 + 2) * INTEGRAL_OBSERVATIONS_PER_DIRECTION.
     assert_eq!(plan.family_size, 60);
     assert_eq!(plan.total_rung_count, 15);
     assert_eq!(plan.expected_observations, 120);
@@ -345,9 +329,6 @@ fn integral_plan_freezes_geometry_and_conservative_duration() {
     );
 }
 
-/// One genuine breakaway-schema plan, built through the real
-/// [`plan_breakaway_velocity_integral_response`] path used by the breakaway
-/// fixtures below (see [`breakaway_acquisition_context`]).
 fn build_test_breakaway_plan() -> VelocityIntegralPlan {
     let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(512));
     plan_breakaway_velocity_integral_response(
@@ -381,11 +362,6 @@ fn execution_plan_copies_i_top_cap() {
     assert_eq!(breakaway.i_top_cap, 1_310);
 }
 
-/// `CommissioningWorkflowPlan::new` admits exactly `Resume`
-/// (`proportional_ms == 0 && integral_ms != 0`); every other shape it can name is
-/// rejected -- the fixed-gain-amplitude and breakaway shapes have their own
-/// dedicated constructors instead (see
-/// `workflow_kind_discriminants_are_a_clean_zero_through_four_sequence`).
 #[test]
 fn workflow_shape_resume_composes_its_digest_from_duration_arithmetic() {
     let integral = build_test_breakaway_plan();
@@ -470,12 +446,6 @@ fn model_interval_availability_is_typed_by_directional_validity() {
 
 const SLOT_COUNT: u8 = INTEGRAL_OBSERVATIONS_PER_RUNG as u8;
 
-/// The slot index and the travel direction must round-trip in both directions.
-///
-/// `rung_classes` and `rung_intervals` are written by raw slot index and read
-/// back by (observation, direction) in `fixed_gain_amplitude_report`. If the two
-/// mappings ever disagree, forward evidence is filed as reverse and the run is
-/// silently wrong rather than failing. This pins them together.
 #[test]
 fn slot_and_direction_mappings_are_mutual_inverses() {
     for order in IntegralSlotOrder::ALL {
@@ -516,7 +486,6 @@ fn slot_and_direction_mappings_are_mutual_inverses() {
     }
 }
 
-/// Every slot must be used exactly once, so no observation is dropped or doubled.
 #[test]
 fn each_slot_order_is_a_permutation_of_all_slots() {
     for order in IntegralSlotOrder::ALL {
@@ -535,7 +504,6 @@ fn each_slot_order_is_a_permutation_of_all_slots() {
     }
 }
 
-/// The default order must keep the historical parity mapping byte for byte.
 #[test]
 fn forward_first_preserves_the_historical_parity_mapping() {
     let order = IntegralSlotOrder::ForwardFirst;
@@ -570,9 +538,6 @@ fn workflow_kind_discriminants_are_a_clean_zero_through_five_sequence() {
     );
     assert_eq!(VelocityAutotuneWorkflowKind::PositionTune as u8, 5);
 
-    // The breakaway shape has its own dedicated constructor, matching the
-    // existing precedent set by the fixed-gain-amplitude shapes: it is not
-    // constructible through the generic two-duration `new`.
     assert_eq!(
         CommissioningWorkflowPlan::new(
             1,
@@ -609,8 +574,6 @@ fn new_breakaway_reserves_the_command_level_envelope_before_probe_motion() {
     );
 }
 
-// --- Duration accounting ----------------------------------------------------
-
 #[test]
 fn breakaway_workflow_reserves_upward_probe() {
     let primitive_us = MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US;
@@ -638,8 +601,6 @@ fn discovery_slot_duration_is_monotonic_across_every_resolved_rung_count() {
         );
         previous = duration;
     }
-    // The worst case is exactly 32 rungs x 8 slots, matching spec section 8's
-    // "32 rungs x 8 slots" line.
     assert_eq!(
         breakaway_discovery_slots_us(MAX_SWEEP_RUNGS as u8),
         Ok(507_904_000)
@@ -677,8 +638,6 @@ fn envelope_sums_microseconds_across_every_phase_and_rounds_outward_once() {
     )
     .unwrap();
     assert_eq!(total_ms, u32::try_from(total_us.div_ceil(1_000)).unwrap());
-    // Rounding happens exactly once: rounding each term separately first
-    // would never produce a smaller total than rounding the exact sum.
     assert!(total_ms < u32::MAX, "envelope must fit u32 milliseconds");
 
     let workflow = CommissioningWorkflowPlan::new_breakaway(1, total_ms, total_ms).unwrap();
@@ -687,23 +646,15 @@ fn envelope_sums_microseconds_across_every_phase_and_rounds_outward_once() {
 
 #[test]
 fn envelope_arithmetic_is_checked_against_overflow() {
-    // `integral_maximum_us` alone large enough to overflow the running `u64`
-    // sum must be rejected, not wrapped.
     assert_eq!(
         breakaway_workflow_envelope_us(0, 0, u64::MAX),
         Err(VelocityIntegralPlanError::Arithmetic)
     );
-    // The recovery term (`recovery_slot_count * recovery_maximum_slot_us`)
-    // pushed to its extreme, combined with a near-maximal Integral term, must
-    // also be rejected.
     assert_eq!(
         breakaway_workflow_envelope_us(u32::MAX, u32::MAX, u64::MAX),
         Err(VelocityIntegralPlanError::Arithmetic)
     );
 
-    // A microsecond total that fits `u64` but whose outward millisecond
-    // rounding would exceed `u32::MAX` must be rejected by the `_ms`
-    // wrapper, never silently truncated.
     let huge_but_u64_representable = 5_000_000_000_000_u64;
     assert!(breakaway_workflow_envelope_us(0, 0, huge_but_u64_representable).is_ok());
     assert_eq!(
@@ -738,8 +689,6 @@ fn discovery_phase_plan_must_fit_inside_the_reserved_envelope() {
         Err(AdditiveLadderPlanError::WorkflowEnvelopeExceeded)
     );
 }
-
-// --- Digest chain ------------------------------------------------------------
 
 #[test]
 fn breakaway_digest_chain_binds_each_successive_plan() {
@@ -779,10 +728,6 @@ fn breakaway_digest_chain_binds_each_successive_plan() {
     assert_ne!(bound.get(), probe_plan.plan_digest);
     assert_ne!(discovery_plan.plan_digest, probe_plan.plan_digest);
 
-    // The token is the only way to fill a breakaway authority's acquisition:
-    // `IntegralAcquisitionAuthority::new_breakaway` takes a `ConfirmedAcquisitionDigest`,
-    // not a bare `u64`, so this call could not have compiled with a hand-picked
-    // digest, only with the value the gate above actually validated.
     let authority = IntegralAcquisitionAuthority::new_breakaway(
         0,
         bound,
@@ -794,8 +739,6 @@ fn breakaway_digest_chain_binds_each_successive_plan() {
     assert_eq!(authority.acquisition.get(), confirmation_plan.plan_digest);
     assert_eq!(authority.proportional_joint_membership, 0);
     assert_eq!(authority.joint_membership, 0);
-    // The digest chain also carries the held-out block's own pooled response
-    // interval through to the authority, not a placeholder zero.
     assert_eq!(
         authority.directional_pooled_intervals,
         acceptance.held_out_response_intervals_q
@@ -803,12 +746,6 @@ fn breakaway_digest_chain_binds_each_successive_plan() {
     assert_ne!(authority.directional_pooled_intervals, [[0, 0], [0, 0]]);
 }
 
-/// Isolated from any real confirmation math: `new_breakaway` is a pure
-/// storage constructor for whatever `held_out_response_intervals_q` its
-/// caller supplies, so an arbitrary well-formed literal proves the plumbing
-/// without depending on `evaluate_band_confirmation`'s actual pooled values
-/// (already covered above, end to end, by
-/// `breakaway_digest_chain_binds_each_successive_plan`).
 #[test]
 fn new_breakaway_authority_stores_confirmation_intervals() {
     let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(724));
@@ -819,23 +756,6 @@ fn new_breakaway_authority_stores_confirmation_intervals() {
 
     assert_eq!(authority.directional_pooled_intervals, intervals);
 }
-
-// `ConfirmedAcquisitionDigest`'s field is private to `integral_plan.rs`.
-// This file, `integral_plan_tests.rs`, is a *sibling* module declared in
-// `mod.rs` (`pub mod integral_plan; #[cfg(test)] mod integral_plan_tests;`),
-// not a descendant of `integral_plan`, so it has no access to that private
-// field: neither `ConfirmedAcquisitionDigest(42)` nor
-// `IntegralAcquisitionAuthority::new_breakaway(0, ConfirmedAcquisitionDigest(42))` would
-// compile in this file (the compiler's own suggestion when the digest chain
-// test above was still returning a bare `u64` was literally to wrap it in
-// `ConfirmedAcquisitionDigest(..)` here, followed by a note that doing so
-// requires changing the field's privacy -- i.e. it does not compile as
-// written). There is no `compile_fail` doctest for this: the type is
-// `pub(crate)`, invisible outside the crate entirely, so an external doctest
-// binary can't even name it. The guarantee is structural, checked by every
-// build of this crate: every call site in every module other than
-// `integral_plan.rs` must obtain a `ConfirmedAcquisitionDigest` from
-// `bind_breakaway_integral_authority`, with no other route to one.
 
 #[test]
 fn integral_authority_rejects_a_discovery_or_probe_digest() {
@@ -853,7 +773,6 @@ fn integral_authority_rejects_a_discovery_or_probe_digest() {
     let (forward, reverse) = accepted_confirmation_evidence();
     let acceptance = evaluate_band_confirmation(nominated_p, forward, reverse).unwrap();
 
-    // The discovery digest is offered where the confirmation digest belongs.
     assert_eq!(
         bind_breakaway_integral_authority(
             discovery_plan.plan_digest,
@@ -862,7 +781,6 @@ fn integral_authority_rejects_a_discovery_or_probe_digest() {
         ),
         Err(BreakawayAuthorityBindingError::AcquisitionDigestMismatch)
     );
-    // The probe digest is rejected the same way.
     assert_eq!(
         bind_breakaway_integral_authority(
             probe_plan.plan_digest,
@@ -887,8 +805,6 @@ fn integral_authority_rejects_a_failed_confirmation_even_with_a_matching_digest(
     let confirmation_plan =
         plan_band_confirmation(discovery_plan.plan_digest, nominated_p).unwrap();
 
-    // The confirmation plan's own digest is well formed and matches exactly,
-    // but the held-out block did not accept: Integral must still be refused.
     let failure =
         TargetBandConfirmationInconclusive(BandConfirmationFailureCause::ResponseLocation);
     assert_eq!(
@@ -915,11 +831,6 @@ fn integral_authority_rejects_an_acceptance_for_a_different_candidate() {
     let confirmation_plan =
         plan_band_confirmation(discovery_plan.plan_digest, nominated_p).unwrap();
 
-    // A `BandConfirmationAcceptance` cannot be forged from this sibling module
-    // (its field is private to `band_confirmation`), so the mismatched
-    // acceptance is a genuine held-out pass -- for a *different* candidate gain,
-    // 512 -- produced through `evaluate_band_confirmation`. Binding it against a
-    // plan whose candidate is 724 is the mismatch under test.
     let (forward, reverse) = accepted_confirmation_evidence();
     let mismatched_acceptance = evaluate_band_confirmation(breakaway_gain(512), forward, reverse)
         .expect("rung-18-class evidence confirms within the 70-80% band");
@@ -934,31 +845,15 @@ fn integral_authority_rejects_an_acceptance_for_a_different_candidate() {
     );
 }
 
-// --- Legacy replay compatibility ---------------------------------------------
-
-/// Pins a breakaway-sourced plan's exact digest. Breakaway plans now also
-/// receive the half-octave insertion, so this value changes whenever the
-/// ladder generation changes -- unlike the earlier ReproducedProportional-only
-/// gating, there is no longer an untouched path to separately pin.
 #[test]
 fn breakaway_plan_digest_reflects_the_half_octave_insertion() {
     let plan = build_test_breakaway_plan();
     assert_eq!(plan.digest(), 16_233_484_769_674_924_850);
 }
 
-// --- Breakaway Integral constructor -------------------------------------------
-
-/// Physical acquisition context for the breakaway fixtures below, built from
-/// the same [`proportional_plan`] fixture the legacy tests use so the confirmed
-/// gain 512 is known (from `integral_plan_freezes_geometry_and_conservative_duration`)
-/// to pass [`super::integral_plan::transition_capable_integral_gain`] under
-/// `pwm_hz = 25_000`, `encoder_counts_per_rev = 4_000`.
 fn breakaway_acquisition_context() -> AcquisitionContext {
     let proportional = proportional_plan();
     let mut context = AcquisitionContext::from(proportional.execution_plan(proportional.digest()));
-    // The breakaway gate refuses if the plan-time physical context diverges from
-    // the live pwm/encoder it is handed; every fixture below passes 25 kHz /
-    // 4_000, so freeze the same values here.
     context.plan_time_pwm_hz = 25_000;
     context.plan_time_encoder_counts_per_rev = 4_000;
     context
@@ -968,10 +863,6 @@ fn breakaway_confirmation_plan(nominated_p: PidPGain) -> BandConfirmationPlan {
     plan_band_confirmation(0x1111_2222_3333_4444, nominated_p).unwrap()
 }
 
-/// Mint the breakaway confirmation token for `confirmation_plan` through the
-/// real [`bind_breakaway_integral_authority`] gate, exactly as a live campaign
-/// would, rather than fabricating the digest. The token is the only input the
-/// Integral gate accepts as authority.
 fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcquisitionDigest {
     let (forward, reverse) = accepted_confirmation_evidence();
     let acceptance =
@@ -984,13 +875,6 @@ fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcqu
     .unwrap()
 }
 
-/// The same accepted held-out block's pooled response interval, for the
-/// fixture callers that mint a token with [`breakaway_token_for`] and also
-/// need [`plan_breakaway_velocity_integral_response`]'s
-/// `held_out_response_intervals_q` argument. A live campaign sources both
-/// values from the one [`BandConfirmationAcceptance`] it already holds
-/// (`breakaway_campaign.rs`); this recomputes the same accepted evidence
-/// rather than threading a tuple through every fixture call site.
 fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]; 2] {
     let (forward, reverse) = accepted_confirmation_evidence();
     evaluate_band_confirmation(confirmation_plan.nominated_p, forward, reverse)
@@ -998,13 +882,6 @@ fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]
         .held_out_response_intervals_q
 }
 
-/// A campaign's Integral plan must be resumable from retained authority alone.
-///
-/// The breakaway campaign has no Proportional phase, so nothing recomputes a sweep
-/// plan for it. Before this the preflight compared the retained confirmation
-/// token against a freshly planned Proportional digest and refused every resume,
-/// which made the `FirstRunRetained` to `RepeatabilityConfirmed` promotion unreachable for
-/// the only campaign that produces candidates.
 #[test]
 fn retained_breakaway_authority_regenerates_its_exact_plan() {
     use crate::commission_dispatch::integral::{
@@ -1052,14 +929,6 @@ fn retained_breakaway_authority_regenerates_its_exact_plan() {
     assert_eq!(preflight.run_sequence, 11);
 }
 
-/// The plan-digest check is the only identity guard on the resume path, so it
-/// has to carry the weight the Proportional digest comparison carries elsewhere.
-/// Live PWM and encoder resolution must be re-checked, not assumed.
-///
-/// The plan digest cannot catch this on its own: a plan rebuilt from retained
-/// context hashes the retained PWM and encoder values again, so it still
-/// matches the retained identity even when the live configuration has moved.
-/// Execution then does its target-rate math against the stale resolution.
 #[test]
 fn a_resume_under_changed_physical_context_is_refused() {
     use crate::commission_dispatch::integral::{
@@ -1098,8 +967,6 @@ fn a_resume_under_changed_physical_context_is_refused() {
         assert!(matches!(rejection, IntegralPreflightRejection::InvalidPlan));
     }
 
-    // The unchanged context still resumes, so the guard is not simply refusing
-    // everything.
     assert!(
         preflight_integral_request(proportional_request(), &config(25_000, 4_000), 13, &slot)
             .expect("the retained context is unchanged")
@@ -1184,23 +1051,12 @@ fn breakaway_integral_admits_the_confirmed_p_unchanged() {
     assert_eq!(plan.authority.proportional_joint_membership, 0);
     assert_eq!(plan.authority.joint_membership, 0);
     assert!(!plan.probe_constrained_test_point);
-    // The existing non-combined ladder, not the exact-cap combined shape.
-    // Breakaway plans
-    // now also receive the half-octave rung (724, between 512 and 1024).
     assert_eq!(
         plan.positive_rungs(),
         &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1_024]
     );
 }
 
-/// `acquisition_kind == ResponseLadder` alone cannot isolate breakaway: a
-/// live combined workflow and an accepted breakaway confirmation both report
-/// that same kind. The `acceptance_source` discriminator, resolved from the
-/// Integral authority, is what `records_target_terminus` keys on instead. The
-/// non-breakaway half of the contract -- it must not over-admit a plan that
-/// carries no target evidence -- is covered by
-/// `non_breakaway_ladder_does_not_record_a_terminus` in
-/// `integral_sweep_tests`.
 #[test]
 fn execution_plan_reports_acceptance_source_from_authority() {
     let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(512));
@@ -1222,21 +1078,12 @@ fn execution_plan_reports_acceptance_source_from_authority() {
     assert!(breakaway.records_target_terminus());
 }
 
-/// No reselection, no fallback: the constructor takes exactly one candidate
-/// gain and either admits it or refuses. There is no alternate-candidate
-/// parameter for it to fall back to, so a failing confirmed gain can only
-/// ever produce a refusal, never a plan built around a substitute P.
 #[test]
 fn breakaway_integral_refuses_without_motion_when_the_confirmed_p_fails_current_authority() {
     let nominated_p = breakaway_gain(1_024);
     let confirmation_plan = breakaway_confirmation_plan(nominated_p);
     let token = breakaway_token_for(confirmation_plan);
     let mut context = breakaway_acquisition_context();
-    // A torque authority this small cannot carry any nonzero I prefix at the
-    // Q4.12 gain scale, regardless of the confirmed P: this simultaneously
-    // stands in for both "transition capability" and "current authority" in
-    // the brief's checklist, because `transition_capable_integral_gain`
-    // evaluates them as one combined datasheet-derived guard.
     context.usable_torque_limit = 1;
 
     assert_eq!(
@@ -1259,9 +1106,6 @@ fn breakaway_integral_refuses_without_motion_when_the_confirmed_p_fails_current_
     );
 }
 
-/// The nomination ceiling is the exact monotone inverse of the Integral
-/// admission gate: the returned P passes `transition_capable_integral_gain` and
-/// the next-higher P fails it.
 #[test]
 fn max_transition_capable_p_is_the_inverse_of_the_admission_gate() {
     let ceiling = max_transition_capable_p(322, 4_000, 25_000, MOVING_STROKE_US, 2_534)
@@ -1277,7 +1121,6 @@ fn max_transition_capable_p_is_the_inverse_of_the_admission_gate() {
     );
 }
 
-/// The ceiling tracks the acquisition context: a lower target RPM raises it.
 #[test]
 fn max_transition_capable_p_rises_as_target_rpm_falls() {
     assert_eq!(
@@ -1304,10 +1147,6 @@ fn max_transition_capable_p_does_not_halve_when_the_pwm_carrier_doubles() {
     );
 }
 
-/// An invalid acquisition context is a hard error, not a `0` ceiling: the
-/// caller must be able to tell "no gain is capable" (ceiling 0) apart from
-/// "the context is malformed" (Err), so a should-never planning failure is
-/// reported as an internal fault rather than masked as a legitimate refusal.
 #[test]
 fn max_transition_capable_p_rejects_an_invalid_context() {
     assert_eq!(
@@ -1320,8 +1159,6 @@ fn max_transition_capable_p_rejects_an_invalid_context() {
     );
 }
 
-/// When even `p = 1` would clip the probe clamp, no gain is transition-capable
-/// and the ceiling is 0, so nomination has nothing to nominate.
 #[test]
 fn max_transition_capable_p_is_zero_when_nothing_is_capable() {
     let ceiling = max_transition_capable_p(322, 4_000, 25_000, MOVING_STROKE_US, 1)
@@ -1339,10 +1176,6 @@ fn breakaway_integral_refuses_without_motion_when_the_fixed_schedule_exceeds_the
     let confirmation_plan = breakaway_confirmation_plan(nominated_p);
     let token = breakaway_token_for(confirmation_plan);
     let mut context = breakaway_acquisition_context();
-    // The confirmed P still passes transition capability; only the recovery
-    // travel time this implies -- driven by a near-stalled planned velocity
-    // against the declared stroke travel -- no longer fits the declared
-    // per-primitive duration budget.
     context.planned_velocity_mrev_s = 1;
 
     assert_eq!(
@@ -1428,39 +1261,18 @@ fn breakaway_integral_rejects_a_token_minted_for_a_different_confirmation_plan()
     );
 }
 
-/// The round-2 acceptance criterion: there is NO in-crate path that reaches
-/// breakaway Integral plan construction without a genuine
-/// [`ConfirmedAcquisitionDigest`] token. The gate's only authority input is the
-/// token, which can be minted solely by [`bind_breakaway_integral_authority`]
-/// from a real `Ok(BandConfirmationAcceptance)` -- itself unforgeable. A caller
-/// can still fabricate a self-consistent `BandConfirmationPlan` for an arbitrary
-/// gain (all fixed fields correct, `plan_digest = plan.digest()`), but cannot
-/// mint a token whose value equals that forged plan's digest without a genuine
-/// all-eight acceptance of THAT plan, so the plan-to-token binding refuses it.
 #[test]
 fn breakaway_integral_requires_a_token_matching_the_confirmation_plan() {
-    // A forged plan for an arbitrary candidate, contract-valid and
-    // digest-self-consistent -- exactly what an in-crate attacker could build.
     let forged_plan = breakaway_confirmation_plan(breakaway_gain(384));
     assert!(
         validate_fixed_contract(&forged_plan).is_ok(),
         "the forged plan is contract-valid; only the token binding stops it"
     );
 
-    // The only token the attacker can actually mint is for a DIFFERENT,
-    // genuinely accepted plan; its digest cannot equal the forged plan's.
     let genuine_plan = breakaway_confirmation_plan(breakaway_gain(512));
     let genuine_token = breakaway_token_for(genuine_plan);
     assert_ne!(genuine_token.get(), forged_plan.plan_digest);
 
-    // Pairing the only obtainable token with the forged plan is refused: no
-    // Integral plan for gain 384 is ever constructed. The token is the gate's
-    // sole authority input -- there is no `IntegralAcquisitionAuthority` parameter through
-    // which a forged authority could enter -- so this is the whole attack
-    // surface, and it is closed. (A token genuinely minted for the forged plan
-    // would require driving `evaluate_band_confirmation` to accept THAT plan,
-    // which is the real confirmation gate, not a bypass; the admit-on-genuine
-    // path is covered by `breakaway_integral_admits_the_confirmed_p_unchanged`.)
     assert_eq!(
         plan_breakaway_velocity_integral_response(
             genuine_token,
@@ -1483,8 +1295,6 @@ fn breakaway_integral_refuses_when_plan_time_physical_context_differs_from_live(
     let confirmation_plan = breakaway_confirmation_plan(nominated_p);
     let token = breakaway_token_for(confirmation_plan);
 
-    // Plan-time PWM (25 kHz) but a live PWM of 50 kHz: confirmation evidence was
-    // gathered under a different timebase, so the gate refuses without motion.
     let context = breakaway_acquisition_context();
     let intervals = breakaway_intervals_for(confirmation_plan);
     assert_eq!(
@@ -1502,7 +1312,6 @@ fn breakaway_integral_refuses_when_plan_time_physical_context_differs_from_live(
         Err(VelocityIntegralPlanError::PhysicalContextMismatch)
     );
 
-    // Live encoder resolution differs from plan time: same fail-closed refusal.
     assert_eq!(
         plan_breakaway_velocity_integral_response(
             token,
@@ -1521,7 +1330,6 @@ fn breakaway_integral_refuses_when_plan_time_physical_context_differs_from_live(
 
 #[test]
 fn integral_top_gap_candidate_at_todays_cap_is_724() {
-    // upper_octave=1024 (largest native rung <= 1310), lower_octave=512.
     assert_eq!(integral_top_gap_candidate(1_310), Some(724));
 }
 
@@ -1532,22 +1340,19 @@ fn integral_top_gap_candidate_none_for_zero_sentinel() {
 
 #[test]
 fn integral_top_gap_candidate_none_when_lower_octave_below_four() {
-    // cap=4: upper_octave=4, lower_octave=2 -- below the prefix guard.
     assert_eq!(integral_top_gap_candidate(4), None);
-    // cap=7: upper_octave=4 still (8 > 7), lower_octave=2 -- still guarded.
     assert_eq!(integral_top_gap_candidate(7), None);
 }
 
 #[test]
 fn integral_top_gap_candidate_present_at_the_smallest_eligible_cap() {
-    // cap=8: upper_octave=8, lower_octave=4 (eligible), candidate=6.
     assert_eq!(integral_top_gap_candidate(8), Some(6));
 }
 
 #[test]
 fn native_rung_count_matches_native_velocity_i_at_walk() {
-    assert_eq!(native_rung_count(1_310), 12); // 1,2,3,4,8,16,32,64,128,256,512,1024
-    assert_eq!(native_rung_count(4), 4); // 1,2,3,4
+    assert_eq!(native_rung_count(1_310), 12);
+    assert_eq!(native_rung_count(4), 4);
 }
 
 #[test]
@@ -1560,11 +1365,6 @@ fn integral_gain_at_with_zero_cap_matches_native_velocity_i_at_unaugmented() {
 
 #[test]
 fn integral_gain_at_inserts_the_candidate_before_the_final_native_rung() {
-    // native_rung_count(1310) = 12, indices 0..=11 are 1,2,3,4,...,512,1024.
-    // Augmented: indices 0..=9 unchanged (1..256), index 10 = 724 (was 512's
-    // successor slot -- 512 itself is index 9, unchanged), wait: the
-    // insertion happens immediately before the FINAL native rung (1024,
-    // index 11), so index 11 becomes 724 and a new index 12 becomes 1024.
     let expected = [1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1024];
     for (index, value) in expected.iter().enumerate() {
         assert_eq!(integral_gain_at(1_310, index as u8), Some(*value));
@@ -1574,35 +1374,15 @@ fn integral_gain_at_inserts_the_candidate_before_the_final_native_rung() {
 
 #[test]
 fn integral_gain_at_final_rung_closing_bookend_and_first_out_of_range() {
-    // "Final positive rung" per the spec's boundary-test requirement: index
-    // 12 (1024) is the last positive rung; index 13 is out of range.
     assert_eq!(integral_gain_at(1_310, 12), Some(1_024));
     assert_eq!(integral_gain_at(1_310, 13), None);
 }
 
 #[test]
 fn integral_gain_at_zero_sentinel_is_unbounded_like_the_pre_existing_behavior() {
-    // integral_gain_at itself does not bound the sentinel case (matching
-    // native_velocity_i_at's own pre-existing unbounded behavior) --
-    // guarding against a Breakaway plan whose positive_rung_count disagrees
-    // with what integral_gain_at can produce is
-    // plan_velocity_integral_response_from_source's responsibility (the
-    // count and the accessor must be
-    // derived from the same construction), checked by
-    // breakaway_plan_includes_the_half_octave_rung_and_real_cap
-    // and breakaway_plan_i_top_cap_is_zero_and_rungs_are_unaugmented in
-    // integral_plan_tests.rs, and by integral_i_at's own
-    // `rung_index >= total` bound in integral_sweep.rs, which is what
-    // actually prevents a caller from ever reaching index 12 on a 12-rung
-    // Breakaway plan.
     assert_eq!(integral_gain_at(0, 12), Some(2_048));
 }
 
-/// Schema 17 no longer has a live producer (it was `plan_velocity_integral_response`'s
-/// exclusive schema, removed with `IntegralAcquisition::ReproducedProportional`), but
-/// `digest()`'s schema-16-or-17 gate stays for historical trace-capture
-/// replay compatibility, so this checks the surviving `17` arm directly on a
-/// plan with the schema field overridden.
 #[test]
 fn schema_17_still_hashes_i_top_cap_in_its_digest() {
     let mut plan = build_test_breakaway_plan();

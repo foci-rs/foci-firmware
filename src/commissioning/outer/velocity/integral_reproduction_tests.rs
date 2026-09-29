@@ -501,8 +501,6 @@ fn schema_one_candidate_rejects_before_motion_without_losing_authority() {
 #[test]
 fn q8_8_package_authority_rejects_before_integral_motion() {
     let mut retained = authority(0, 7);
-    // A retained plan from the legacy Q8.8 build carries an older rule contract
-    // (no rule bits set) that differs from the current BUILD_FEATURES.
     retained.identity.build_features = 0b0000;
     let mut current = retained.identity;
     current.build_features = BUILD_FEATURES;
@@ -518,9 +516,6 @@ fn q8_8_package_authority_rejects_before_integral_motion() {
 
 #[test]
 fn integral_candidate_size_is_measured_without_padding() {
-    // Exact sizes, so retained Integral state cannot grow unnoticed on a target
-    // with no heap. A failure here is a prompt to justify the growth, not to
-    // update the number reflexively.
     assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 208);
     assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 128);
     assert_eq!(core::mem::size_of::<IntegralAuthoritySummary>(), 96);

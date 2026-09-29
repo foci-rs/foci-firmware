@@ -1,7 +1,4 @@
 //! Phase 2: Coil connectivity check.
-//!
-//! Tests coil A then coil B via `UQ_UD_EXT` (MODE=8). Validates current
-//! exceeds `MOTOR_CURRENT_THRESHOLD` on the expected ADC channel and
 //! carries the observations forward into the phase-wiring check.
 
 use super::{CoilCheckState, CoilObservation, CoilTestState, InnerPhase};
@@ -13,21 +10,12 @@ use crate::tmc_register_values::{MOTION_STOPPED, MOTION_UQ_UD_EXT};
 const DIAG_COIL_CHECK_A_SAMPLE: u8 = 1;
 const DIAG_COIL_CHECK_B_SAMPLE: u8 = 2;
 
-/// Minimum ADC current to consider a coil present (raw ADC units).
 const MOTOR_CURRENT_THRESHOLD: u16 = 200;
 
-/// Settling time after applying coil test voltage (microseconds).
 const COIL_SETTLE_US: u64 = 100_000;
 
-/// Settling time after disabling coil test (microseconds).
 const COIL_COOLDOWN_US: u64 = 50_000;
 
-/// Advance coil check sub-state.
-///
-/// Tests coil A then coil B via `UQ_UD_EXT` (MODE=8). Validates
-/// current exceeds `MOTOR_CURRENT_THRESHOLD` on the expected
-/// ADC channel. Carries observations forward for phase wiring
-/// check.
 pub(crate) async fn step_coil_check<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,
@@ -37,7 +25,6 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
 ) -> StepResult {
     use foci_tmc4671::registers::*;
 
-    // Extract mutable fields from phase.
     let (state, coil_a_obs) = match phase {
         InnerPhase::CoilCheck { state, coil_a } => (state, coil_a),
         _ => return StepResult::ReadyNow,
@@ -49,16 +36,13 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
         CoilCheckState::CoilA(coil_test) | CoilCheckState::CoilB(coil_test) => match coil_test {
             CoilTestState::Setup { phase: coil_phase } => {
                 let p = *coil_phase;
-                // Set PHI_E source to external.
                 if backend.write_register(PHI_E_SELECTION, 1).await.is_err() {
                     return super::fail_inner(phase, CommissionError::Spi);
                 }
-                // Angle: 0 for coil A (D-axis), 16384 for coil B (Q-axis).
                 let phi_e = if p == 0 { 0u32 } else { 16384 };
                 if backend.write_register(PHI_E_EXT, phi_e).await.is_err() {
                     return super::fail_inner(phase, CommissionError::Spi);
                 }
-                // Apply voltage.
                 let voltage = backend.excitation_voltage() as u32;
                 if backend
                     .write_register(UQ_UD_EXT, voltage & 0xFFFF)
@@ -107,7 +91,6 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                     }
                 };
 
-                // Stop motor and disable.
                 let _ = backend
                     .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
                     .await;
@@ -143,7 +126,6 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                     value2: raw,
                 });
 
-                // Validate coil presence.
                 if sample_failed {
                     if matches!(sequence, InnerSequence::Selftest) {
                         let stage = if is_coil_b {
@@ -165,7 +147,6 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                     deadline_us: deadline,
                 };
 
-                // Store observation.
                 if !is_coil_b {
                     if matches!(sequence, InnerSequence::Selftest) {
                         selftest_results.set(
@@ -181,7 +162,6 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                             crate::selftest::SelftestStageValue::coil_current(obs.expected),
                         );
                     }
-                    // Both coils tested. Transition to PhaseWiringCheck.
                     let a = coil_a_obs.unwrap_or(CoilObservation {
                         expected: 0,
                         other: 0,
@@ -202,7 +182,6 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                 if backend.elapsed_us() < *deadline_us {
                     return StepResult::At(*deadline_us);
                 }
-                // Coil A done, move to coil B.
                 *state = CoilCheckState::CoilB(CoilTestState::Setup { phase: 1 });
                 StepResult::ReadyNow
             }
@@ -219,7 +198,6 @@ mod tests {
     use crate::selftest::CommissionDiagnostics;
     use foci_tmc4671::registers::ADC_IWY_IUX;
 
-    /// Maximum backend register operations issued by one coil-check state arm.
     const COIL_CHECK_MAX_REGISTER_OPS_PER_ARM: usize = 4;
 
     fn register_op_count(backend: &MockBackend) -> usize {

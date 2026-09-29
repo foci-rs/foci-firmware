@@ -1,10 +1,7 @@
 //! Command-level velocity-autotune workflow selection and disclosure.
 //!
 //! [`VelocityAutotuneWorkflowKind`] names which whole command workflow a host
-//! requested -- resume, a fixed-gain-amplitude order, the breakaway-seeded
-//! campaign, or the robustness-reversal gate -- not a phase or subphase within
-//! one of them. It is disclosed, alongside its conservative duration envelope,
-//! before any motion so the host can arm the correct wait timeout.
+//! requested; it is disclosed with its duration envelope before any motion.
 
 use super::integral_plan::{VelocityIntegralPlanError, fnv1a64_byte};
 
@@ -84,15 +81,8 @@ impl CommissioningWorkflowPlan {
 
     /// Construct one checked breakaway-campaign workflow envelope.
     ///
-    /// Reserved before the probe's first stroke. `nominal_workflow_ms` and
-    /// `maximum_workflow_ms` must already be the worst-case sums produced by
-    /// [`super::integral_plan::breakaway_workflow_envelope_ms`]; every later
-    /// probe, discovery, confirmation, and Integral continuation plan must
-    /// report an exact duration that fits inside `maximum_workflow_ms`. A
-    /// phase plan that would exceed it is rejected before that phase's first
-    /// stroke -- see
-    /// [`super::breakaway_plan::AdditiveLadderPlanError::WorkflowEnvelopeExceeded`]
-    /// for the discovery-phase example of that check.
+    /// `nominal_workflow_ms` and `maximum_workflow_ms` must be the worst-case sums from
+    /// [`super::integral_plan::breakaway_workflow_envelope_ms`].
     pub fn new_breakaway(
         run_sequence: u32,
         nominal_workflow_ms: u32,
@@ -114,11 +104,7 @@ impl CommissioningWorkflowPlan {
 
     /// Construct one checked robustness-reversal workflow envelope.
     ///
-    /// Reserved before the robustness probe's first motion so the host arms
-    /// its extended run timeout: the K-cycle run runs far longer than the
-    /// host's 5 s initial plan window. `maximum_workflow_ms` is
-    /// `robustness_worst_case_duration_ms`, `nominal_workflow_ms` a clean-run
-    /// estimate.
+    /// `maximum_workflow_ms` is `robustness_worst_case_duration_ms`.
     pub fn new_robustness(
         run_sequence: u32,
         nominal_workflow_ms: u32,
@@ -140,11 +126,7 @@ impl CommissioningWorkflowPlan {
 
     /// Construct one checked position-P sweep workflow envelope.
     ///
-    /// Reserved before the sweep's first motion so the host arms its extended
-    /// run timeout: the half-octave rung ladder runs far longer than the
-    /// host's 5 s initial plan window. `maximum_workflow_ms` is
-    /// `position_tune_worst_case_duration_ms`, `nominal_workflow_ms` a
-    /// clean-run estimate.
+    /// `maximum_workflow_ms` is `position_tune_worst_case_duration_ms`.
     pub fn new_position_tune(
         run_sequence: u32,
         nominal_workflow_ms: u32,

@@ -1,9 +1,4 @@
 //! Phase 5: Electrical identification (resistance and inductance).
-//!
-//! Shared resistance identification and rotating-field inductance
-//! measurement, with theta sourced from the inductance excitation phase.
-//! Assembles an `ElectricalModel` and validates it before transitioning to
-//! `CurrentTune` (commission flow) or emitting `SelftestDone` (selftest).
 
 use super::{
     ElectricalIdentificationData, ElectricalIdentificationState, InductanceCaptureState,
@@ -32,7 +27,6 @@ use crate::tmc_register_values::{
 };
 use foci_tmc4671::registers::Register;
 
-/// Cooldown time after disabling a per-coil measurement (microseconds).
 const ELECTRICAL_COOLDOWN_US: u64 = 50_000;
 
 const INDUCTANCE_AC_UD_EXT: i16 = 768;
@@ -55,12 +49,6 @@ const INDUCTANCE_MAX_AC_SAMPLE_COUNT: u16 = 256;
 const PHI_E_SELECTION_OPENLOOP: u32 = 2;
 const L_INT_OMEGA_SCALE_MILLI: u64 = 6_283;
 
-/// Diagnostic-current policy for the rotating-field capture, as a permille
-/// fraction of the configured run-current limit.
-///
-/// This phase needs only enough quadrature signal to clear
-/// `INDUCTANCE_MIN_ABS_IQ_MILLI_COUNT`, so it is set for detection sensitivity
-/// rather than to accommodate the measurement.
 const INDUCTANCE_DIAGNOSTIC_CURRENT_FRACTION: Permille = Permille::new(200);
 
 const _: () = assert!(
@@ -83,47 +71,26 @@ const DIAG_ELECTRICAL_ID_RESISTANCE_A: u8 = 2;
 const DIAG_ELECTRICAL_ID_RESISTANCE_B: u8 = 3;
 const DIAG_ELECTRICAL_ID_REJECT_NO_SAMPLES: u8 = 20;
 const DIAG_ELECTRICAL_ID_REJECT_MODEL_SCALE_ZERO: u8 = 22;
-// Codes 23–25 (resistance short/open/mismatch) are retired: the shared
-// resistance runner now owns those quality gates.
 const DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE: u8 = 29;
 const DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FREQUENCY: u8 = 32;
 const DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_CAPTURE: u8 = 33;
 const DIAG_ELECTRICAL_ID_INDUCTANCE_STATUS_REJECT: u8 = 41;
 
-// ---------------------------------------------------------------------------
-// Phase 1 model-assembly gates and warning bits.
-// ---------------------------------------------------------------------------
-
-/// Per-coil resistance disagreement >= 5 % (warning).
 pub(crate) const INNER_WARN_BIT_RESISTANCE_MISMATCH: u8 = 1 << 0;
-/// theta_e_us >= tau_e_us / 4 (warning).
 pub(crate) const INNER_WARN_BIT_THETA_TAU: u8 = 1 << 3;
 
-/// Per-coil resistance disagreement warn threshold (permille).
-/// The hard resistance gates now live in the shared runner; this remains as a
-/// non-critical confidence warning computed from the runner's per-axis slopes.
 const RESISTANCE_MISMATCH_WARN_PERMILLE: u32 = 50;
 
-/// Successful model assembly: the assembled `ElectricalModel` and the
-/// non-critical warning bitfield.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct ModelAssembly {
     pub(crate) model: ElectricalModel,
     pub(crate) warning_flags: u8,
 }
 
-/// Reason a model assembly was rejected. Each variant logs distinct
-/// `defmt::warn!` text and maps to `CommissionError::ElectricalIdentificationFailed`
-/// at the phase boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum ModelAssemblyError {
-    /// At least one coil had zero samples or zero current.
     SampleCount,
-    /// The count-space inductance evaluated to zero after AC reactance conversion.
-    /// Distinct from `SampleCount` so RTT diagnostics name the actual
-    /// failure (likely a fixed-point scale or rounding edge case).
     ModelScaleZero { l_count_micro: u32 },
-    /// theta_e_us >= tau_e_us / 2.
     ThetaTooLarge { theta_us: u32, tau_us: u32 },
 }
 
@@ -211,13 +178,6 @@ fn electrical_id_measurement_diagnostic(
     }
 }
 
-/// Per-coil resistance count-slope from the shared runner result. `None` until
-/// the resistance sweep has populated `data.resistance_result`.
-///
-/// The count-slope is in `ELECTRICAL_MODEL_RESISTANCE_SCALE` (milli) units
-/// (`dV_count / dI_count * 1000`), so it feeds the per-coil tau and gain math
-/// directly without conversion. Returns `(count_slope, count_slope, samples)`
-/// because the diagnostic retains both established count-space evidence slots.
 fn per_coil_resistance_slope(
     data: &ElectricalIdentificationData,
     coil_idx: usize,
@@ -275,11 +235,6 @@ fn record_electrical_id_measurement_diagnostics(
     }
 }
 
-/// Compute `tau_e_us` from the resistance/inductance evidence already
-/// gathered earlier in Phase 5. Shared by the phase-delay estimate's gate
-/// (which needs `tau_e_us` before accepting a measured `theta_e_us`) and
-/// `assemble_electrical_model` (which needs the identical value for its
-/// own gates), so the two can never silently diverge.
 fn compute_tau_e_us(data: &ElectricalIdentificationData) -> Result<u32, ModelAssemblyError> {
     let result = data
         .resistance_result
@@ -303,7 +258,6 @@ fn compute_tau_e_us(data: &ElectricalIdentificationData) -> Result<u32, ModelAss
     )
 }
 
-/// The phase-delay estimate for an accepted inductance run, or why there is none.
 fn phase_delay_from_evidence(
     data: &ElectricalIdentificationData,
 ) -> Result<PhaseDelayEstimate, PhaseDelayRejection> {
@@ -328,12 +282,6 @@ fn assemble_electrical_model(
     data: &ElectricalIdentificationData,
     configured_theta_e_us: u32,
 ) -> Result<ModelAssembly, ModelAssemblyError> {
-    // --- Per-coil resistance (from the shared multi-point runner) ---
-    //
-    // `r_count_milli` and the per-coil entries come from the runner's count-space fit,
-    // in `ELECTRICAL_MODEL_RESISTANCE_SCALE` (milli) units. The runner already
-    // enforces the resistance quality gates (short/open/per-axis mismatch,
-    // residual, drift); this path only translates its slopes into the model.
     let result = data
         .resistance_result
         .ok_or(ModelAssemblyError::SampleCount)?;
@@ -346,18 +294,11 @@ fn assemble_electrical_model(
         }
         r_count_milli_per_coil[coil_idx] = r_count_milli_coil;
     }
-    // Averaged model resistance is the run-selected count-slope.
     let r_count_milli = result.selected_r_count_slope_milli.max(0) as u32;
     if r_count_milli == 0 {
         return Err(ModelAssemblyError::SampleCount);
     }
 
-    // --- Hard gates (in spec order) ---
-    //
-    // Resistance short/open/per-axis-mismatch gates are owned by the shared
-    // runner's count-space quality gates. The per-coil resistance
-    // disagreement is still surfaced as a confidence warning below, computed
-    // from the runner's per-axis slopes.
     let r_diff_permille = permille_diff(r_count_milli_per_coil[0], r_count_milli_per_coil[1]);
     let inductance = data.inductance.ok_or(ModelAssemblyError::SampleCount)?;
     let l_count_micro = l_count_micro_from_reactance(
@@ -397,8 +338,6 @@ fn assemble_electrical_model(
         ThetaSource::ConfigFallback => 1,
     };
 
-    // --- Transport-delay gate (measured-or-fallback) ---
-    // tau_e_us is guaranteed non-zero here (model scale gate passed).
     if theta_e_us_input >= tau_e_us / 2 {
         return Err(ModelAssemblyError::ThetaTooLarge {
             theta_us: theta_e_us_input,
@@ -406,7 +345,6 @@ fn assemble_electrical_model(
         });
     }
 
-    // --- Warning flags (same evaluation order as hard gates) ---
     let mut warning_flags: u8 = 0;
     if r_diff_permille >= RESISTANCE_MISMATCH_WARN_PERMILLE {
         warning_flags |= INNER_WARN_BIT_RESISTANCE_MISMATCH;
@@ -427,29 +365,12 @@ fn assemble_electrical_model(
     })
 }
 
-/// Where the accepted `theta_e_us` input to `assemble_electrical_model` came
-/// from: the accepted inductance run's phase-delay estimate, or the
-/// board-configured fallback value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum ThetaSource {
-    /// The inductance run's excitation phase produced an accepted estimate.
     Measured,
-    /// No accepted estimate was available; the configured value was used.
     ConfigFallback,
 }
 
-/// Decide which `theta_e_us` value to feed into `assemble_electrical_model`.
-///
-/// `measured` is `None` whenever the inductance run's phase-delay estimate
-/// was rejected (see [`PhaseDelayRejection`]) or the run itself was never
-/// completed; `Some(value)` only for an estimate that cleared rejection.
-/// This function additionally checks the measured value's own `tau_e_us / 2`
-/// gate *before* selecting it -- a measured value that fails that gate falls
-/// back to `configured_theta_e_us`, which is then itself passed to
-/// `assemble_electrical_model`, which applies the same gate again to
-/// whichever value was selected (see spec's Estimate and gate section:
-/// "Fallback changes the input to the existing gate, never the gate's
-/// behavior").
 pub(crate) fn resolve_theta_e_us_input(
     measured: Option<u32>,
     tau_e_us: u32,
@@ -461,15 +382,6 @@ pub(crate) fn resolve_theta_e_us_input(
     }
 }
 
-/// Adapter that exposes a [`CommissioningBackend`] as a
-/// [`crate::resistance_identification::ResistanceBackend`] for the shared
-/// resistance runner during commissioning.
-///
-/// This is the sanctioned commissioning managed-enable exception to the
-/// direct-enable rule: the runner owns enable-pin assertion, so
-/// [`is_armed_for_open_loop_voltage`](Self::is_armed_for_open_loop_voltage)
-/// reports `true` and [`set_enable_pin`](Self::set_enable_pin) forwards to the
-/// real backend.
 struct CommissionResistanceBackend<'a, B: CommissioningBackend> {
     backend: &'a mut B,
     current_limit: foci_tmc4671::current_limit::PidTorqueFluxLimit,
@@ -500,9 +412,6 @@ impl<B: CommissioningBackend> crate::resistance_identification::ResistanceBacken
     }
 
     async fn delay_ms(&mut self, ms: u64) {
-        // Cooperative wait through the backend monotonic. `delay_us` is the
-        // sanctioned commissioning yield; loop in <=1s chunks to keep the u32
-        // microsecond argument well within range for long settle windows.
         let mut remaining_ms = ms;
         while remaining_ms > 0 {
             let chunk_ms = remaining_ms.min(1_000);
@@ -1005,10 +914,6 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
     Ok(InductanceSamplePoll::At)
 }
 
-/// Drive an active electrical capture through all of its sample deadlines.
-///
-/// Returns `None` when the electrical-ID state is not a deadline capture or
-/// when shutdown must fall back to the engine's canonical safe-state path.
 pub(crate) async fn drive_deadline_capture<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
@@ -1338,7 +1243,6 @@ fn push_resistance_current_diagnostic(
     });
 }
 
-/// Snapshot active Phase 5 evidence without sampling, awaiting, or changing state.
 pub(crate) fn push_active_electrical_diagnostics(
     phase: &InnerPhase,
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
@@ -1403,12 +1307,6 @@ fn fail_electrical_id(
     super::fail_inner(phase, error)
 }
 
-/// Advance electrical identification sub-state.
-///
-/// Runs shared multi-point resistance identification, then per-coil
-/// rotating-field inductance, deriving theta from the inductance
-/// excitation phase. Assembles an `ElectricalModel` and validates before
-/// transitioning.
 pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,
@@ -1424,9 +1322,6 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
     };
 
     match electrical_identification_state {
-        // ---------------------------------------------------------------
-        // Resistance identification (shared multi-point runner)
-        // ---------------------------------------------------------------
         ElectricalIdentificationState::ResistanceStart => {
             data.encoder_domain =
                 match EncoderDomain::new(backend.mechanical_encoder_quadrature_counts_per_rev()) {
@@ -1504,9 +1399,6 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             }
         }
 
-        // ---------------------------------------------------------------
-        // Inductance measurement (phi-locked rotating field)
-        // ---------------------------------------------------------------
         ElectricalIdentificationState::InductanceSetup => {
             if data.encoder_domain.is_none() {
                 return fail_electrical_id(phase, diagnostics, CommissionError::EncoderFault);
@@ -1586,8 +1478,6 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     None,
                 );
             };
-            // The clear above erased the chip's copy of STATUS_FLAGS, so a fault
-            // latched since is only visible in firmware. No await before the pin.
             if backend.interlock_tripped() {
                 return begin_inductance_restore(
                     electrical_identification_state,
@@ -1871,11 +1761,6 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 }
             };
             next_capture.status_flags_or |= status;
-            // The AC excitation drive keeps the ipark circular-limit bits
-            // (16-18) set for its whole duration, not just at entry -- the
-            // same transitional condition the entry mask exists to demote,
-            // so the per-sample check uses it too rather than the strict
-            // finish-phase mask.
             let entry_mask = crate::autotune::current_loop_entry_actionable_status_mask(
                 backend.feedback_config(),
             );
@@ -2060,9 +1945,6 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
 
-        // ---------------------------------------------------------------
-        // Model assembly and validation
-        // ---------------------------------------------------------------
         ElectricalIdentificationState::Validate => {
             let assembly = match assemble_electrical_model(
                 data,
@@ -2099,14 +1981,6 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     StepResult::SelftestDone
                 }
                 InnerSequence::Commission => {
-                    // Carry the model + Phase 5 confidence flags into the
-                    // current-tune phase. Bits 4–6 (retry / fallback / host
-                    // default) are added later by current validation and
-                    // host parameter resolution. The resistance result is
-                    // carried so the final InnerResult can persist the
-                    // count-space fit and the 64x audit comparison. It is
-                    // `Some` here because `ResistanceIdentify` always runs
-                    // before `Validate` in the commission sequence.
                     let resistance_result = data
                         .resistance_result
                         .expect("resistance result populated before Validate");
@@ -2122,7 +1996,6 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     StepResult::PhaseChanged(CommissionPhase::CurrentTune)
                 }
                 InnerSequence::Calibrate => {
-                    // Calibrate never reaches electrical ID.
                     unreachable!()
                 }
             }
@@ -2150,7 +2023,6 @@ mod tests {
         PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
     };
 
-    /// Maximum register operations issued by one non-capture electrical-ID arm.
     const ELECTRICAL_ID_MAX_REGISTER_OPS_PER_ARM: usize = 2;
 
     const TEST_THETA_E_US: u32 = 160;
@@ -2174,7 +2046,6 @@ mod tests {
         );
     }
 
-    /// Build a synthetic per-axis fit at the given count-slope (milli-units).
     fn axis_result(axis: ElectricalAxis, slope_milli: i32) -> ResistanceAxisResult {
         ResistanceAxisResult {
             axis,
@@ -2198,9 +2069,6 @@ mod tests {
         }
     }
 
-    /// Build a synthetic two-axis resistance result with the given per-axis
-    /// count-slopes (milli-units). The selected slope is their average, matching
-    /// the runner's `evaluate_resistance_result` behavior.
     fn resistance_result(slope0_milli: i32, slope1_milli: i32) -> ResistanceRunResult {
         ResistanceRunResult {
             selected_r_count_slope_milli: (slope0_milli + slope1_milli) / 2,
@@ -2254,8 +2122,6 @@ mod tests {
         }
     }
 
-    /// Per-coil resistance count-slopes of 1706 milli and accepted rotating-
-    /// field reactance evidence from the AC estimator.
     fn representative_data() -> ElectricalIdentificationData {
         let mut data = ElectricalIdentificationData::new(
             512,
@@ -2335,7 +2201,6 @@ mod tests {
             "tau should use R=1.706, not truncated: {}",
             assembly.model.tau_e_us
         );
-        // l_count_micro = X / omega = 8600e9 / (6283 * 1_000_000) ≈ 1368.
         assert!(
             (1360..=1375).contains(&assembly.model.l_count_micro),
             "l_count_micro should preserve the count-space L scale: {}",
@@ -2366,7 +2231,6 @@ mod tests {
             512,
             crate::commission_dispatch::test_support::current_limit(2816),
         );
-        // r_count_slope_milli = 1706 (V=512 / I=300 count-slope).
         data.resistance_result = Some(resistance_result(1706, 1706));
         data.inductance = Some(inductance_evidence_fixture(9_500, 1_000_000));
 
@@ -2500,8 +2364,6 @@ mod tests {
         data.inductance_timing = Some(inductance_evidence);
         set_timing_state(&mut data, 0, COMMISSION_TIMING_ACCEPTED);
         set_timing_state(&mut data, 1, COMMISSION_TIMING_REJECTED);
-        // Stale bits left in the retired delay slot: a correct implementation
-        // must never read them back.
         data.timing_states |= COMMISSION_TIMING_REJECTED << 4;
 
         let summaries = electrical_timing_summaries(&data);
@@ -2521,8 +2383,6 @@ mod tests {
         );
     }
 
-    /// Pack a `MOTOR_TYPE_N_POLE_PAIRS` value reporting a two-phase stepper,
-    /// matching the runner's `InvalidMotorType` entry check.
     fn two_phase_motor_type_n_pole_pairs() -> u32 {
         foci_tmc4671::registers::MotorTypeNPolePairs::new()
             .with_motor_type(foci_tmc4671::registers::MotorType::TwoPhase)
@@ -2530,11 +2390,6 @@ mod tests {
             .into()
     }
 
-    /// Seed the power-stage readback registers the shared resistance runner
-    /// verifies against `backend.tmc_config()`'s profile (`PWM_MAXCNT`,
-    /// `PWM_BBM_H_BBM_L`, `DSADC_MDEC_B_MDEC_A`), plus `MOTOR_TYPE_N_POLE_PAIRS`.
-    /// `PWM_SV_CHOP` is written and read back by the runner itself, so it does
-    /// not need pre-seeding.
     fn seed_resistance_power_stage_registers(backend: &mut MockBackend) {
         use foci_tmc4671::registers::{
             DSADC_MDEC_B_MDEC_A, MOTOR_TYPE_N_POLE_PAIRS, PWM_BBM_H_BBM_L, PWM_MAXCNT,
@@ -2938,8 +2793,6 @@ mod tests {
                 data,
             };
             let mut backend = MockBackend::new();
-            // The fault latches while the clear's SPI transfer is in flight, so
-            // the chip's copy of STATUS_FLAGS is already gone when it lands.
             backend.trip_interlock_on_write = Some(STATUS_FLAGS.addr());
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
@@ -3792,8 +3645,6 @@ mod tests {
             }
         }
 
-        // `AcFrameAccumulator` is `Copy`, so finishing a copy here leaves the
-        // original for the production call below.
         let expected_x_average = expected_frame_x_quad(accumulator);
 
         let evidence = finish_inductance_evidence(InductanceCaptureFinish {
@@ -3832,8 +3683,6 @@ mod tests {
         let mut second_half = crate::electrical_capture::AcFrameAccumulator::new();
         let mut saliency = crate::electrical_capture::AcSaliencyAccumulator::new();
 
-        // Phasor-model currents at 30% reactance modulation, R / X = 0.25, at
-        // the production drive voltage; 100 samples over the production window.
         let x_avg = 8.5_f64;
         let r = 0.25 * x_avg;
         for index in 0..100u32 {
@@ -3883,7 +3732,6 @@ mod tests {
             estimate.x_d_count_ratio_milli - estimate.x_average_count_ratio_milli,
             estimate.x_average_count_ratio_milli - estimate.x_q_count_ratio_milli
         );
-        // 2 * 0.30 = 600 permille, within the coarse 5-samples-per-turn window.
         assert!(
             (540..=660).contains(&estimate.saliency_permille),
             "{}",
@@ -3891,10 +3739,6 @@ mod tests {
         );
     }
 
-    /// The frame reactance the production path accepts for these samples,
-    /// computed independently of `finish_inductance_evidence`. `x_quad` does not
-    /// depend on the realized frequency or the resistance slope, so nominal
-    /// values are passed for both.
     fn expected_frame_x_quad(accumulator: crate::electrical_capture::AcFrameAccumulator) -> u32 {
         let frame = accumulator
             .finish(
@@ -4249,7 +4093,6 @@ mod tests {
     #[test]
     fn inductance_sample_at_the_envelope_passes_the_check() {
         pollster::block_on(async {
-            // id = 0, iq = 563, exactly at the envelope.
             let (mut phase, mut backend) = inductance_envelope_fixture(563u32 << 16);
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
@@ -4271,7 +4114,6 @@ mod tests {
     #[test]
     fn inductance_sample_above_the_envelope_rejects_and_tears_down() {
         pollster::block_on(async {
-            // id = 0, iq = 564, one count over.
             let (mut phase, mut backend) = inductance_envelope_fixture(564u32 << 16);
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
@@ -4322,8 +4164,6 @@ mod tests {
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let mut reached_inductance = false;
-            // A 20 s resistance run can schedule up to 4,000 observations at
-            // the 5 ms sample period, plus bounded state transitions.
             for _ in 0..5_000 {
                 let before = register_operation_count(&backend.spi_log);
                 let step = step_electrical_identification(
@@ -4517,13 +4357,9 @@ mod tests {
             };
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-            // Bit 28 (inactive-encoder) is excluded from the current-loop
-            // hard-fail mask, so it warns without terminating the run.
             let warning_status = 1 << 28;
             let mut injected = false;
 
-            // A 20 s resistance run can schedule up to 4,000 observations at
-            // the 5 ms sample period, plus bounded state transitions.
             for _ in 0..5_000 {
                 let before = register_operation_count(&backend.spi_log);
                 let step = step_electrical_identification(
@@ -4574,10 +4410,6 @@ mod tests {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
             seed_resistance_power_stage_registers(&mut backend);
-            // No current scripting: ADC_IWY_IUX always reads back 0, so no
-            // measured point can support the fit or the signed anchor. The
-            // adaptive runner reports this as an unsupported measurement
-            // envelope rather than applying unsafe higher excitation.
 
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::ResistanceStart,
@@ -4706,13 +4538,6 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------
-    // Phase 1 model-assembly gates (inductance / theta)
-    // -----------------------------------------------------------------
-
-    /// Build model data for per-coil resistance currents `c0`/`c1` (counts).
-    ///
-    /// The per-axis count-slopes are `512000/c` (V=512 in count-slope-milli).
     fn data_with_per_coil_currents(c0: i32, c1: i32) -> ElectricalIdentificationData {
         let slope0 = (512_000 / c0.max(1)).max(1);
         let slope1 = (512_000 / c1.max(1)).max(1);
@@ -4752,7 +4577,6 @@ mod tests {
 
     #[test]
     fn permille_diff_uses_average_denominator_for_coil_disagreement() {
-        // |130 - 100| / ((130 + 100) / 2) = 30 / 115 = 260 permille.
         assert_eq!(permille_diff(100, 130), 260);
     }
 
@@ -4811,7 +4635,6 @@ mod tests {
 
     #[test]
     fn assemble_warns_on_borderline_resistance_mismatch() {
-        // 300 vs 320 -> ~6% (above warn 5%, below fail 15%).
         let data = data_with_per_coil_currents(300, 320);
         let assembly = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap();
         assert_ne!(
@@ -4873,7 +4696,7 @@ mod tests {
     fn validate_uses_measured_theta_when_available_and_accepted() {
         let data = with_recorded_phase_evidence(representative_data());
         let assembly = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap();
-        assert_eq!(assembly.model.theta_source, 0); // 0 = measured
+        assert_eq!(assembly.model.theta_source, 0);
         assert_eq!(assembly.model.theta_e_us, 42);
     }
 
@@ -4919,11 +4742,6 @@ mod tests {
 
     #[test]
     fn resolve_theta_falls_back_when_measured_theta_is_zero() {
-        // A measured theta of zero is not a real physical delay.
-        // `synthesize_current_gains` hard-rejects theta_e_us == 0, so
-        // accepting this as "Measured" fails the whole model instead of
-        // falling back to the configured value the way an absent
-        // measurement already does.
         let (theta, source) = resolve_theta_e_us_input(Some(0), 1_000, 160);
         assert_eq!(theta, 160);
         assert_eq!(source, ThetaSource::ConfigFallback);
@@ -4931,8 +4749,6 @@ mod tests {
 
     #[test]
     fn resolve_theta_falls_back_when_measured_theta_too_large() {
-        // measured == tau/2 exactly is still "too large" (assemble_electrical_model
-        // rejects theta_e_us >= tau_e_us / 2).
         let (theta, source) = resolve_theta_e_us_input(Some(500), 1_000, 300);
         assert_eq!(theta, 300);
         assert_eq!(source, ThetaSource::ConfigFallback);
@@ -4940,13 +4756,9 @@ mod tests {
 
     #[test]
     fn resolve_theta_fallback_can_still_be_rejected_by_assemble_electrical_model() {
-        // The fallback path substitutes the input; it does not bypass the gate.
-        // An out-of-range configured value still fails downstream, unchanged
-        // from today's behavior with no measurement attempted at all.
         let (theta, source) = resolve_theta_e_us_input(None, 1_000, 600);
         assert_eq!(theta, 600);
         assert_eq!(source, ThetaSource::ConfigFallback);
-        // theta (600) >= tau_e_us / 2 (500): assemble_electrical_model must reject this.
         assert!(theta >= 1_000 / 2);
     }
 }

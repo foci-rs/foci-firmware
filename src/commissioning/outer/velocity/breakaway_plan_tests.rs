@@ -11,9 +11,6 @@ fn gain(raw: u16) -> PidPGain {
     PidPGain::new(raw).expect("raw gain within PidPGain range")
 }
 
-/// Canonical acquisition context for probe-plan tests. Its exact values are
-/// arbitrary but fixed, so digest self-consistency and cross-context digest
-/// difference are both reproducible.
 fn probe_context() -> BreakawayProbeContext {
     BreakawayProbeContext {
         workflow_digest: 0xA1B2_C3D4_E5F6_0718,
@@ -108,11 +105,8 @@ fn upward_probe_digest_binds_excursion_contract_and_physical_context() {
     assert_ne!(base.plan_digest, context_changed.plan_digest);
 }
 
-// --- Predecessor lookup, arithmetic-floor clamping, missing-bracket code -------
-
 #[test]
 fn predecessor_lookup_returns_the_prior_grid_rung() {
-    // Grid 1..1024: index 15 is 256, whose predecessor is 181 (index 14).
     let (floor, origin) = resolve_grid_floor(gain(1), gain(1_024), 20, 15).unwrap();
     assert_eq!(floor.raw(), 181);
     assert_eq!(origin, GridFloorOrigin::Predecessor);
@@ -133,12 +127,8 @@ fn resolve_grid_floor_rejects_an_out_of_range_breakaway_index() {
     );
 }
 
-// --- Per-n candidate enumeration, pinned for the representative geometry -------
-
 #[test]
 fn every_candidate_rung_count_matches_the_representative_geometry() {
-    // floor=181, breakaway=256, ceiling=1088.
-    // step and realized rung count for every n from 5 through 32.
     const EXPECTED: [(u8, u32, u8); 28] = [
         (5, 278, 5),
         (6, 208, 6),
@@ -184,16 +174,12 @@ fn every_candidate_rung_count_matches_the_representative_geometry() {
 
 #[test]
 fn additive_step_dedupes_the_floor_when_it_equals_breakaway() {
-    // Grid floor was clamped to breakaway (arithmetic-floor case): the ladder must
-    // not carry a duplicate leading entry.
     let candidate = realize_candidate_additive_ladder(32, 256, 256, 1_088).unwrap();
     assert_eq!(candidate.gains[0], 256);
     assert_ne!(candidate.gains[1], 256);
     assert_eq!(candidate.rung_count, 31);
     assert_eq!(candidate.gains[30], 1_088);
 }
-
-// --- Resolved additive ladder: the representative case --------------------------
 
 #[test]
 fn plan_additive_discovery_ladder_selects_the_representative_ladder() {
@@ -232,9 +218,6 @@ fn plan_additive_discovery_ladder_selects_the_representative_ladder() {
 
 #[test]
 fn measured_stepper_x_geometry_admits_discovery_ladder() {
-    // 2026-08-02 cold-X hardware capture: the upward probe resolved P=543
-    // under the current-derived P=7456 ceiling. The finest 32-rung additive
-    // ladder therefore starts at 543 + ceil((7456 - 543) / 30) = 774.
     let plan = plan_additive_discovery_ladder(generous_request(384, 543, 7_456, 0x213))
         .expect("the measured first additive gap must remain admissible");
 
@@ -259,7 +242,6 @@ fn plan_digest_binds_the_probe_plan_that_located_breakaway() {
 fn digest_ignores_padding_and_unused_gain_slots() {
     let mut first = plan_additive_discovery_ladder(generous_request(181, 256, 1_088, 7)).unwrap();
     let mut second = first;
-    // Corrupt only the padding beyond rung_count; the digest must not change.
     for slot in first.gains.iter_mut().skip(usize::from(first.rung_count)) {
         *slot = gain(1);
     }
@@ -268,8 +250,6 @@ fn digest_ignores_padding_and_unused_gain_slots() {
     }
     assert_eq!(first.digest(), second.digest());
 }
-
-// --- Checked arithmetic, exact ceiling anchoring, near-max domain --------------
 
 #[test]
 fn plan_additive_discovery_ladder_stays_checked_near_the_maximum_domain() {
@@ -283,12 +263,9 @@ fn plan_additive_discovery_ladder_stays_checked_near_the_maximum_domain() {
 
 #[test]
 fn additive_ratio_guard_uses_exact_cross_multiplication() {
-    // breakaway = 256; max first additive gain that satisfies 3/2 is 384.
     assert!(satisfies_additive_ratio_guard(384, 256));
     assert!(!satisfies_additive_ratio_guard(385, 256));
 }
-
-// --- Terminal rejections before motion ------------------------------------------
 
 #[test]
 fn insufficient_additive_span_rejects_a_ceiling_one_step_above_breakaway() {
@@ -328,7 +305,7 @@ fn invalid_request_rejects_zero_inputs() {
 #[test]
 fn confidence_family_table_overflow_rejects_every_candidate() {
     let mut request = generous_request(181, 256, 1_088, 0);
-    request.observations_per_direction = 27; // 5 rungs * 27 = 135 already exceeds 128.
+    request.observations_per_direction = 27;
     assert_eq!(
         plan_additive_discovery_ladder(request),
         Err(AdditiveLadderPlanError::ConfidenceFamilyTooLarge)
@@ -357,9 +334,6 @@ fn command_envelope_rejection_fires_when_every_candidate_overruns_it() {
 
 #[test]
 fn additive_ladder_resolution_budget_boundary() {
-    // breakaway = 256, floor = 181. At n = 32 (the finest resolution), ceiling =
-    // 4_096 lands the first additive gain exactly at the provisional limit (384);
-    // ceiling = 4_097 pushes it one gain unit past the limit (385).
     let passing = generous_request(181, 256, 4_096, 0);
     let plan = plan_additive_discovery_ladder(passing).unwrap();
     assert_eq!(plan.gains[2].raw(), 384);
@@ -371,16 +345,10 @@ fn additive_ladder_resolution_budget_boundary() {
     );
 }
 
-// --- Regression guard: the superseded `breakaway - floor` step rule ------------
-
 #[test]
 fn the_superseded_breakaway_minus_floor_rule_fails_its_own_budget() {
-    // Deriving the additive step from `breakaway - floor` is structurally invalid. This pins
-    // the two documented failure shapes so the rule cannot be silently reintroduced.
     let ceiling = 1_088_u32;
 
-    // breakaway = 91, floor = 64 (predecessor on the 1..1024 grid): step = 27,
-    // yielding 39 rungs, which exceeds MAX_SWEEP_RUNGS.
     let breakaway = 91_u32;
     let floor = 64_u32;
     let step = breakaway - floor;
@@ -389,8 +357,6 @@ fn the_superseded_breakaway_minus_floor_rule_fails_its_own_budget() {
     assert_eq!(rung_count, 39);
     assert!(usize::try_from(rung_count).unwrap() > MAX_SWEEP_RUNGS);
 
-    // breakaway = 1024, floor = 724 (predecessor): step = 300, yielding 3 rungs,
-    // which falls below MIN_STRUCTURAL_RUNGS.
     let breakaway = 1_024_u32;
     let floor = 724_u32;
     let step = breakaway - floor;

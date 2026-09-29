@@ -20,21 +20,15 @@ pub const MOVING_STROKE_US: u32 = 512_000;
 
 /// Where one moving stroke sits relative to the position it started from.
 ///
-/// The travel envelope bounds how far the axis may get from its start, not how
-/// far it moves. Those are the same only when a stroke spends its whole
-/// displacement travelling one way.
+/// The travel envelope bounds distance from the start, which equals displacement only when
+/// a stroke travels one way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum StrokeGeometry {
-    /// The stroke starts at the origin and runs one way, so its peak excursion
-    /// equals its displacement. The historical geometry.
+    /// The stroke starts at the origin and runs one way; peak excursion equals displacement.
     OriginAnchored = 0,
-    /// The stroke runs symmetrically about the origin, so its peak excursion is
-    /// half its displacement and the same envelope admits twice the stroke.
-    ///
-    /// It also puts each direction's settled tail at symmetric positions either
-    /// side of the origin, so a displacement-dependent disturbance acts equally
-    /// on both rather than favouring whichever direction travels outward.
+    /// The stroke runs symmetrically about the origin; peak excursion is half the
+    /// displacement, and each direction settles at symmetric positions.
     OriginCentred = 1,
 }
 
@@ -47,7 +41,6 @@ impl StrokeGeometry {
         }
     }
 
-    /// Displacement admitted by one peak-excursion allowance.
     const fn displacement_for_excursion(self, excursion_mrev: u64) -> u64 {
         match self {
             Self::OriginAnchored => excursion_mrev,
@@ -89,9 +82,8 @@ pub const CURRENT_HEADROOM_DEN: u32 = 10;
 const MICROS_PER_SECOND: u64 = 1_000_000;
 /// Maximum measured time between encoder reads before wrap-safe interpretation is refused.
 ///
-/// The recovery-enabled trace campaign observed a valid 14,329 us gap after the
-/// highest-P rung record. Twenty milliseconds is the largest 5 ms-aligned bound
-/// that keeps the live 10,000 mrev/s host ceiling below encoder observability.
+/// Twenty milliseconds is the largest 5 ms-aligned bound that keeps the 10,000 mrev/s host
+/// ceiling below encoder observability.
 pub const MAX_SAFETY_OBSERVATION_GAP_US: u64 = 20_000;
 const VELOCITY_P_DIVISOR: u32 = 256;
 const HALF_OCTAVE_NUM: u32 = 181;
@@ -143,8 +135,7 @@ pub struct VelocitySweepRequest {
     pub positive_position_headroom_mrev: u32,
     /// Host-declared per-primitive safety cap.
     ///
-    /// This bounds one moving-plus-settle primitive, not the aggregate campaign
-    /// duration. The aggregate lives in the command-level `CommissioningWorkflowPlan`.
+    /// Bounds one moving-plus-settle primitive, not the aggregate campaign duration.
     pub max_duration_ms: u16,
 }
 
@@ -667,8 +658,6 @@ fn travel_cap(
     if moving_stroke_us == 0 || settle_reserve_mrev >= full_window_mrev {
         return Err(VelocityPlanError::InvalidRequest);
     }
-    // The window bounds peak excursion; the geometry says how much displacement
-    // that allowance buys.
     let moving_window =
         geometry.displacement_for_excursion(u64::from(full_window_mrev - settle_reserve_mrev));
     let cap = moving_window
@@ -707,13 +696,9 @@ fn representability_ceilings(
 /// Resolve the current-representable `(p_start, p_top)` gain span and the
 /// derived usable torque limit from the requested target and hard torque limit.
 ///
-/// Shared by the classic velocity sweep and the breakaway campaign so both use
-/// the identical current-representable ceiling machinery (`p_top ~ 256 *
-/// usable_torque_limit / target`, capped by encoder observability); see
-/// [`current_gain_span_with_limit`]. The breakaway orchestrator retains the
-/// returned `(p_start, p_top)` to plan the probe grid and to anchor the additive
-/// discovery ceiling, and the returned ceiling-binding-source discriminant
-/// (`CEILING_BINDING_*`) to report which candidate bound `p_top`.
+/// Shared by the velocity sweep and the breakaway campaign. Returns `(p_start, p_top)` and
+/// the `CEILING_BINDING_*` discriminant naming which candidate bound `p_top`; see
+/// [`current_gain_span_with_limit`].
 pub(crate) fn current_gain_span(
     target_velocity_rpm: TmcMechanicalRpm,
     hard_torque_limit: u16,
@@ -734,11 +719,6 @@ pub(crate) fn current_gain_span(
     Ok((p_start, p_top, usable as u16, ceiling_binding_source))
 }
 
-/// Resolve `(p_start, p_top)` and report which of the two `p_top` candidates
-/// bound the result: the current-limit-derived candidate, or the
-/// [`PidPGain::MAX`] representability clamp. Does not change the computed
-/// `p_top` -- the clamp is applied exactly as before; only the winning
-/// candidate is now surfaced alongside it.
 fn current_gain_span_with_limit(
     target_velocity_rpm: TmcMechanicalRpm,
     usable_torque_limit: u16,
@@ -773,9 +753,7 @@ fn current_gain_span_with_limit(
 /// point (`raw * sqrt(2)`, approximated as `raw * HALF_OCTAVE_NUM /
 /// 2^HALF_OCTAVE_DEN_SHIFT`, rounded up). Returns `None` on overflow.
 ///
-/// No structural-minimum or family-size validation — a single-candidate
-/// primitive shared by [`build_gain_ladder`]'s per-octave loop and the
-/// velocity-I top-gap insertion (`integral_plan.rs`).
+/// Performs no structural-minimum or family-size validation.
 pub(crate) fn half_octave_candidate(raw: u16) -> Option<u16> {
     let numerator = u64::from(raw).checked_mul(u64::from(HALF_OCTAVE_NUM))?;
     let rounding = (1_u64 << HALF_OCTAVE_DEN_SHIFT) - 1;
@@ -784,10 +762,6 @@ pub(crate) fn half_octave_candidate(raw: u16) -> Option<u16> {
 }
 
 /// Build the anchored post-dedupe half-octave gain ladder between two raw gains.
-///
-/// Reused by the breakaway probe planner (`breakaway_plan.rs`) to derive the
-/// diagnostic search grid; the additive discovery ladder deliberately does not
-/// use this generator (see `breakaway_plan.rs` for why re-anchoring is unsound).
 pub(crate) fn build_gain_ladder(
     p_start_raw: u16,
     p_top_raw: u16,
@@ -797,11 +771,8 @@ pub(crate) fn build_gain_ladder(
 
 /// Generic core of [`build_gain_ladder`], working over any [`RegisterGain`].
 ///
-/// `include_exact_top` controls whether the exact `top_raw` value is
-/// force-appended when the half-octave progression does not land on it
-/// exactly; the P ladder always sets this `true`, while the I ladder's
-/// top-gap handling (`integral_plan.rs`) sets it `false` and inserts its own
-/// candidate via [`half_octave_candidate`].
+/// `include_exact_top` force-appends the exact `top_raw` when the half-octave progression
+/// does not land on it.
 pub(crate) fn build_gain_ladder_generic<G: RegisterGain>(
     start_raw: u16,
     top_raw: u16,

@@ -32,15 +32,6 @@ const COUNTS_PER_REV: u32 = 4_000;
 const PWM_HZ: u32 = 25_000;
 const TORQUE_LIMIT: u16 = 2_816;
 
-// --- Breakaway amplitude-authority fixtures ------------------------------------
-//
-// A schema-16 breakaway plan can only be minted through the real confirmation
-// gate (`ConfirmedAcquisitionDigest`'s inner field is private outside
-// `integral_plan.rs`), so these fixtures walk the same
-// discovery-confirmation-token path `breakaway_campaign.rs` does, rather than
-// fabricating a plan. `breakaway_request` freezes its velocity at 6_666
-// mrev/s because gain 512 is only known transition-capable under that target.
-
 fn breakaway_request() -> VelocitySweepRequest {
     VelocitySweepRequest {
         requested_velocity_mrev_s: 6_666,
@@ -81,8 +72,6 @@ fn full_directional_consensus() -> DirectionalConsensus {
     }
 }
 
-/// A held-out family-eight block that `evaluate_band_confirmation` accepts:
-/// both directions fully collected, well inside the 70-80% response band.
 fn accepted_confirmation_evidence() -> (ConfirmationDirectionalInput, ConfirmationDirectionalInput)
 {
     let mean_rate_q: i64 = 750_000;
@@ -115,8 +104,6 @@ fn breakaway_confirmation_plan(nominated_p: PidPGain) -> BandConfirmationPlan {
     plan_band_confirmation(0x1111_2222_3333_4444, nominated_p).unwrap()
 }
 
-/// Mint the confirmation token through the real gate, exactly as a live
-/// campaign would, rather than fabricating the digest.
 fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcquisitionDigest {
     let (forward, reverse) = accepted_confirmation_evidence();
     let acceptance =
@@ -136,8 +123,6 @@ fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]
         .held_out_response_intervals_q
 }
 
-/// One genuine schema-16 breakaway plan, built through the real
-/// discovery-confirmation-token path (see the module doc above).
 fn breakaway_plan() -> super::integral_plan::VelocityIntegralPlan {
     let proportional = plan_proportional_velocity_sweep(
         breakaway_request(),
@@ -187,9 +172,6 @@ fn breakaway_point(plan: super::integral_plan::VelocityIntegralPlan) -> Acceptan
     }
 }
 
-/// The relaxed identity gate must admit a genuine breakaway-schema point on
-/// its own authority (well-ordered, correctly signed intervals; in-range
-/// `selected_i`), not just a combined one.
 #[test]
 fn amplitude_accepts_a_genuine_breakaway_authority_point() {
     let current = breakaway_plan();
@@ -212,10 +194,6 @@ fn amplitude_accepts_a_genuine_breakaway_authority_point() {
     );
 }
 
-/// A genuine breakaway point is otherwise identical to one the gate accepts
-/// (see `amplitude_accepts_a_genuine_breakaway_authority_point`); mutating only
-/// `selected_i` outside the retained ladder must isolate the rejection to the
-/// rung-membership check, not the new interval-authority check alongside it.
 #[test]
 fn amplitude_rejects_authority_point_with_selected_i_out_of_range() {
     let current = breakaway_plan();
@@ -366,8 +344,6 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
         execution.acquisition_kind,
         VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
     );
-    // The fixed-I fixed-gain amplitude never records a target terminus; it is
-    // distinguished from a response ladder by `acquisition_kind` alone.
     assert_eq!(execution.acceptance_source, AcceptanceSource::NonBreakaway);
     assert!(!execution.records_target_terminus());
     assert_eq!(execution.i_start, 1);
@@ -426,9 +402,6 @@ fn amplitude_plan_rejects_wrong_sided_recovery_authority() {
     ] {
         let mut invalid = breakaway_point(current);
         invalid.selected_response_intervals_q = intervals;
-        // The authority-consistency gate now catches a wrong-sided (or
-        // zero-boundary) interval before the recovery-geometry computation
-        // ever runs, so this is an identity rejection, not an arithmetic one.
         assert_eq!(
             plan_fixed_gain_amplitude(
                 invalid,
@@ -478,12 +451,6 @@ fn amplitude_digest_binds_every_explicit_plan_dimension() {
     mutate(|plan| plan.schema_revision += 1);
 }
 
-/// Slot order packs into the spare high nibble of the existing order byte.
-///
-/// A dedicated byte would push the plan reply from 66 to 67 bytes and break the
-/// fragment span assertion for a field with two values. Packing keeps the reply
-/// size and, because ForwardFirst encodes as zero, keeps the historical byte
-/// unchanged for every non-mirrored run.
 #[test]
 fn schedule_order_code_preserves_the_historical_byte() {
     for order in [
@@ -498,11 +465,6 @@ fn schedule_order_code_preserves_the_historical_byte() {
     }
 }
 
-/// Forward-first must hash exactly as it did before slot order was recorded.
-///
-/// Hashing the order only when mirrored keeps every existing Integral plan digest,
-/// retained acceptance-point binding, and archived capture valid. A schema bump
-/// would have cascaded into the host cross-check for a diagnostic-only field.
 #[test]
 fn forward_first_leaves_the_integral_plan_digest_untouched() {
     let plan = breakaway_plan();
@@ -517,11 +479,6 @@ fn forward_first_leaves_the_integral_plan_digest_untouched() {
     );
 }
 
-/// The Integral plan flags reserve bits 2 and 3 for the slot order.
-///
-/// `ReverseFirst` and `PairedOutAndBack` used to occupy those bits (now
-/// removed); forward-first stays all-zero there and must not
-/// disturb the older, still-live bits.
 #[test]
 fn plan_flags_leave_the_reserved_slot_order_bits_zero() {
     let plan = breakaway_plan();

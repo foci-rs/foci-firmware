@@ -28,8 +28,6 @@ fn combined_geometry_appends_the_exact_cap_without_changing_history() {
     assert_eq!(PROPORTIONAL_PLAN_SCHEMA_REVISION, 14);
     assert_eq!(INTEGRAL_PLAN_SCHEMA_REVISION, 13);
     assert_eq!(INTEGRAL_EVIDENCE_SCHEMA_REVISION, 17);
-    // The breakaway campaign is additive: it must not renumber or otherwise
-    // disturb any historical Proportional or Integral schema revision.
     assert_eq!(BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION, 17);
     assert_eq!(BREAKAWAY_INTEGRAL_SCHEMA_REVISION, 18);
     assert_ne!(

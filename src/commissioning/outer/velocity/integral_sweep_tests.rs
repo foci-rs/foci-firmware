@@ -152,8 +152,6 @@ fn breakaway_target_terminus_stays_sticky_once_recorded() {
     assert_eq!(data.target_terminus, Some(3));
 }
 
-/// A target-reaching breakaway run records a terminus; `records_target_terminus`
-/// is keyed on `acceptance_source`.
 #[test]
 fn breakaway_records_target_terminus_when_target_reached() {
     let mut plan = plan();
@@ -177,9 +175,6 @@ fn breakaway_records_target_terminus_when_target_reached() {
     assert_eq!(data.target_terminus, Some(3));
 }
 
-/// A breakaway run that completes on sufficiency without a deficit crossing
-/// the target leaves `target_terminus` at `None`; the recorder must not
-/// manufacture a terminus it never observed.
 #[test]
 fn breakaway_leaves_terminus_none_on_sufficiency_without_target() {
     let mut plan = plan();
@@ -203,11 +198,6 @@ fn breakaway_leaves_terminus_none_on_sufficiency_without_target() {
     assert_eq!(data.target_terminus, None);
 }
 
-/// The discriminator, not just the deficit math, gates terminus recording: a
-/// non-breakaway response ladder must record no terminus even when handed
-/// intervals that would otherwise cross the target, proving this guards
-/// against over-admitting through the shared `ResponseLadder` acquisition
-/// kind.
 #[test]
 fn non_breakaway_ladder_does_not_record_a_terminus() {
     let mut plan = plan();
@@ -231,9 +221,6 @@ fn non_breakaway_ladder_does_not_record_a_terminus() {
     assert_eq!(data.target_terminus, None);
 }
 
-/// A non-positive target velocity makes `integral_deficit_reaches_target`
-/// reject the plan before any deficit comparison runs; the recorder must
-/// surface that as a target-rate fault, not the generic schedule fault.
 #[test]
 fn target_terminus_recorder_reports_target_rate_invalid_for_a_non_positive_target() {
     let mut plan = plan();
@@ -256,9 +243,6 @@ fn target_terminus_recorder_reports_target_rate_invalid_for_a_non_positive_targe
     assert_eq!(error, CommissionError::TargetRateInvalid);
 }
 
-/// A rung past the declared schedule makes `integral_target_rpm_at` return
-/// `None`; the recovery planner must surface that as an out-of-range rung,
-/// not the generic schedule fault.
 #[test]
 fn plan_integral_recovery_reports_rung_index_out_of_range_for_a_rung_past_the_schedule() {
     let mut phase = phase();
@@ -273,9 +257,6 @@ fn plan_integral_recovery_reports_rung_index_out_of_range_for_a_rung_past_the_sc
     assert_eq!(error, CommissionError::RungIndexOutOfRange);
 }
 
-/// A negative target velocity cannot convert to the unsigned millirev/s the
-/// recovery planner works in; that is a target-rate fault, not the generic
-/// schedule fault.
 #[test]
 fn plan_integral_recovery_reports_target_rate_invalid_for_a_negative_target() {
     let mut phase = phase();
@@ -1044,9 +1025,6 @@ fn integral_recovery_rejects_absent_or_zero_straddling_opening_authority() {
     );
 }
 
-/// An extreme target/encoder-resolution pair drives the settled forward rate
-/// past `u64::MAX`; the direction-0 branch's `i128`-to-`u64` conversion fails
-/// even though the surrounding arithmetic stayed well inside `i128` range.
 #[test]
 fn opening_recovery_forward_settled_rate_overflowing_u64_reports_target_rate_invalid() {
     let mut workspace = TransientBuffer::new();
@@ -1059,8 +1037,6 @@ fn opening_recovery_forward_settled_rate_overflowing_u64_reports_target_rate_inv
     assert_eq!(error, CommissionError::TargetRateInvalid);
 }
 
-/// Mirror of the forward case for the direction-1 (reverse) branch: the
-/// settled reverse rate's magnitude overflows `u64` after negation.
 #[test]
 fn opening_recovery_reverse_settled_rate_overflowing_u64_reports_target_rate_invalid() {
     let mut workspace = TransientBuffer::new();
@@ -1789,9 +1765,6 @@ fn seed_boundary(data: &mut VelocityIntegralRuntime, rung_index: u8, slot: u8) {
     data.current_observer = observer;
 }
 
-/// Entering positive-I rest cleanup without a recorded boundary has nothing
-/// to clean up from; that is missing capture state, not the generic
-/// schedule fault.
 #[test]
 fn begin_positive_i_rest_cleanup_reports_missing_capture_state_without_a_boundary() {
     let mut phase = phase();
@@ -1815,9 +1788,6 @@ fn begin_positive_i_rest_cleanup_reports_missing_capture_state_without_a_boundar
     );
 }
 
-/// An elapsed-microsecond clock pinned at `u64::MAX` cannot admit the first
-/// sample grid point; that is an unrepresentable deadline, not the generic
-/// schedule fault.
 #[test]
 fn begin_positive_i_rest_cleanup_reports_deadline_overflow_for_the_sample_grid() {
     let mut phase = phase();
@@ -1842,9 +1812,6 @@ fn begin_positive_i_rest_cleanup_reports_deadline_overflow_for_the_sample_grid()
     );
 }
 
-/// The first sample grid point can fit before the clock wraps, but the
-/// zero-settle window on top of it cannot; that is still an unrepresentable
-/// deadline, not the generic schedule fault.
 #[test]
 fn begin_positive_i_rest_cleanup_reports_deadline_overflow_for_the_settle_window() {
     let mut phase = phase();
@@ -1869,9 +1836,6 @@ fn begin_positive_i_rest_cleanup_reports_deadline_overflow_for_the_settle_window
     );
 }
 
-/// The positive-I rest cleanup capture's own analysis-budget deadline can
-/// also overflow the elapsed-microsecond clock on exit; that is an
-/// unrepresentable deadline, not the generic schedule fault.
 #[test]
 fn positive_i_rest_cleanup_capture_reports_deadline_overflow_for_the_analysis_budget() {
     let mut phase = phase();
@@ -2201,16 +2165,6 @@ fn successful_post_floor_cleanup_restores_origin_before_the_bookend() {
     ));
 }
 
-/// Reachability regression: a breakaway peak rung whose native integral
-/// reaches the target but never settles closes through the
-/// positive-I-rest-boundary sufficiency path -- a path that never reaches
-/// `retain_rung`, the sole non-test caller of the target-terminus recorder.
-/// The terminus must still install end-to-end.
-///
-/// The direct recorder unit test drives `record_integral_target_if_reached`
-/// in isolation and cannot catch this: the defect is that no state on the
-/// diversion path calls the recorder at all. This test drives the state
-/// machine through the closure and asserts the terminus records.
 #[test]
 fn breakaway_rest_boundary_sufficiency_records_target_terminus() {
     let mut phase = phase();
@@ -2228,9 +2182,6 @@ fn breakaway_rest_boundary_sufficiency_records_target_terminus() {
     data.plan.encoder_counts_per_rev = 4_000;
     seed_sufficient_curve(data, &mut workspace);
     seed_boundary(data, 4, 3);
-    // Both directional consensuses collapse across the target so the recorder
-    // must install the terminus; the peak rung never settles, so the closure
-    // takes the positive-I-rest-boundary sufficiency path, not `retain_rung`.
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
     data.rung_intervals = core::array::from_fn(|slot| {
         if slot.is_multiple_of(2) {
@@ -2271,11 +2222,6 @@ fn breakaway_rest_boundary_sufficiency_records_target_terminus() {
     assert_eq!(data.target_terminus, Some(3));
 }
 
-/// Symmetric guard to `breakaway_rest_boundary_sufficiency_records_target_terminus`:
-/// the SAME rest-boundary sufficiency closure, driven through the real state
-/// machine, must NOT manufacture a terminus when the directions reach eligible
-/// consensus but the deficit stays above the reach threshold. The recorder-level
-/// no-target case cannot catch a spurious record injected by the diverted path.
 #[test]
 fn breakaway_rest_boundary_sufficiency_leaves_terminus_none_without_target() {
     let mut phase = phase();
@@ -2293,8 +2239,6 @@ fn breakaway_rest_boundary_sufficiency_leaves_terminus_none_without_target() {
     data.plan.encoder_counts_per_rev = 4_000;
     seed_sufficient_curve(data, &mut workspace);
     seed_boundary(data, 4, 3);
-    // Both directions reach eligible consensus, but the deficit stays well above
-    // the reach threshold, so the closure must leave the terminus unset.
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
     data.rung_intervals = core::array::from_fn(|slot| {
         if slot.is_multiple_of(2) {
@@ -2335,14 +2279,6 @@ fn breakaway_rest_boundary_sufficiency_leaves_terminus_none_without_target() {
     assert_eq!(data.target_terminus, None);
 }
 
-/// A breakaway positive rung whose directional consensuses cross the target
-/// must record the target terminus as it is analyzed through `AnalyzeRung ->
-/// retain_rung`. This is the closure the hardware took on the non-promoting
-/// resume (all rungs settle, no current-headroom or rest-boundary diversion),
-/// and the peak rung's measured response reached ~98.6% of target -- above the
-/// reach threshold. If the recorder does not fire here, the resume terminal
-/// carries no terminus and promotion refuses with a missing-terminus cause even
-/// though the candidate genuinely reached target.
 #[test]
 fn breakaway_analyze_rung_records_target_terminus_when_target_reached() {
     let mut phase = phase();
@@ -2361,9 +2297,6 @@ fn breakaway_analyze_rung_records_target_terminus_when_target_reached() {
     *state = VelocityIntegralState::AnalyzeRung;
     data.rung_index = 1;
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
-    // Both directional consensuses collapse across the target: the deficit is
-    // within the reach threshold, mirroring the hardware rung that measured
-    // ~98.6% of target on both directions.
     data.rung_intervals = core::array::from_fn(|slot| {
         if slot.is_multiple_of(2) {
             ExactRateInterval::new(-100_000, 340_000).unwrap()
@@ -2388,12 +2321,6 @@ fn breakaway_analyze_rung_records_target_terminus_when_target_reached() {
     assert_eq!(data.target_terminus, Some(0));
 }
 
-/// Continuation guard for the "recorded then lost" hypothesis: once a positive
-/// rung has recorded the target terminus, the recovery + bookend + terminal
-/// continuation of a clean-sufficiency close must carry it through to the
-/// terminal. If any state on that path cleared `target_terminus`, the terminal
-/// would encode no terminus (rest_boundary_rung_plus_one == 0) and promotion
-/// would refuse even though the candidate reached target.
 #[test]
 fn breakaway_clean_sufficiency_preserves_recorded_terminus_through_continuation() {
     let mut phase = phase();
@@ -2425,11 +2352,9 @@ fn breakaway_clean_sufficiency_preserves_recorded_terminus_through_continuation(
         .configure_velocity_sweep_encoder_resolution(4_000)
         .unwrap();
     safety.unwrapped_position = 1_001;
-    // A prior positive rung already recorded the target terminus at rung 3.
     data.target_terminus = Some(3);
     let mut backend = MockBackend::new();
 
-    // Drive the clean-sufficiency close: AnalyzeRung -> RecoverRung -> recovery -> Terminal.
     assert!(matches!(
         step(&mut phase, &mut workspace, &mut backend),
         StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Rung(_))
@@ -2449,7 +2374,6 @@ fn breakaway_clean_sufficiency_preserves_recorded_terminus_through_continuation(
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::FirstRunRetained);
     assert_eq!(terminal.cause, IntegralOutcomeCause::Engine(0));
-    // The recorded terminus (rung 3) must survive to the terminal as rung + 1.
     assert_eq!(terminal.rest_boundary_rung_plus_one, 4);
 }
 
@@ -2481,11 +2405,6 @@ fn sufficient_boundary_run_uses_cause_ten_after_the_required_bookend() {
 
 #[test]
 fn rest_rejection_after_sufficiency_is_discriminated_from_a_partial_acquisition() {
-    // Case (b): evidence.assess(..) would already be Sufficient when a
-    // later rest check rejects the run. The terminal keeps outcome and
-    // cause unchanged (Inconclusive / VelocityRestNotConfirmed) but now
-    // also records that sufficiency was already met, and which owner
-    // rejected rest.
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
@@ -2520,9 +2439,6 @@ fn rest_rejection_after_sufficiency_is_discriminated_from_a_partial_acquisition(
 
 #[test]
 fn rest_rejection_before_sufficiency_leaves_the_discriminator_unset() {
-    // Case (a): the existing partial-acquisition path. Confirms the
-    // discriminator's unset default holds for a run that never reached
-    // sufficiency at all.
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
@@ -2549,10 +2465,6 @@ fn rest_rejection_before_sufficiency_leaves_the_discriminator_unset() {
 
 #[test]
 fn amplitude_owner_reaching_evidence_terminal_is_reported_as_integrity_fault() {
-    // Defensive: evidence_terminal only runs on the non-amplitude path, so
-    // data.rest_unconfirmed_owner should never hold an Amplitude value here.
-    // If it somehow does, this must surface as its own dedicated cause, not
-    // a silently wrong case-(b) terminal.
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
@@ -2889,9 +2801,6 @@ fn rung_reset_clears_only_per_rung_observation_state() {
     assert_eq!(data.eligible_masks, [0b101; 2]);
 }
 
-/// A slot at or beyond `INTEGRAL_SLOT_COUNT` is a caller bug, not a workspace
-/// I/O failure -- both accessors must report it as an out-of-range rung
-/// index rather than the generic schedule fault.
 #[test]
 fn amplitude_rung_mean_accessors_report_out_of_range_slot() {
     let mut workspace = TransientBuffer::new();
@@ -3037,9 +2946,6 @@ fn slot_transition_timing_starts_scored_rest_after_the_exit_clear() {
     ));
 }
 
-/// An elapsed-microsecond clock pinned at `u64::MAX` cannot admit the
-/// zero-settle window; that is an unrepresentable deadline, not the generic
-/// schedule fault.
 #[test]
 fn prepare_zero_settle_reports_deadline_overflow_for_the_settle_window() {
     let mut phase = phase();
@@ -3069,9 +2975,6 @@ fn prepare_zero_settle_reports_deadline_overflow_for_the_settle_window() {
     );
 }
 
-/// The zero-settle window itself can fit before the clock wraps, but the
-/// wider analysis budget on top of it cannot; that is still an
-/// unrepresentable deadline, not the generic schedule fault.
 #[test]
 fn prepare_zero_settle_reports_deadline_overflow_for_the_analysis_budget() {
     let mut phase = phase();
@@ -3103,9 +3006,6 @@ fn prepare_zero_settle_reports_deadline_overflow_for_the_analysis_budget() {
     );
 }
 
-/// The zero-settle capture's own analysis-budget deadline can also
-/// overflow the elapsed-microsecond clock; that is an unrepresentable
-/// deadline, not the generic schedule fault.
 #[test]
 fn settle_capture_reports_deadline_overflow_for_the_analysis_budget() {
     let mut phase = phase();
@@ -3378,27 +3278,13 @@ fn amplitude_safety_fault_uses_the_amplitude_terminal() {
     assert_eq!(terminal.cause, FixedGainAmplitudeCause::EvidenceIntegrity);
 }
 
-/// Integral rung aggregation must read the slots that actually carry each direction.
-///
-/// Evidence is written by raw slot index and read back by observation ordinal and
-/// direction. `analyze_rung` hardcoded `index * 2 + offset`, so a mirrored run
-/// aggregated the opposite direction's slots: every observation was reported Inert
-/// even though the stored observations were eligible and correctly signed. That
-/// produced eligible masks of 0x0/0x0 on hardware while the raw evidence was fine.
 #[test]
 fn rung_aggregation_follows_the_declared_slot_order() {
-    // `ReverseFirst`, the mirrored order this loop used to also exercise, was
-    // removed along with its only producers. Forward-first
-    // is the only order left, but the aggregation must still read it from
-    // `plan.slot_order` rather than assuming it, so this still exercises the
-    // real declared-order path rather than a hardcoded one.
     let slot_order = IntegralSlotOrder::ForwardFirst;
     let mut plan = plan();
     plan.slot_order = slot_order;
     let mut data = VelocityIntegralRuntime::new(1, plan);
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
-    // Sign each slot by the direction that slot actually travels, so reading
-    // the wrong slots yields the wrong sign rather than merely wrong values.
     data.rung_intervals = core::array::from_fn(|slot| {
         let travels_forward = slot_order.direction_index(slot as u8) == 0;
         if travels_forward {
@@ -3621,9 +3507,6 @@ fn non_amplitude_recover_rung_rest_unconfirmed_is_attributed_to_integral_not_amp
 
 #[test]
 fn positive_observation_unconfirmed_rest_reports_its_diagnostic_owner() {
-    // A Positive rung's failed settle always resolves through the positive-I=0
-    // cleanup path, never the terminal owner match, so this stops at the
-    // RestSelection diagnostic rather than driving to a terminal.
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
@@ -3669,10 +3552,6 @@ fn integral_i_at_response_ladder_returns_the_half_octave_rung() {
     test_plan.positive_rung_count = 13;
     test_plan.acceptance_source = AcceptanceSource::NonBreakaway;
     test_plan.acquisition_kind = VelocityIntegralAcquisitionKind::ResponseLadder;
-    // Rung index accounting: integral_i_at reserves index 0 and the final
-    // index for the zero-target opening/closing bookends (see its existing
-    // `rung_index == 0 || rung_index + 1 == total => Some(0)` branch), so
-    // positive rung `k` lives at accessor index `k + 1`.
     for (positive_index, expected) in [1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1_024]
         .iter()
         .enumerate()

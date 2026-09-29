@@ -1,12 +1,5 @@
 use super::*;
 
-/// Assemble the expected canonical-record bytes for one test, independently
-/// of the encoder under test: each `push` call appends one field's exact
-/// little-endian bytes, in the same order the production `encode_*` function
-/// pushes them. Pinning the byte layout this way (rather than comparing two
-/// calls to the same encoder) is what makes these true golden tests: a field
-/// reorder, width change, or dropped field changes `expected.as_slice()`
-/// without touching the encoder under test.
 struct Expected(heapless::Vec<u8, 128>);
 
 impl Expected {
@@ -492,10 +485,6 @@ fn encode_campaign_terminal_has_stable_frame_layout() {
     assert_eq!(record.as_bytes(), expected.bytes());
 }
 
-/// Local tags are per-record-kind discriminants scoped to the breakaway
-/// family (see this module's own doc comment); pin them explicitly so an
-/// accidental tag collision between two breakaway encoders is caught here,
-/// not only downstream in a host decoder.
 #[test]
 fn every_encoder_uses_a_distinct_local_tag() {
     let tags = [
@@ -762,9 +751,6 @@ fn encode_recovery_rest_rejected_has_stable_frame_layout() {
         selected_mask: 0,
         selected_suffix_len: 0,
         disposition: 2,
-        // Suffix 64 is structurally usable but its interval resolves strictly
-        // away from zero, which is exactly what a statistical rejection looks
-        // like; the wider suffixes are present but not usable.
         intervals_q: [
             [0x0102_0304_0506_0708, 0x1112_1314_1516_1718],
             [0x2122_2324_2526_2728, 0x3132_3334_3536_3738],
@@ -811,9 +797,6 @@ fn encode_recovery_rest_rejected_has_stable_frame_layout() {
     );
 }
 
-/// The record's exact length is the host decoder's dispatch key alongside its
-/// local tag, so a field added or widened without a matching host change would
-/// silently decode as a different record. Pin it.
 #[test]
 fn recovery_rest_rejected_record_has_exact_length() {
     let report = BreakawayRecoveryRestRejected {

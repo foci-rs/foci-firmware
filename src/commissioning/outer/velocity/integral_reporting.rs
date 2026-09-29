@@ -21,10 +21,6 @@ use super::reproduction::BUILD_IDENTITY;
 const FNV1A64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 pub(crate) const PLAN_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 0;
 pub(crate) const PLAN_PROBE_CONSTRAINED_TEST_POINT: u8 = 1 << 1;
-/// Two-bit field carrying the observation slot order.
-///
-/// Forward-first encodes as zero, so plans predating the field are unchanged and
-/// the single-bit mirrored encoding stays valid.
 pub(crate) const PLAN_SLOT_ORDER_SHIFT: u8 = 2;
 pub(crate) const PLAN_SLOT_ORDER_MASK: u8 = 0b11 << PLAN_SLOT_ORDER_SHIFT;
 pub(crate) const TERMINAL_RECOVERY_UNAVAILABLE: u8 = 1 << 0;
@@ -36,12 +32,6 @@ pub(crate) const TERMINAL_REST_REJECTION_OWNER_SHIFT: u32 = 5;
 pub(crate) const TERMINAL_REST_REJECTION_OWNER_MASK: u8 =
     0b011 << TERMINAL_REST_REJECTION_OWNER_SHIFT;
 
-/// Whether this terminal's firmware-internal target derivations may return
-/// `Some(..)`.
-///
-/// True only for a breakaway acceptance terminal, which sets no wire
-/// `recovery_flags` bit of its own -- see [`terminal_recovery_flags`], which
-/// never packs a target-status field.
 const fn terminal_carries_target(report: &VelocityIntegralTerminal) -> bool {
     report.breakaway_acceptance
 }
@@ -99,10 +89,6 @@ pub(crate) const fn plan_recovery_flags(plan: &VelocityIntegralPlan) -> u8 {
 }
 
 pub(crate) fn terminal_recovery_flags(report: &VelocityIntegralTerminal) -> u8 {
-    // The `TERMINAL_COMBINED_WORKFLOW` bit and the packed target-status field
-    // it gated were set only by the now-retired live combined P-then-I
-    // workflow; breakaway never set them, so removing that
-    // dead branch does not change the wire `recovery_flags` byte.
     let owner_code: u8 = match report.rest_rejection_owner {
         Some(RestSelectionOwner::IntegralAnchor) | None => 0b00,
         Some(RestSelectionOwner::IntegralPositiveObservation) => 0b01,
@@ -124,7 +110,6 @@ pub(crate) fn terminal_recovery_flags(report: &VelocityIntegralTerminal) -> u8 {
         }
 }
 
-/// Fixed-memory sequencing and digest state for one Integral run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct VelocityIntegralIntegrity {
     run_sequence: u32,
@@ -135,7 +120,6 @@ pub(crate) struct VelocityIntegralIntegrity {
 }
 
 impl VelocityIntegralIntegrity {
-    /// Start one run by hashing its compact immutable plan marker.
     pub(crate) fn new(run_sequence: u32, plan: VelocityIntegralExecutionPlan) -> Self {
         let digest = extend_velocity_sweep_digest(
             FNV1A64_OFFSET,
@@ -150,17 +134,14 @@ impl VelocityIntegralIntegrity {
         }
     }
 
-    /// Caller-assigned run sequence copied into every evidence group.
     pub(crate) const fn run_sequence(self) -> u32 {
         self.run_sequence
     }
 
-    /// Sequence assigned to the next nonterminal evidence group.
     pub(crate) const fn next_evidence_sequence(self) -> u16 {
         self.next_evidence_sequence
     }
 
-    /// Hash one already-sequenced event and advance exact counters.
     pub(crate) fn record(&mut self, event: VelocityIntegralEvent) -> VelocityIntegralEvent {
         match event {
             VelocityIntegralEvent::Observation(_) => {
@@ -180,7 +161,6 @@ impl VelocityIntegralIntegrity {
         event
     }
 
-    /// Hash one amplitude event and advance its exact counters.
     pub(crate) fn record_fixed_gain_amplitude(
         &mut self,
         event: FixedGainAmplitudeEvent,
@@ -205,32 +185,26 @@ impl VelocityIntegralIntegrity {
         event
     }
 
-    /// Hash one terminal-sequenced boundary record without advancing evidence counters.
     pub(crate) fn record_terminal_boundary(&mut self, record: &VelocitySweepCanonicalRecord) {
         self.digest = extend_velocity_sweep_digest(self.digest, record);
     }
 
-    /// Number of observation groups included in the current digest.
     pub(crate) const fn emitted_observations(self) -> u16 {
         self.emitted_observations
     }
 
-    /// Number of rung groups included in the current digest.
     pub(crate) const fn emitted_rungs(self) -> u16 {
         self.emitted_rungs
     }
 
-    /// Current exact FNV-1a digest.
     pub(crate) const fn digest(self) -> u64 {
         self.digest
     }
 }
 
-/// Encode one nonterminal Integral event in the canonical digest representation.
 pub(crate) fn encode_velocity_integral_event(
     event: VelocityIntegralEvent,
 ) -> VelocitySweepCanonicalRecord {
-    // Tag 1 is reserved for the retired plan event; never reassign it.
     match event {
         VelocityIntegralEvent::Observation(report) => encode_observation(report),
         VelocityIntegralEvent::Rung(report) => encode_rung(report),
@@ -252,11 +226,6 @@ pub(crate) fn encode_velocity_integral_event(
     }
 }
 
-/// Encode the complete immutable Integral plan for trace-only reconstruction.
-///
-/// This record is emitted before motion and preserves every input to
-/// [`VelocityIntegralPlan::digest`]. It is intentionally distinct from the
-/// compact plan marker hashed into the evidence digest.
 pub(crate) fn encode_velocity_integral_plan_trace(
     run_sequence: u32,
     plan: VelocityIntegralPlan,
@@ -346,16 +315,9 @@ pub(crate) fn encode_velocity_integral_plan_trace(
 pub(crate) const VELOCITY_INTEGRAL_TERMINAL_REPLY_SCHEMA_REVISION: u8 = 2;
 pub(crate) const VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES: usize = 39;
 
-/// Cross-run reproduction summary carried on the compact terminal reply.
-///
-/// Absent for a `FirstRunRetained` (a first sufficient run has no prior run
-/// to compare against); present for every terminal that followed a second
-/// run.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct VelocityIntegralTerminalReproductionSummary {
-    /// Shared rungs whose anchor-relative intervals overlap, per direction.
     pub reproduced_masks: [u32; 2],
-    /// Shared rungs whose anchor-relative intervals are disjoint, per direction.
     pub divergent_masks: [u32; 2],
 }
 
@@ -364,12 +326,6 @@ fn push_reply<const N: usize>(destination: &mut [u8; N], offset: &mut usize, val
     *offset += value.len();
 }
 
-/// Encode the single compact ordinary-reply Integral terminal.
-///
-/// Carries only the fields the live host reads for status text and
-/// orchestration; the detailed observation/rung/recovery evidence rides
-/// the canonical trace only (see [`encode_velocity_integral_terminal`]
-/// for that record).
 pub(crate) fn encode_velocity_integral_terminal_reply(
     report: &VelocityIntegralTerminal,
     reproduction: Option<VelocityIntegralTerminalReproductionSummary>,
@@ -437,7 +393,6 @@ pub(crate) fn encode_velocity_integral_terminal_reply(
     bytes
 }
 
-/// Encode the detailed Integral terminal for trace-only parity.
 pub(crate) fn encode_velocity_integral_terminal(
     report: &VelocityIntegralTerminal,
 ) -> VelocitySweepCanonicalRecord {
@@ -469,13 +424,10 @@ pub(crate) fn encode_velocity_integral_terminal(
     record.push_u8(report.evidence.current_terminus.map_or(0, |rung| rung + 1));
     push_u64(&mut record, report.run_started_us);
     push_u64(&mut record, report.run_completed_us);
-    // Appended so an older decoder reading only the historical prefix still
-    // gets a correct, if unnamespaced, cause value.
     record.push_u8(report.cause.namespace_code());
     record
 }
 
-/// Encode the detailed active-I rest boundary that shares the terminal sequence.
 pub(crate) fn encode_velocity_integral_rest_boundary(
     run_sequence: u32,
     evidence_sequence: u16,
@@ -590,14 +542,9 @@ fn encode_observation(report: VelocityIntegralObservation) -> VelocitySweepCanon
     record
 }
 
-/// Encoded width of one present rejection diagnostic, excluding the presence flag.
 #[cfg(test)]
 pub(crate) const REJECTION_DIAGNOSTIC_BYTES: usize = 49;
 
-/// Append the gate statistics that rejected an excluded tail.
-///
-/// A leading presence flag keeps blocking-stage exclusions, which never reach the
-/// gates and so have no statistics, distinguishable from gate rejections.
 fn encode_rejection(
     record: &mut VelocitySweepCanonicalRecord,
     rejection: Option<StationarityRejectionDiagnostic>,
@@ -683,35 +630,20 @@ fn encode_rung(report: VelocityIntegralRungReport) -> VelocitySweepCanonicalReco
     record
 }
 
-/// Trace-only diagnostic captured at the breakaway acceptance-point install
-/// seam, to attribute a promotion that produced no installed point (terminal
-/// promotes to `RepeatabilityConfirmed` but `cause` stays engine 0).
 #[cfg(feature = "trace")]
 pub(crate) struct IntegralPromotionDiagnostic {
-    /// FOC channel.
     pub channel: u8,
-    /// Terminal outcome code (`outcome_code`) at the seam.
     pub outcome: u8,
-    /// Live plan acceptance source: 1=Breakaway, 2=NonBreakaway, 0=phase not resident.
     pub acceptance_source_code: u8,
-    /// The velocity-integral phase was still resident when the plan was read.
     pub phase_live: bool,
-    /// The terminal's `breakaway_acceptance` flag.
     pub breakaway_acceptance: bool,
-    /// `breakaway_integral_execution_plan()` returned `Some`.
     pub execution_plan_present: bool,
-    /// The dispatch carried an authority.
     pub authority_present: bool,
-    /// Terminal `rest_boundary_rung_plus_one` (one-based target terminus).
     pub rest_boundary_rung_plus_one: u8,
-    /// Terminal `rest_boundary_slot_plus_one`.
     pub rest_boundary_slot_plus_one: u8,
-    /// Installer outcome: 0=block skipped, 1=Installed, 2=MissingTargetTerminus,
-    /// 3=NotAcceptanceTerminal, 4=Err.
     pub installer_result: u8,
 }
 
-/// Encode a [`IntegralPromotionDiagnostic`] as a canonical trace record (kind 10).
 #[cfg(feature = "trace")]
 pub(crate) fn encode_integral_promotion_diagnostic(
     diagnostic: IntegralPromotionDiagnostic,
@@ -866,16 +798,8 @@ mod tests {
     use crate::commissioning::types::VelocityIntegralObservation;
     use foci_tmc4671::pid::PidPGain;
 
-    /// Byte offset of `drift_ratio_ppm` in an encoded Integral observation record.
-    ///
-    /// Counted from the fixed prefix `encode_observation` pushes ahead of the
-    /// field: tag(1) + run_sequence(4) + evidence_sequence(2) + plan_digest(8) +
-    /// rung_index(1) + slot(1) + i_raw(2) + direction(1) + class(1) +
-    /// initial_lead_in(1) + five encoded rates(20) + rate_shift(1) +
-    /// predicted_torque_target_abs(2) = 45.
     const DRIFT_RATIO_PPM_OFFSET: usize = 45;
 
-    /// Read a little-endian `u32` out of an encoded record at a fixed offset.
     fn read_u32_at(bytes: &[u8], offset: usize) -> u32 {
         u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
     }
@@ -1241,16 +1165,6 @@ mod tests {
         assert_eq!(integrity.digest(), 0xabbe_8f32_faa4_a140);
     }
 
-    /// Proves the production Integral digest path is live in the default
-    /// build: this module now un-gates in the default build, so
-    /// `VelocityIntegralIntegrity::record` and the
-    /// canonical-record encoders it calls run identically whether or not the
-    /// raw-trace `trace` feature is enabled. The baseline was captured by
-    /// running this exact construction once under the fixed-gain-amplitude
-    /// feature that has since been removed; since the digest path no longer
-    /// has any feature-only code left in it, the two builds are expected to
-    /// agree by construction, and this test is the regression guard for that
-    /// agreement.
     #[test]
     fn production_integral_digest_matches_trace_baseline() {
         use crate::commissioning::types::{
@@ -1276,8 +1190,6 @@ mod tests {
 
         integrity.record(VelocityIntegralEvent::Current(current));
 
-        // Baseline digest captured from the trace build for this exact
-        // sequence.
         const EXPECTED_BASELINE_DIGEST: u64 = 0x3b7f_c863_4c84_7223;
         assert_eq!(integrity.digest(), EXPECTED_BASELINE_DIGEST);
     }
@@ -1730,12 +1642,6 @@ mod tests {
         }
     }
 
-    /// A breakaway acceptance terminal's firmware-internal target derivations
-    /// let the acceptance-point installer
-    /// (`commission_dispatch::integral::breakaway_acceptance_point`) read them,
-    /// but `terminal_recovery_flags`
-    /// packs no target-status field for any terminal -- that packed field
-    /// belonged only to the retired live combined P-then-I workflow.
     #[test]
     fn breakaway_acceptance_terminal_exposes_target_status_and_terminus() {
         let mut terminal = VelocityIntegralTerminal {
@@ -1806,8 +1712,6 @@ mod tests {
         }
     }
 
-    /// Gate statistics for a post-fit rejection, shared by every test that needs
-    /// a plausible rejected-tail diagnostic without caring about its exact values.
     fn rejection_diagnostic_fixture() -> SuffixDiagnostic {
         SuffixDiagnostic {
             suffix_len: 256,
@@ -1833,8 +1737,6 @@ mod tests {
         }
     }
 
-    /// A usable stationary suffix, shared by tests that need a plausible one
-    /// without caring about its exact values.
     fn usable_suffix_fixture() -> StationarySuffix {
         StationarySuffix {
             selection: PlateauSelection {
@@ -1859,10 +1761,6 @@ mod tests {
         }
     }
 
-    /// An excluded tail must carry the gate statistics that rejected it.
-    ///
-    /// Without this the failing observations are the only ones with no evidence,
-    /// which is precisely backwards for a diagnostic instrument.
     #[test]
     fn an_excluded_observation_records_why_the_gate_rejected_it() {
         let rejection = rejection_diagnostic_fixture();
@@ -1872,7 +1770,6 @@ mod tests {
         ));
         let bytes = record.as_bytes();
 
-        // The exclusion code still lands where the usable path puts it.
         let code_offset = bytes.len() - 1 - REJECTION_DIAGNOSTIC_BYTES - 1;
         assert_eq!(bytes[code_offset], 3);
         assert_eq!(bytes[code_offset + 1], 1, "presence flag must be set");
@@ -1886,13 +1783,11 @@ mod tests {
         assert_eq!(&tail[13..21], (-8_351_644_i64).to_le_bytes());
         assert_eq!(&tail[21..29], (-2_389_706_i64).to_le_bytes());
         assert_eq!(&tail[29..33], 55_874_i32.to_le_bytes());
-        // The margins alone cannot recover either term: margin = half_width - |slope|.
         assert_eq!(&tail[33..41], (-6_100_000_i64).to_le_bytes());
         assert_eq!(&tail[41..49], 3_710_294_u64.to_le_bytes());
         assert!(bytes.len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
     }
 
-    /// Blocking-stage exclusions never reach the gates, so they have no statistics.
     #[test]
     fn an_exclusion_before_the_gates_records_an_absent_diagnostic() {
         let record = encode_observation(excluded_observation(
@@ -1905,8 +1800,6 @@ mod tests {
         assert_eq!(bytes[bytes.len() - 1], 0, "presence flag must be clear");
     }
 
-    /// The usable path must keep its established layout, now 81 bytes since
-    /// `drift_ratio_ppm` moved the fixed prefix four bytes wider.
     #[test]
     fn a_usable_observation_keeps_its_established_layout() {
         let mut report = excluded_observation(StationarityExclusion::ResolvedSlope, None);
@@ -1918,10 +1811,6 @@ mod tests {
         assert_eq!(record.as_bytes().len(), 81);
     }
 
-    /// The field must not live in the rejection block, which is emitted only for
-    /// Excluded, or eligible and inert observations could never carry it. So the
-    /// offset is measured from the fixed prefix and must not move when the
-    /// conditional block is absent.
     #[test]
     fn every_integral_observation_carries_the_drift_ratio_whatever_the_classification() {
         let mut excessive_report = excluded_observation(
@@ -1942,7 +1831,6 @@ mod tests {
         usable_report.stationarity = StationarityResult::Usable(usable_suffix_fixture());
         let usable = encode_observation(usable_report);
 
-        // Immediately after predicted_torque_target_abs, before encode_stationarity.
         let offset = DRIFT_RATIO_PPM_OFFSET;
         assert_eq!(
             read_u32_at(usable.as_bytes(), offset),
@@ -1975,13 +1863,6 @@ mod tests {
         assert_eq!(bytes[code_offset + 1], 1, "presence flag must be set");
     }
 
-    /// Drive the cooperative stationarity engine to completion on a fixed-size
-    /// observation source, returning the binding exclusion and the drift ratio
-    /// the completion envelope reports for it.
-    ///
-    /// Panics if the engine ever reaches a usable or scored-rest result: every
-    /// caller in this module drives a shape it expects to reject before any
-    /// regression is attempted.
     fn drive_to_no_fit_exclusion<const LEVELS: usize>(
         observations: &[RawVelocityObservation],
         blocker: &mut DyadicBlocker<LEVELS>,
@@ -2010,10 +1891,6 @@ mod tests {
         }
     }
 
-    /// A flat 64-sample capture with only two dyadic blocking levels available.
-    ///
-    /// Two levels cannot express the two-doubling plateau the blocker requires,
-    /// so this rejects before any regression is attempted: `NoBlockingPlateau`.
     fn observations_without_a_blocking_plateau() -> VelocityIntegralObservation {
         let observations: [RawVelocityObservation; 64] =
             core::array::from_fn(|_| RawVelocityObservation::new(1, 1_000).unwrap());
@@ -2025,10 +1902,6 @@ mod tests {
         report
     }
 
-    /// A capture shorter than the shortest declared suffix length.
-    ///
-    /// No suffix is even available to attempt, so this rejects before any
-    /// regression: `TooFewDecorrelatedBlocks`.
     fn observations_with_two_blocks() -> VelocityIntegralObservation {
         let observations: [RawVelocityObservation; 2] =
             core::array::from_fn(|_| RawVelocityObservation::new(1, 1_000).unwrap());
@@ -2040,22 +1913,6 @@ mod tests {
         report
     }
 
-    /// Every path that never reaches a regression must encode the sentinel.
-    ///
-    /// A zero ratio reads as "measured, and tiny". These paths measured nothing.
-    ///
-    /// This covers the two no-fit exclusions reachable through the real
-    /// cooperative engine from this module: `NoBlockingPlateau` and
-    /// `TooFewDecorrelatedBlocks`. A third no-fit case, a pre-fit `Arithmetic`
-    /// failure, is not included: every route to it either overflows i128
-    /// checked accumulators or produces a non-finite f32 value, and both
-    /// require magnitudes far beyond what a legal `RawVelocityObservation`
-    /// (bounded `i32` delta, `u32` elapsed, suffix length capped at 256) can
-    /// produce. Two adversarial probes confirmed this empirically: one drove
-    /// `StationarityWork::poll` to a hard `Err(ArithmeticOverflow)` (a
-    /// different failure mode, not this exclusion), and the other completed
-    /// as `Usable`. No test anywhere in this crate forces `Arithmetic` through
-    /// genuine raw-observation feeding either.
     #[test]
     fn each_no_fit_path_encodes_the_sentinel_rather_than_zero() {
         for report in [

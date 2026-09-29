@@ -1,15 +1,11 @@
 //! Typed normalization and shortest-path arithmetic for modulo encoders.
 
-/// Error returned when encoder-domain arithmetic cannot produce valid evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum EncoderMathError {
-    /// The configured counts per revolution is outside the backend contract.
     InvalidCountsPerRev,
-    /// An exact half-turn has no unique shortest direction.
     AmbiguousHalfTurn,
 }
 
-/// A validated modulo encoder-count domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct EncoderDomain {
     counts_per_rev: u32,
@@ -30,12 +26,10 @@ impl EncoderDomain {
         Ok(Self { counts_per_rev })
     }
 
-    /// Returns the validated encoder counts per mechanical revolution.
     pub(crate) const fn counts_per_rev(self) -> u32 {
         self.counts_per_rev
     }
 
-    /// Normalizes a raw encoder reading into this domain.
     pub(crate) fn count(self, raw_counts: u32) -> EncoderCount {
         EncoderCount(raw_counts % self.counts_per_rev)
     }
@@ -64,36 +58,29 @@ impl EncoderDomain {
         } else {
             forward
         };
-        // The domain is at most i32::MAX and the shortest displacement is at
-        // most half a revolution, so this conversion cannot fail.
         let signed_counts = i32::try_from(shortest).expect("encoder delta fits in i32");
 
         Ok(EncoderDelta(signed_counts))
     }
 }
 
-/// A normalized position within an [`EncoderDomain`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct EncoderCount(u32);
 
 impl EncoderCount {
-    /// Returns the normalized raw count value.
     pub(crate) const fn raw_counts(self) -> u32 {
         self.0
     }
 }
 
-/// A signed shortest displacement within an [`EncoderDomain`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct EncoderDelta(i32);
 
 impl EncoderDelta {
-    /// Returns the signed displacement in encoder counts.
     pub(crate) const fn signed_counts(self) -> i32 {
         self.0
     }
 
-    /// Returns the displacement magnitude in encoder counts.
     pub(crate) const fn absolute_counts(self) -> u32 {
         self.0.unsigned_abs()
     }

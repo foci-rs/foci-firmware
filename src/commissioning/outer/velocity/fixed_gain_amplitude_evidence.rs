@@ -127,13 +127,6 @@ pub fn robust_rate_location(
         4 => {
             let difference = i64::from(values[2]) - i64::from(values[1]);
             let midpoint = i64::from(values[1]) + difference / 2;
-            // Unreachable: values is sorted ascending, so
-            // values[1] <= midpoint <= values[2] always holds (midpoint is
-            // an average of the two, floored toward values[1]), and both
-            // bounds are themselves valid i32 values. i32::try_from(midpoint)
-            // can therefore never fail; FixedGainAmplitudeEvidenceError::
-            // Arithmetic is unreachable from this, its only construction
-            // site.
             i32::try_from(midpoint)
                 .map(Some)
                 .map_err(|_| FixedGainAmplitudeEvidenceError::Arithmetic)
@@ -228,33 +221,6 @@ pub fn fixed_gain_amplitude_run_sufficient(
             || attempted & unattempted != 0
             || attempted | unattempted != FULL_AMPLITUDE_MASK
         {
-            // Unreachable via the sole production call path
-            // (fixed_gain_amplitude_terminal, integral_sweep.rs): every
-            // write to attempted/eligible/current_terminus under
-            // FixedGainAmplitude*-acquisition semantics is bound-safe --
-            // fixed_gain_amplitude_report's loop, CommandTarget, and the
-            // current-headroom analysis block all only ever OR in a bit
-            // derived from a rung_index already proven < 5 by an earlier
-            // ?-propagated array lookup in the same state cycle -- and
-            // eligible/current are always ORed with the same bit attempted
-            // just received, so attempted ⊆ full_mask and
-            // eligible/current ⊆ attempted hold unconditionally. unattempted
-            // is full_mask & !attempted, an algebraic complement rather than
-            // an independently tracked value, making the disjointness/union
-            // clauses above tautological given that. ResponseLadder
-            // acquisition reuses these same struct fields for unrelated
-            // plain-rung-index/direction-flag semantics, but is
-            // dispatch-level mutually exclusive with FixedGainAmplitude*
-            // (VelocityIntegralState::Terminal branches on
-            // is_fixed_gain_amplitude before either semantics' read/write
-            // path can run), so it cannot contaminate these fields.
-            //
-            // This function is `pub` and takes masks directly (as is
-            // FixedGainAmplitudeRunMasks's every field), so a caller outside
-            // fixed_gain_amplitude_terminal -- including test code, or any
-            // future caller -- can still construct inconsistent masks and
-            // trigger this arm. It stays as a live defensive check against
-            // direct callers, not dead code.
             return Err(FixedGainAmplitudeEvidenceError::InvalidMasks);
         }
     }

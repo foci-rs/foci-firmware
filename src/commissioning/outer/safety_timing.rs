@@ -11,42 +11,25 @@ const HAS_MAX_BIT: u32 = 1 << 27;
 const ZERO_GAP_BIT: u32 = 1 << 28;
 const OVER_BOUND_BIT: u32 = 1 << 29;
 
-/// Stage owning one safety observation in a trace velocity workflow.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum OuterSafetyTimingStage {
-    /// Proportional-gain sweep.
-    ///
-    /// Only the velocity-integral stage accumulates per-phase safety timing on
-    /// the production path; this variant is constructed solely by the
-    /// trace/test decode side (`from_packed`).
     #[cfg(any(test, feature = "trace"))]
     Proportional = 0,
-    /// Velocity-integral response sweep.
     Integral = 1,
 }
 
-/// Stable execution location for a trace velocity safety observation.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum OuterSafetyTimingPhase {
-    /// Setup or another pre-motion state.
     Setup = 0,
-    /// Moving observation capture.
     MovingCapture = 1,
-    /// Zero-target settle capture.
     ZeroSettle = 2,
-    /// Cooperative analysis or region folding.
     Analysis = 3,
-    /// Canonical evidence emission.
     EvidenceEmission = 4,
-    /// Recovery preparation before a nonzero target.
     RecoverySetup = 5,
-    /// Constant-amplitude recovery motion.
     RecoveryMove = 6,
-    /// Recovery braking, settle, or rest analysis.
     RecoverySettle = 7,
-    /// Terminal construction after motion has ended.
     Terminalization = 8,
 }
 
@@ -68,23 +51,18 @@ impl OuterSafetyTimingPhase {
     }
 }
 
-/// Exact location attached to the maximum realized observation gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct OuterSafetyTimingContext {
-    /// Owning sweep stage.
     pub(crate) stage: OuterSafetyTimingStage,
-    /// Cooperative execution phase.
     pub(crate) phase: OuterSafetyTimingPhase,
     /// Zero-based gain rung.
     pub(crate) rung: u8,
     /// Zero-based signed observation slot.
     pub(crate) slot: u8,
-    /// Whether the active velocity target is zero.
     pub(crate) target_zero: bool,
 }
 
 impl OuterSafetyTimingContext {
-    /// Construct a checked context that fits the audited packed representation.
     pub(crate) fn new(
         stage: OuterSafetyTimingStage,
         phase: OuterSafetyTimingPhase,
@@ -130,17 +108,13 @@ impl OuterSafetyTimingContext {
     }
 }
 
-/// Decoded command-lifetime timing evidence emitted after all internal motion.
 #[cfg(any(test, feature = "trace"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct OuterSafetyTimingSummary {
-    /// Count of all realized inter-sample gaps.
     pub(crate) sample_count: u32,
     /// Counts in the four closed 5 ms quarters through the configured bound.
     pub(crate) bin_counts: [u32; 4],
-    /// Largest realized gap in microseconds.
     pub(crate) max_gap_us: u32,
-    /// First context at which the maximum occurred.
     pub(crate) max_context: Option<OuterSafetyTimingContext>,
     /// Number of zero gaps; at most one because the first faults.
     pub(crate) zero_count: u32,
@@ -148,19 +122,16 @@ pub(crate) struct OuterSafetyTimingSummary {
     pub(crate) over_bound_count: u32,
 }
 
-/// Packed command-lifetime timing state sharing the legacy summary-sequence footprint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct OuterSafetyTimingAccumulator {
     words: [u32; 4],
 }
 
 impl OuterSafetyTimingAccumulator {
-    /// Construct empty timing evidence.
     pub(crate) const fn new() -> Self {
         Self { words: [0; 4] }
     }
 
-    /// Record one realized encoder-read gap before any fault or delta interpretation.
     pub(crate) fn observe(
         &mut self,
         gap_us: u64,
@@ -198,7 +169,6 @@ impl OuterSafetyTimingAccumulator {
         Ok(())
     }
 
-    /// Decode the exact timing summary without consuming it.
     #[cfg(any(test, feature = "trace"))]
     pub(crate) fn summary(&self) -> OuterSafetyTimingSummary {
         let bin_counts = [
@@ -223,7 +193,6 @@ impl OuterSafetyTimingAccumulator {
         }
     }
 
-    /// Clear all timing evidence before the storage returns to legacy sequence use.
     #[cfg(any(test, feature = "trace"))]
     pub(crate) fn clear(&mut self) {
         self.words = [0; 4];
@@ -303,8 +272,6 @@ mod tests {
         .expect("in-range stage/phase/rung/slot")
     }
 
-    /// A per-bin observation count already at its packed-field maximum is
-    /// an evidence-capacity fault, not the generic schedule fault.
     #[test]
     fn observe_rejects_bin_count_overflow() {
         let mut accumulator = OuterSafetyTimingAccumulator::new();

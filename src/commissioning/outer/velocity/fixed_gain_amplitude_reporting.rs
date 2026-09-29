@@ -16,8 +16,7 @@ use super::reproduction::BUILD_IDENTITY;
 pub(crate) const FIXED_GAIN_AMPLITUDE_PLAN_REPLY_BYTES: usize = 66;
 /// Payload bytes carried by each amplitude-plan reply fragment.
 ///
-/// The 66-byte plan cannot cross the transport in one message, so it ships as
-/// two equal fragments that each fit the ordinary payload budget.
+/// The plan ships as two equal fragments.
 pub(crate) const FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENT_BYTES: usize = 33;
 /// Number of amplitude-plan reply fragments.
 #[cfg(test)]
@@ -27,13 +26,7 @@ pub(crate) const FIXED_GAIN_AMPLITUDE_TERMINAL_REPLY_BYTES: usize = 39;
 
 /// Largest byte-array payload an ordinary reply can carry in one message.
 ///
-/// A message is capped at 64 bytes, of which 2 header and 3 trailer bytes are
-/// framing, leaving 59 for the encoded reply. Each reply then spends up to 3
-/// bytes on its worst-case response id, up to 2 on the `oid` VLQ, and 1 on the
-/// byte-array length prefix, so 53 bytes remain for payload data.
-///
-/// A release-build transport silently rolls back and drops any oversized frame,
-/// so an over-budget payload never reaches the host and logs nothing anywhere.
+/// Excludes framing, response id, `oid`, and length-prefix overhead.
 #[cfg(test)]
 pub(crate) const ORDINARY_REPLY_PAYLOAD_MAX_BYTES: usize = 53;
 
@@ -495,26 +488,12 @@ mod tests {
         }
     }
 
-    /// Byte offset of `acceptance_identity.schema_revision` in the encoded
-    /// amplitude-plan core record (`records[0]` returned by
-    /// `encode_fixed_gain_amplitude_plan`).
-    ///
-    /// Counted from the fixed prefix `encode_fixed_gain_amplitude_plan` pushes ahead of
-    /// the field: tag(1) + run_sequence(4) + evidence_sequence(2) +
-    /// plan_digest(8) + subtype(1) + plan.schema_revision(2) +
-    /// acceptance_identity.channel(1) + acceptance_identity.build_features(2)
-    /// + BUILD_IDENTITY(4) = 25.
     const ACCEPTANCE_IDENTITY_SCHEMA_REVISION_OFFSET: usize = 25;
 
-    /// Read a little-endian `u16` out of an encoded record at a fixed offset.
     fn read_u16_at(bytes: &[u8], offset: usize) -> u16 {
         u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
     }
 
-    /// A breakaway-derived amplitude run must disclose the breakaway Integral
-    /// schema (16), not the outer amplitude schema and not the combined
-    /// constant, so the wire reply lets the host tell the two acceptance
-    /// families apart.
     #[test]
     fn fixed_gain_amplitude_plan_discloses_breakaway_identity_schema() {
         let plan = plan();
@@ -684,8 +663,6 @@ mod reply_payload_budget_tests {
         ORDINARY_REPLY_PAYLOAD_MAX_BYTES,
     };
 
-    /// An oversized payload is dropped silently in release builds, so the budget
-    /// has to be enforced at compile-test time rather than discovered on hardware.
     #[test]
     fn every_ordinary_reply_payload_fits_one_transport_message() {
         for (name, bytes) in [
@@ -705,7 +682,6 @@ mod reply_payload_budget_tests {
         }
     }
 
-    /// Fragments must cover the whole plan payload with nothing dropped.
     #[test]
     fn plan_reply_fragments_span_the_entire_payload() {
         assert_eq!(

@@ -1,18 +1,3 @@
-//! Commissioning fallback gain-floor measurement: derives `velocity_p` and
-//! `position_p` from the plant gain measured over three torque steps, each
-//! yielding the axis displacement over the fit window and the double
-//! integral of the measured torque current over the same window. Reached
-//! from every accepted current validation; a measurement failure here fails
-//! commissioning outright.
-//!
-//! Displacement against integrated current rather than a fitted acceleration
-//! against mean current because the current loop does not hold a step
-//! constant while the rotor moves: it rises over the first few hundred
-//! microseconds and sags with velocity, more so the softer the loop, and a
-//! constant-acceleration fit under-reads a decaying acceleration. The double
-//! integral is exact for any current shape. Three steps rather than one so a
-//! step that left the inertial regime shows as a ratio off the pooled one.
-
 pub(crate) mod capture;
 pub(crate) mod gains;
 pub(crate) mod quadratic_fit;
@@ -24,27 +9,18 @@ use crate::commissioning::types::StepResult;
 use crate::tmc_register_values::MOTION_TORQUE_ADVANCED_PI;
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
-/// Coast time after each step so the next one starts from rest with the
-/// same stiction history.
 const INTER_STEP_SETTLE_US: u64 = 100_000;
 
 const PLANT_GAIN_STEP_DEVIATION_FAIL_PERMILLE: i64 = 250;
 
-/// One measured torque step: axis displacement over the fit window, along the
-/// commanded direction, and the double integral of the measured torque
-/// current over the same window (count-microseconds squared).
 #[derive(Debug, Clone, Copy, Default, defmt::Format)]
 pub(crate) struct GainFloorPoint {
     pub(crate) displacement_units: i32,
     pub(crate) current_impulse: i64,
 }
 
-/// `step_gain_floor_measurement` sub-state.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) enum GainFloorState {
-    /// A discarded low-amplitude step so both measured steps start from the
-    /// same just-moved friction state; the first motion after rest breaks
-    /// away differently from the ones that follow it.
     Seat,
     Step {
         index: usize,
@@ -52,7 +28,6 @@ pub(crate) enum GainFloorState {
     },
 }
 
-/// Drive the commissioning fallback gain-floor measurement phase.
 pub(crate) async fn step_gain_floor_measurement<B>(
     phase: &mut InnerPhase,
     backend: &mut B,
@@ -174,10 +149,6 @@ where
         return super::fail_inner(phase, CommissionError::Spi);
     };
 
-    // The current-loop flux/torque gains only survive into this phase as
-    // InnerResult's raw register values (Finalize already validated them as
-    // PidPGain/PidIGain before writing InnerResult); a previously-valid raw
-    // value can never fail this re-check.
     let flux_p = PidPGain::new(inner_result.flux_p).unwrap_or(PidPGain::ZERO);
     let flux_i = PidIGain::new(inner_result.flux_i).unwrap_or(PidIGain::ZERO);
     let torque_p = PidPGain::new(inner_result.torque_p).unwrap_or(PidPGain::ZERO);
@@ -287,9 +258,6 @@ where
     .await
     .map_err(|_| CommissionError::Spi)?;
 
-    // Current-validate teardown leaves the chip stopped under the safe
-    // voltage limit; the first ignores the torque target and the second
-    // clips the current loop below anything that moves a loaded axis.
     backend
         .write_register(MODE_RAMP_MODE_MOTION, MOTION_TORQUE_ADVANCED_PI)
         .await
@@ -313,7 +281,6 @@ where
         return Err(CommissionError::Spi);
     }
 
-    // ClosedLoopActivation never re-zeroes the target itself.
     let capture_result =
         capture::run_capture(backend, capture, i_target, resistance_current_ceiling_count).await;
     let zero_target_result = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
@@ -332,8 +299,6 @@ where
     Ok(())
 }
 
-/// Synchronous so no fault can latch between the interlock check and the
-/// enable-pin assertion.
 fn enable_if_interlock_clear<B>(backend: &mut B) -> Result<(), CommissionError>
 where
     B: CommissioningBackend,
@@ -345,9 +310,6 @@ where
     Ok(())
 }
 
-/// Samples per dump line. A full 84-sample capture is about 1 KB on the defmt
-/// wire, so one line would overflow the default 1 KB RTT buffer; three lines
-/// of 28 stay under it even before the host drains.
 const CAPTURE_LOG_CHUNK: usize = 28;
 
 fn measure_step(
@@ -646,7 +608,6 @@ mod tests {
 
     #[test]
     fn a_step_just_past_the_deviation_bound_is_rejected_without_truncation() {
-        // The last step's ratio is 250.9 permille above the pooled one.
         assert_eq!(
             fit_plant_gain(&points([
                 (1000, 1_000_000),
@@ -659,7 +620,6 @@ mod tests {
 
     #[test]
     fn equal_quantized_displacements_on_growing_impulses_still_pool() {
-        // Two steps one encoder count apart read the same position units.
         let k = fit_plant_gain(&points([
             (770, 352_806_030),
             (770, 419_474_340),
@@ -1127,14 +1087,6 @@ mod tests {
 
             let _ = step_gain_floor_measurement(&mut phase, &mut backend).await;
 
-            // `CurrentValidate`'s own teardown leaves `MODE_RAMP_MODE_MOTION`
-            // at 0 (stopped) -- see `restore_current_validation_safe_state`.
-            // Without explicitly re-entering torque mode here, a commanded
-            // `PID_TORQUE_FLUX_TARGET` has no effect on the real chip: it
-            // stays in stopped mode and ignores the target entirely. This is
-            // exactly the failure found live on Ouroboros hardware:
-            // `torque_actual` stayed noise-level regardless of the commanded
-            // target, and the rotor never moved.
             let mode_write_index = backend.spi_log.iter().position(|op| {
                 matches!(
                     op,
@@ -1169,10 +1121,6 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.advance_elapsed_on_delay = true;
             backend.script_gain_floor_capture = Some(ideal_plant());
-            // PID_TORQUE_FLUX_TARGET is written twice before the post-capture
-            // cleanup write (the initial zero, then the commanded torque
-            // step); failing the third (zero-based occurrence 2) targets
-            // only that cleanup write, with the capture itself succeeding.
             backend.fail_on_write_occurrence =
                 Some((foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET.addr(), 2));
 
@@ -1193,9 +1141,6 @@ mod tests {
     fn gain_floor_measurement_failure_fails_commissioning() {
         pollster::block_on(async {
             let i_target: i16 = 2000;
-            // Ceiling well below the default (unscripted) torque register
-            // value of 200, so `run_capture` trips
-            // `GainFloorPeakCurrentExceeded` on its very first slot.
             let ceiling = 100u16;
             let mut phase = gain_floor_phase(i_target, ceiling);
             let mut backend = MockBackend::new();
@@ -1224,24 +1169,6 @@ mod tests {
         });
     }
 
-    /// Shared assertion for the `gain_floor_*_routes_through_restore_machine`
-    /// tests below: drives the failure through `super::super::step_inner`
-    /// (not the phase-local `step_gain_floor_measurement` handler directly),
-    /// following `coil.rs`'s `coil_fault_records_raw_current_sample` calling
-    /// pattern. `step_inner` unconditionally calls
-    /// `tmc_safe_state::restore_safe_state_via_backend` whenever the
-    /// dispatched result is `StepResult::InnerFailed(_)`, so routing through
-    /// it (rather than the phase-local handler alone) is what actually
-    /// proves the restore-machine boundary ran for this failure.
-    ///
-    /// `!backend.enable_pin` alone does not distinguish the wrapper's restore
-    /// from `gain_floor`'s own `set_enable_pin(false)` calls on every exit
-    /// path, so this also checks for `PIDOUT_UQ_UD_LIMITS = 1024`, a register
-    /// write `restore_safe_state_via_backend` performs (`tmc_safe_state.rs`,
-    /// `SafeStateRestoreStep::advance` step 7) that no `gain_floor` code path
-    /// ever touches -- the same `SpiOp::Write` idiom
-    /// `commission_dispatch/tests.rs`'s safety-fault-teardown tests use to
-    /// confirm a specific register reload happened.
     fn assert_routes_through_restore_machine(
         phase: &mut InnerPhase,
         backend: &mut MockBackend,
@@ -1277,8 +1204,6 @@ mod tests {
             !backend.enable_pin,
             "{expected:?} must de-energize on measurement failure"
         );
-        // The phase's own safe-limit restore precedes its enable-pin drop;
-        // only the wrapper's restore machine writes the limit after it.
         let last_disable = backend
             .spi_log
             .iter()
@@ -1300,11 +1225,6 @@ mod tests {
     fn gain_floor_insufficient_coverage_routes_through_restore_machine() {
         let mut phase = gain_floor_phase(2000, 4000);
         let mut backend = MockBackend::new();
-        // Every register read costs 35us, so each capture slot's two reads
-        // take 70us against the 60us budget: every slot overruns, which
-        // exceeds the coverage bound (a single overrun only drops that
-        // slot's sample; see capture.rs's own
-        // `slot_overrun_drops_that_sample_and_keeps_the_grid`).
         backend.advance_elapsed_on_delay = true;
         backend.spi_elapsed_step_us = 35;
         assert_routes_through_restore_machine(

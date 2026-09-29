@@ -96,10 +96,6 @@ fn velocity_current_guard_contract() {
     assert!(!best_effort.moving_clip_absence_proven());
     assert!(best_effort.moving_clip_uncertain());
 
-    // A 176-RPM target is inside one 375-RPM advanced-meter quantum. The
-    // observed 0/375 samples imply signed errors 176/-199. At P=2048 the
-    // sampled output peaks at 1592 counts, but a 1591-count 1 kHz sample cannot
-    // exclude a between-sample clamp contact.
     let target_rpm = 176_i32;
     let advanced_meter_quantum_rpm = 375_i32;
     let p_raw = 2_048_i32;

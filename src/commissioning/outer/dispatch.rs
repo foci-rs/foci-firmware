@@ -12,7 +12,6 @@ use super::{
     safety_error_for_phase, velocity,
 };
 
-/// Transition the outer phase to `Failed` and emit an `OuterFailed` result.
 pub(crate) fn fail_outer(phase: &mut OuterPhase, err: CommissionError) -> StepResult {
     *phase = OuterPhase::Failed(err);
     StepResult::OuterFailed(err)
@@ -21,12 +20,8 @@ pub(crate) fn fail_outer(phase: &mut OuterPhase, err: CommissionError) -> StepRe
 /// Transition the position-P sweep to `PositionTuneFailed` and emit an
 /// `OuterFailed` result.
 ///
-/// Identical to [`fail_outer`] from the restore machine's point of view -- it
-/// drives the same generic entry-gain restore every outer phase's failure
-/// uses -- except that the terminal phase retains `outcome` and `provenance`,
-/// so the reply can report which sweep failure occurred (or that it was a
-/// generic engine failure, `outcome: None`) and the last rung the walk
-/// actually measured.
+/// Like [`fail_outer`], but the terminal phase retains `outcome` and the last measured
+/// rung so the reply can report the sweep failure.
 pub(crate) fn fail_outer_position_tune(
     phase: &mut OuterPhase,
     err: CommissionError,
@@ -41,7 +36,6 @@ pub(crate) fn fail_outer_position_tune(
     StepResult::OuterFailed(err)
 }
 
-/// Transition the outer phase to `FailedWithSafety` and emit an `OuterFailed` result.
 pub(crate) fn fail_outer_with_safety(
     phase: &mut OuterPhase,
     err: CommissionError,
@@ -142,15 +136,8 @@ fn velocity_timing_context(
             )
             .map(Some)
         }
-        // The breakaway campaign uses the plain outer-safety envelope check (no
-        // per-phase timing accumulator); its own drivers manage primitive-level
-        // safety timing internally, exactly as they do in their standalone tests.
         OuterPhase::BreakawayCampaign { .. } => Ok(None),
-        // The robustness gate likewise runs the plain envelope check; its stepper
-        // opens and ends the bounded safety primitive itself.
         OuterPhase::RobustnessReversal { .. } => Ok(None),
-        // PositionTune runs the plain envelope check; its stepper opens and
-        // ends each bounded safety primitive itself.
         OuterPhase::PositionTune { .. } => Ok(None),
         OuterPhase::Failed(_)
         | OuterPhase::PositionTuneFailed { .. }
@@ -158,10 +145,6 @@ fn velocity_timing_context(
     }
 }
 
-// `profile`/`mode`/`inner_lambda_us`/`theta_e_us`/`current_bandwidth_hz`/
-// `inner_warning_flags` were consumed by the dead VelocityTune/VelocityValidate
-// arms this task removed; the parameters stay (unread) so the caller's
-// `EngineMode::Outer` threading is untouched.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     phase: &mut OuterPhase,
@@ -175,13 +158,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     trace_summary_seqs: &mut TraceSummarySeqs,
     backend: &mut B,
 ) -> StepResult {
-    // A breakaway campaign that has already deferred a terminal record must
-    // drain it before any further outer-safety evaluation. A persistent fault
-    // (invalid motion budget, elapsed-duration violation) would otherwise
-    // re-enter the fault-terminal builder every tick and overwrite the pending
-    // closure, so it would never reach the wire and the phase would never fail
-    // out. Skipping the safety block on a drain tick lets the campaign driver
-    // emit the closure and then the OuterFailed/FailedWithSafety transition.
     let draining_campaign_terminal = velocity::breakaway_campaign_pending_terminal(phase);
 
     let timing_context = if draining_campaign_terminal {
@@ -239,7 +215,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 if is_position_tune {
                     super::position_tune::abort_stimulus(backend);
                 }
-                // Zero excitation immediately on any safety violation.
                 let _ = backend
                     .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET, 0)
                     .await;

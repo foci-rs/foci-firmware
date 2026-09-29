@@ -1,13 +1,4 @@
 //! PositionTune: two-bound position-P sweep commissioning phase.
-//!
-//! This module drives the position-P ladder over the
-//! step-queue stimulus: `Predict` computes a config-derived start rung from
-//! the tracking bound and the planned homing/motion strokes, `Stroke` runs
-//! each rung's homing and motion legs through the trapezoid planner with
-//! production feedforward on the motion leg, `AwaitRestore` waits for the
-//! feedforward surfaces to settle, and `StandstillHold` captures the rung's
-//! dither before `selection::decide` picks the lowest rung meeting both
-//! bounds under the overshoot and dither guards.
 
 pub(crate) mod bounds;
 pub(crate) mod ceiling;
@@ -39,14 +30,9 @@ use foci_tmc4671::registers::{
 use metrics::{LegMetrics, StrokeTiming};
 use selection::{RungDecision, RungMeasurement, next_rung};
 
-/// Standstill-dither observations per rung (spec: `M = 5`, odd so the 3-of-5
-/// majority vote can never tie).
+/// Standstill-dither observations per rung; odd so the majority vote cannot tie.
 pub(crate) const STANDSTILL_CAPTURE_COUNT: u8 = 5;
 
-/// `STANDSTILL_HOLD_US` / `STANDSTILL_SAMPLE_PERIOD_US`: a 100 ms hold at
-/// 1 kHz, short enough that five captures per rung plus the two stroke legs
-/// stay within a reasonable per-rung budget, long enough to observe multiple
-/// dither cycles.
 pub(crate) const STANDSTILL_HOLD_US: u32 = 100_000;
 pub(crate) const STANDSTILL_SAMPLE_PERIOD_US: u32 = 1_000;
 
@@ -54,60 +40,40 @@ pub(crate) const STANDSTILL_SAMPLE_PERIOD_US: u32 = 1_000;
 /// acts on their per-field medians.
 pub(crate) const RAMPED_STROKE_REPEATS: u8 = 3;
 
-/// Lead time between arming the step-queue stimulus and the stroke's first
-/// queued step, so the capture window's start lines up with the first
-/// commanded step rather than with when the segment was merely queued.
 pub(crate) const STROKE_LEAD_US: u32 = 20_000;
 
-/// Shortest cruise a planned stroke leg must keep (see
-/// `stimulus::trapezoid::StrokeRequest::min_cruise_us`).
 pub(crate) const MIN_CRUISE_US: u32 = 50_000;
 
-/// Longest wait for `stimulus_feedforward_idle()` to report every
-/// feedforward surface restored after a motion leg, before the phase reports
-/// `RestorationTimeout`.
 pub(crate) const RESTORE_WAIT_US: u32 = 50_000;
 
-/// Poll grid for the commission-unit tick while a stroke or restore wait is
-/// active. Samples are pushed only on the derived sample period, not on
-/// every poll.
 pub(crate) const STROKE_POLL_US: u32 = 1_000;
 
-/// `2*pi` as a Q16.16 fixed-point integer, the same scaled-integer
-/// convention `ceiling::compute_k`'s `k_q16` uses. `6.283185307 * 65536 =
-/// 411774.86`, so this is exact to within 1.4e-7 relative -- far below the
-/// 1 Hz quantization of the field it feeds.
 const TAU_Q16: i64 = 411_775;
 
 /// Which directional leg of a rung's stroke is being driven.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum StrokeKind {
-    /// The homing-speed leg: no feedforward, the loop tracks entirely on P.
     Homing,
-    /// The machine-ceiling leg: production velocity feedforward opted in.
     Motion,
 }
 
 /// Which sub-step of one rung's evaluation is in progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum PositionTuneStep {
-    /// Computing the tracking bound, the planned strokes, and the start rung
-    /// (runs once, before the first rung; no capture).
     Predict,
-    /// Driving one rung's homing or motion leg through the step-queue
-    /// stimulus, `repeat` of `RAMPED_STROKE_REPEATS`.
     Stroke {
         rung: PidPGain,
         kind: StrokeKind,
         repeat: u8,
     },
-    /// Waiting for the motion leg's feedforward surfaces to report idle
-    /// before the standstill dither captures start.
-    AwaitRestore { rung: PidPGain, since_us: u64 },
-    /// Capturing the current rung's `STANDSTILL_CAPTURE_COUNT` standstill
-    /// dither observations.
-    StandstillHold { rung: PidPGain, capture_index: u8 },
-    /// Terminal: an accepted P.
+    AwaitRestore {
+        rung: PidPGain,
+        since_us: u64,
+    },
+    StandstillHold {
+        rung: PidPGain,
+        capture_index: u8,
+    },
     Done,
 }
 
@@ -120,49 +86,28 @@ pub(crate) struct PositionTuneState {
     pub(crate) predicted_start: PidPGain,
     pub(crate) homing_leg: Option<LegPlan>,
     pub(crate) motion_leg: Option<LegPlan>,
-    /// The active stroke's emitted boundaries, captured once per stroke from
-    /// the planned profile so the capture windows follow the schedule the
-    /// step-queue ISR actually runs.
     pub(crate) stroke_timing: Option<StrokeTiming>,
     pub(crate) ff_permille: u32,
     pub(crate) dither_captures: [i32; STANDSTILL_CAPTURE_COUNT as usize],
     pub(crate) homing_repeats: [Option<LegMetrics>; RAMPED_STROKE_REPEATS as usize],
     pub(crate) motion_repeats: [Option<LegMetrics>; RAMPED_STROKE_REPEATS as usize],
-    /// The rung that produced the running-minimum motion overshoot, and
-    /// that overshoot itself; `None` before the first `Advance`.
+    /// Rung with the running-minimum motion overshoot, and that overshoot; `None` before the
+    /// first `Advance`.
     pub(crate) min_overshoot_so_far: Option<(PidPGain, u32)>,
     pub(crate) rungs_measured: u8,
     pub(crate) last_measurement: Option<RungMeasurement>,
-    /// Feedforward paths live on the last admitted motion stroke (from
-    /// `backend.feedforward_path_flags()` at `arm_stroke` admission); zero
-    /// until a motion stroke has been admitted.
+    /// Feedforward path flags of the last admitted motion stroke; zero until one is admitted.
     pub(crate) feedforward_paths_active: u8,
-    /// Live diagnostic evidence, rebuilt at the end of `predict`, after
-    /// every stroke admission, and in `resolve_completed_rung`, so every
-    /// failure exit can report the last rung actually measured instead of a
-    /// zeroed block.
     pub(crate) provenance: PositionTuneProvenance,
-    /// The accepted rung, retained so the terminal is idempotent if the
-    /// engine steps a completed phase again.
     accepted: Option<RungMeasurement>,
-    /// Outer gains as they stood at installed-tuning entry.
-    ///
-    /// This phase tunes position P and nothing else, so every other field of
-    /// the terminal `OuterResult` is reported from here. The `OuterDone`
-    /// restore path stores `velocity_limit` and the four biquad cutoffs to the
-    /// channel config unconditionally, with no zero guard, so a default-filled
-    /// result would clamp the velocity controller's input to zero and leave the
-    /// machine unable to move after a *successful* tune.
+    /// Outer gains at installed-tuning entry; the terminal `OuterResult` reports every other
+    /// field from here.
     entry: OuterGainRollbackSnapshot,
-    /// Velocity P as read from the chip at phase entry: the gain the
-    /// ceiling's `k` is actually measured against.
+    /// Velocity P read from the chip at phase entry.
     velocity_p: PidPGain,
-    /// Commissioning profile, read once at phase entry and used to derive
-    /// the tracking-bound margin.
     profile: CommissionProfile,
     sample_period_us: u32,
-    /// False when a sub-step has been entered but its capture is not armed
-    /// yet, so the next tick runs that sub-step's setup instead of sampling.
+    /// False until the current sub-step's capture is armed.
     capture_running: bool,
     next_sample_us: u64,
     next_poll_us: u64,
@@ -170,7 +115,6 @@ pub(crate) struct PositionTuneState {
 }
 
 impl PositionTuneState {
-    /// Seed state for a fresh sweep.
     pub(crate) const fn new(entry: OuterGainRollbackSnapshot, profile: CommissionProfile) -> Self {
         Self {
             step: PositionTuneStep::Predict,
@@ -218,9 +162,6 @@ impl PositionTuneState {
     }
 }
 
-/// A failure this phase reports: either an engine-level error shared with
-/// every other outer phase, or one of this phase's own diagnostic outcomes
-/// behind `CommissionError::PositionTuneFailed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 enum PositionTuneFault {
     Engine(CommissionError),
@@ -241,36 +182,13 @@ impl From<PositionTuneOutcome> for PositionTuneFault {
 
 /// Halt the step-queue stimulus and clear the feedforward opt-in.
 ///
-/// Must be the first effect at every site that calls it: the step timer must
-/// be halted and the queue drained before that caller zeroes excitation or
-/// disables the driver, so no queued segment can keep pulsing a channel
-/// whose driver has just been cut. Called first in `fail_position_tune`;
-/// first in each of `arm_stroke`'s three stroke-arming failure paths (queue
-/// overflow, enqueue refusal, arm rejection); at the top of all three of
-/// `dispatch.rs`'s outer-safety exits (invalid-budget, safety-fault,
-/// check-error); unconditionally at the top of `CommissioningEngine::step`'s
-/// shutdown branch, which bypasses `step_inner`/`step_outer` (and so every
-/// one of the sites above) entirely; unconditionally at the top of
-/// `apply_shutdown_safe_state`, both boards' shared shutdown-loop helper;
-/// and, in `TmcControlRuntime::drive_operator_cancel`, first in each of its
-/// two active-cancellation branches (a pending restore, or an installed
-/// commission engine) -- never called at all when an operator cancel finds
-/// neither, so an idle cancel does not stop unrelated in-flight motion.
+/// Must be the first effect at every call site, so no queued segment keeps pulsing a channel
+/// whose driver is about to be cut.
 pub(crate) fn abort_stimulus<B: CommissioningBackend>(backend: &mut B) {
     backend.stimulus_stop();
     backend.set_stimulus_feedforward(false);
 }
 
-/// Zero excitation, report the outcome, and transition the phase to a terminal
-/// failure state.
-///
-/// The entry-gain snapshot restore itself runs in
-/// `commission_dispatch::restore_machine`, which every `StepResult::OuterFailed`
-/// already drives; this is the same contract the other outer phases use. One
-/// of this phase's own outcomes additionally retains that outcome on the
-/// terminal phase, so the reply can report *which* sweep failure occurred --
-/// `CommissionError::PositionTuneFailed` alone collapses all of them into one
-/// status code.
 async fn fail_position_tune<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     backend: &mut B,
@@ -382,8 +300,6 @@ fn advance_sample(
     Ok(state.next_sample_us)
 }
 
-/// Read the velocity loop's already-selected gains, which the ceiling's `k`
-/// constant is derived from.
 async fn read_velocity_gains<B: CommissioningBackend>(
     backend: &mut B,
 ) -> Result<PidGainPair, PositionTuneFault> {
@@ -395,8 +311,6 @@ async fn read_velocity_gains<B: CommissioningBackend>(
         .map_err(|_| PositionTuneFault::Engine(CommissionError::PidGainInvalid))
 }
 
-/// Compute the tracking bound, plan both stroke legs, and derive the
-/// closed-form start rung -- no capture, runs once before the first rung.
 async fn predict<B: CommissioningBackend>(
     state: &mut PositionTuneState,
     safety: &mut OuterSafetyLimits,
@@ -422,8 +336,6 @@ async fn predict<B: CommissioningBackend>(
     safety.torque_cap = u16::from(backend.current_limit());
     let velocity_gains = read_velocity_gains(backend).await?;
     state.velocity_p = velocity_gains.p;
-    // `compute_k` takes encoder pulses per revolution; the safety domain and
-    // the backend both work in quadrature counts, which are four per pulse.
     state.k_q16 = compute_k(counts_per_rev / 4, velocity_gains.p)?;
 
     let budget = safety.budget;
@@ -482,12 +394,8 @@ async fn predict<B: CommissioningBackend>(
     Ok(())
 }
 
-/// Build the `StrokeRequest` a leg at `speed_mrev_s` is planned from: every
-/// field but the speed comes straight from `budget`, `steps_per_rev`, and
-/// `step_timer_hz`. Both this phase's own stroke arm and the dispatch-side
-/// duration envelope (`commission_dispatch::position_tune`) call this, so
-/// the disclosed worst-case/nominal durations and the actual stroke agree on
-/// the same request shape.
+/// Build the `StrokeRequest` for a leg at `speed_mrev_s` from `budget`, `steps_per_rev`, and
+/// `step_timer_hz`.
 pub(crate) fn stroke_request(
     speed_mrev_s: u32,
     budget: &OuterMotionBudget,
@@ -504,8 +412,6 @@ pub(crate) fn stroke_request(
     }
 }
 
-/// Install one rung's position P, plan its stroke, and queue it on the
-/// step-queue stimulus.
 async fn arm_stroke<B: CommissioningBackend>(
     state: &mut PositionTuneState,
     safety: &mut OuterSafetyLimits,
@@ -527,9 +433,6 @@ async fn arm_stroke<B: CommissioningBackend>(
     .await?;
     write_sub_register(backend, PID_ERROR_PID_POSITION_ERROR_SUM, 0).await?;
     write_register(backend, MODE_RAMP_MODE_MOTION, MOTION_POSITION_ADVANCED_PI).await?;
-    // A soft position loop overshoots the slower homing leg's cruise speed at
-    // the end of its ramp by about as much as the per-leg margin allows, so
-    // both legs share the faster leg's runaway bound.
     let envelope_speed_mrev_s = [state.homing_leg, state.motion_leg]
         .into_iter()
         .flatten()
@@ -607,7 +510,6 @@ async fn arm_stroke<B: CommissioningBackend>(
     Ok(())
 }
 
-/// Peak-to-peak excursion of one standstill hold's torque-command capture.
 fn standstill_excursion(workspace: &TransientBuffer) -> Result<i32, PositionTuneOutcome> {
     let samples = workspace.samples();
     if samples.is_empty() {
@@ -623,10 +525,6 @@ fn standstill_excursion(workspace: &TransientBuffer) -> Result<i32, PositionTune
     Ok(i32::try_from(maximum - minimum).unwrap_or(i32::MAX))
 }
 
-/// Arm one standstill hold: the position target is a fresh
-/// `PID_POSITION_ACTUAL` read (the stroke ended at rest wherever it did) and
-/// the velocity target is zero, so the only torque command left is the
-/// loop's own dither.
 async fn arm_standstill_hold<B: CommissioningBackend>(
     state: &mut PositionTuneState,
     safety: &mut OuterSafetyLimits,
@@ -649,10 +547,6 @@ async fn arm_standstill_hold<B: CommissioningBackend>(
     Ok(())
 }
 
-/// Per-field median of three repeats' `LegMetrics`.
-///
-/// Panics if any of the three slots is still `None`: the caller only calls
-/// this once all three repeats have completed.
 fn median_metrics(repeats: &[Option<LegMetrics>; RAMPED_STROKE_REPEATS as usize]) -> LegMetrics {
     let filled: [LegMetrics; RAMPED_STROKE_REPEATS as usize] =
         repeats.map(|entry| entry.expect("every repeat slot is filled before the median is read"));
@@ -680,8 +574,6 @@ fn median_metrics(repeats: &[Option<LegMetrics>; RAMPED_STROKE_REPEATS as usize]
     }
 }
 
-/// Fold one completed rung's medianed homing/motion metrics and dither
-/// captures into a decision.
 fn resolve_completed_rung(
     state: &mut PositionTuneState,
     rung: PidPGain,
@@ -740,10 +632,6 @@ fn resolve_completed_rung(
                         kind: StrokeKind::Homing,
                         repeat: 0,
                     };
-                    // The completed rung's last capture (its fifth standstill
-                    // hold) left `capture_running` set; the walk's next
-                    // sub-step is a fresh `Stroke` arm, not a continuation of
-                    // that capture.
                     state.capture_running = false;
                     Ok(())
                 }
@@ -755,13 +643,6 @@ fn resolve_completed_rung(
     result
 }
 
-/// Rebuild `state.provenance` from the walk's current evidence: the
-/// predicted start rung, the config-derived bound and planned stroke speeds,
-/// the last measured rung (or the accepted one), the running-minimum
-/// overshoot and its rung, and the feedforward paths live on the last
-/// admitted motion stroke. Called at the end of `predict`, after every
-/// stroke admission, and in `resolve_completed_rung`, so every failure exit
-/// reads real evidence instead of a zeroed block.
 fn refresh_provenance(state: &mut PositionTuneState) {
     let measurement = state.last_measurement.or(state.accepted);
     let last_rung_p = measurement.map_or(0, |m| m.position_p.raw());
@@ -793,44 +674,19 @@ fn refresh_provenance(state: &mut PositionTuneState) {
     };
 }
 
-/// Nominal position-loop bandwidth: a pure function of the accepted
-/// position P and unit constants, no torque constant or inertia (spec,
-/// Reporting section).
-///
-/// `bandwidth_hz = (position_p/256) * 65536 / (60 * 2*pi)`, evaluated in
-/// integer arithmetic throughout: the numerator is scaled by the same 65536
-/// `TAU_Q16` carries before the single divide, so the Q16.16 factor cancels
-/// and no intermediate is truncated. Rounded to nearest rather than
-/// truncated, matching the half-up rounding the field reported before.
 fn nominal_bandwidth_hz(position_p_raw: u16) -> u32 {
-    // (p * 65536 / 256) * 65536 / (60 * TAU_Q16), with the /256 folded into
-    // the literal: 65536/256 * 65536 = 16_777_216. At PidPGain::MAX this
-    // numerator is ~5.5e11, three orders below i64::MAX.
     let numerator = i64::from(position_p_raw) * 16_777_216;
     let denominator = 60 * TAU_Q16;
     let rounded = (numerator + denominator / 2) / denominator;
     u32::try_from(rounded).unwrap_or(u32::MAX)
 }
 
-/// Median of the accepted rung's 5 per-capture ceiling ratios (milli-ratios),
-/// reported as the rung's diagnostic dither margin (spec, Reporting section).
-/// The majority-vote trip decision itself never uses this median -- see
-/// `ceiling::ceiling_trips`'s own doc comment.
 fn dither_margin_milli(ceiling_ratios_milli: [i64; 5]) -> i32 {
     let mut sorted = ceiling_ratios_milli;
     sorted.sort_unstable();
     sorted[2].clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-/// Build the phase's success terminal from the accepted rung.
-///
-/// Joins the accepted position P with the entry snapshot's remaining gains,
-/// velocity limit, and biquad cutoffs, the same way
-/// `robustness_reversal::robustness_pass_outer_result` does: the `OuterDone`
-/// restore path writes those fields straight to the channel config without a
-/// zero guard, so anything this phase does not tune must be carried through
-/// rather than defaulted. `state.provenance` is already current for the
-/// accepted rung: `resolve_completed_rung` refreshes it before returning.
 fn position_tune_terminal(state: &PositionTuneState, accepted: RungMeasurement) -> StepResult {
     defmt::info!(
         "position tune accepted: p={} bound_units={} rungs_measured={}",
@@ -859,12 +715,7 @@ fn position_tune_terminal(state: &PositionTuneState, accepted: RungMeasurement) 
 
 /// One cooperative tick of the two-bound position-P ladder sweep.
 ///
-/// Mirrors `integral_sweep::step_velocity_integral_with_trace`'s shape: each
-/// sub-step either arms its capture, takes one sample and reports
-/// `StepResult::At(next_sample_us)`, or folds the completed capture and moves
-/// on. Every failure path zeroes excitation and reports `OuterFailed`, which
-/// drives the same `restore_machine` entry-gain restore every other outer
-/// phase uses.
+/// Every failure path zeroes excitation and reports `OuterFailed`.
 pub(crate) async fn step_position_tune<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     workspace: &mut TransientBuffer,
@@ -1033,8 +884,6 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
         }
         PositionTuneStep::Done => match state.accepted {
             Some(accepted) => position_tune_terminal(state, accepted),
-            // Unreachable: `Done` is only entered together with the accepted
-            // measurement; every failure path replaces the phase instead.
             None => {
                 fail_position_tune(phase, backend, CommissionError::MissingCaptureState.into())
                     .await
@@ -1056,9 +905,6 @@ mod tests {
     use foci_tmc4671::pid::PidPGain;
 
     fn position_tune_budget() -> OuterMotionBudget {
-        // Small excursion and accel so a stroke leg's cruise sits near the
-        // `MIN_CRUISE_US` floor -- keeps each stroke short enough that these
-        // tests drive to a terminal in a modest tick budget.
         OuterMotionBudget::test_budget(200, 2_000, 3_000, 1_000, 200_000)
     }
 
@@ -1107,25 +953,10 @@ mod tests {
             .into()
     }
 
-    /// Quantization-only dither prediction at `rung_raw` for the given
-    /// `k_q16`, matching `ceiling::compute_k`'s own convention -- a
-    /// non-tripping standstill capture.
     fn quantization_only(rung_raw: u16, k_q16: i64) -> i32 {
         i32::try_from(k_q16.saturating_mul(i64::from(rung_raw)) / 65_536).unwrap_or(i32::MAX)
     }
 
-    /// Drive the phase to a terminal `StepResult`.
-    ///
-    /// `error_for` scripts the position-error register read during a
-    /// `Stroke` capture, keyed by the current phase state and the sample
-    /// index within the active capture (`workspace.len()`, reset at each
-    /// stroke's arm). `dither_for` scripts the `PID_TORQUE_FLUX_TARGET`
-    /// dither amplitude during a `StandstillHold`, keyed by the rung's raw P
-    /// and the phase's own `k_q16`. `AwaitRestore` is answered immediately
-    /// (the mock's `feedforward_surfaces_idle` mirror is set true as soon as
-    /// the phase enters that step), so these tests never exercise the
-    /// restoration wait itself -- see `a_restoration_timeout_fails_the_phase`
-    /// for that path.
     fn drive_sweep(
         phase: &mut OuterPhase,
         backend: &mut MockBackend,
@@ -1181,9 +1012,6 @@ mod tests {
         panic!("the sweep did not reach a terminal within the tick budget");
     }
 
-    /// Drive one `Predict` tick and return the resulting `predicted_start`
-    /// raw P, so a test can script its lag table against the real value
-    /// rather than an assumed one.
     fn predicted_start_of(phase: &mut OuterPhase, backend: &mut MockBackend) -> u16 {
         let mut scratch = TransientBuffer::new();
         let result = pollster::block_on(step_position_tune(phase, &mut scratch, backend));
@@ -1197,10 +1025,6 @@ mod tests {
         state.predicted_start.raw()
     }
 
-    /// `Stop` is the last stimulus op that is not itself a `Feedforward`
-    /// toggle, and the final `Feedforward` op is `false` -- the ordering
-    /// every failure path (`fail_position_tune`'s `abort_stimulus` call)
-    /// guarantees.
     fn assert_ends_with_stop_and_feedforward_false(log: &[StimulusOp]) {
         let last_non_feedforward = log
             .iter()
@@ -1292,10 +1116,6 @@ mod tests {
         };
         assert_eq!(result.position_p, state.predicted_start.raw());
 
-        // Each stroke: Stop, ResetClock, SetDirection(true), Queue x n,
-        // SetDirection(false), Queue x n, Arm, ..., Stop -- with the two
-        // Feedforward toggles filtered out since their exact placement is
-        // covered separately below.
         let filtered: std::vec::Vec<StimulusOp> = backend
             .stimulus_log
             .iter()
@@ -1413,10 +1233,6 @@ mod tests {
         let mut phase = position_tune_phase();
         let start_raw = predicted_start_of(&mut phase, &mut backend);
 
-        // rung 1 (the start rung) is forced to advance on a homing-bound
-        // violation, which still records its own motion overshoot (40) as
-        // the walk's running minimum; rung 2's motion overshoot (200, 5x)
-        // then trips the overshoot-ratio guard.
         let terminal = drive_sweep(
             &mut phase,
             &mut backend,
@@ -1520,9 +1336,6 @@ mod tests {
         assert_eq!(provenance.rungs_measured, 2);
         assert_eq!(provenance.last_rung_p, second_rung_raw);
         assert_eq!(provenance.min_overshoot_p, start_raw);
-        // The ratio guard only trips when the later rung's overshoot grows
-        // well past the running minimum, so this ordering alone confirms
-        // both rungs' evidence landed on the fields the spec names for them.
         assert!(provenance.motion_overshoot_units > provenance.min_overshoot_units);
     }
 
@@ -1594,13 +1407,6 @@ mod tests {
                 0,
             );
 
-        // Drive Predict, the first stroke's admission, and a handful of poll
-        // ticks mid-capture -- comfortably short of the stroke's own
-        // deadline given the small excursion `sample_outer_params` requests.
-        // The clock must be advanced explicitly (mirroring `drive_sweep`):
-        // `MockBackend::elapsed_us_value` is otherwise inert, so a bare
-        // `engine.step` loop would never reach the tick at which the outer
-        // safety envelope's next observation is actually due.
         let mut clock_us = backend.elapsed_us_value;
         for _ in 0..6 {
             backend.elapsed_us_value = clock_us;
@@ -1612,9 +1418,6 @@ mod tests {
             }
         }
 
-        // Trip the quarter-turn aliasing guard: a single observation whose
-        // |delta| exceeds one quarter of the configured encoder resolution
-        // (4_000 counts/rev in `position_tune_backend`).
         backend.mechanical_encoder_position_counts_value = 5_000;
         backend.elapsed_us_value = clock_us;
 
@@ -1624,16 +1427,6 @@ mod tests {
             StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
         ));
 
-        // `arm_stroke`'s own admission (the first `engine.step` in the drive
-        // loop above) already emits a `Stop` and a `Feedforward` toggle, so
-        // asserting on the *first* occurrence of either op in the whole log
-        // would pass unconditionally -- it says nothing about where the
-        // safety exit's own `abort_stimulus` call landed. Instead, find the
-        // safety exit's own zeroing write and require the event pair
-        // immediately before it to be exactly `abort_stimulus`'s own two
-        // ops, adjacent, nothing else between them and the write: this form
-        // fails the instant anything is inserted ahead of the abort, or the
-        // abort is moved after the write.
         let write_zero_index = backend
             .event_log
             .iter()
@@ -1659,9 +1452,6 @@ mod tests {
 
     #[fixture_test]
     fn a_safety_fault_after_a_completed_rung_keeps_its_evidence() {
-        // Drives through `step_outer_with_trace` directly (not the full
-        // `CommissioningEngine`) so the test can keep scripting registers
-        // from the resident phase, exactly as `drive_sweep` does.
         let mut backend = position_tune_backend();
         let mut phase = position_tune_phase();
         let start_raw = predicted_start_of(&mut phase, &mut backend);
@@ -1751,11 +1541,6 @@ mod tests {
 
     #[fixture_test]
     fn a_shutdown_mid_stroke_stops_the_stimulus_before_the_engines_safe_state_restore() {
-        // `CommissioningEngine::step`'s shutdown branch bypasses
-        // `step_inner`/`step_outer` entirely -- and so every one of
-        // `dispatch.rs`'s outer-safety exits and `fail_position_tune` -- so
-        // it needs its own `abort_stimulus` call, independent of the one
-        // this module's own failure path and the outer safety layer make.
         let mut backend = position_tune_backend();
         let params = sample_outer_params();
         let entry = sample_entry_snapshot();
@@ -1787,8 +1572,6 @@ mod tests {
             StepResult::OuterFailed(CommissionError::Shutdown)
         ));
 
-        // The safe-state restore sequence's first write is always
-        // `MODE_RAMP_MODE_MOTION = 0` (see `tmc_safe_state`'s step 0).
         let restore_write_index = backend
             .event_log
             .iter()
@@ -1842,8 +1625,6 @@ mod tests {
                         torque_target_register(torque),
                     );
                 }
-                // Never mark the restoration mirror idle: the phase must
-                // eventually time out waiting for it.
                 PositionTuneStep::AwaitRestore { .. }
                 | PositionTuneStep::Predict
                 | PositionTuneStep::Done => {}
@@ -1907,9 +1688,6 @@ mod tests {
 
     #[fixture_test]
     fn a_failure_before_the_first_motion_stroke_reports_no_feedforward_paths() {
-        // A refused enqueue on the first (homing) stroke -- no motion stroke
-        // has ever been admitted, so the failure's evidence must not carry a
-        // configured-but-never-run feedforward mask.
         let mut backend = position_tune_backend();
         backend.stimulus_refuse_after = Some(0);
         let mut phase = position_tune_phase();
@@ -1925,10 +1703,8 @@ mod tests {
         };
         assert_eq!(provenance.stimulus_feedforward_paths, 0);
 
-        // A completed rung's accepted terminal carries whatever feedforward
-        // paths were live on its last (motion) stroke admission.
         let mut backend = position_tune_backend();
-        backend.feedforward_path_flags_value = 0b0_0101; // velocity + acceleration
+        backend.feedforward_path_flags_value = 0b0_0101;
         let mut phase = position_tune_phase();
 
         let terminal = drive_sweep(
@@ -1946,7 +1722,6 @@ mod tests {
 
     #[fixture_test]
     fn every_failure_path_stops_the_stimulus_and_clears_feedforward() {
-        // 3: overshoot-ratio conflict.
         {
             let mut backend = position_tune_backend();
             let mut phase = position_tune_phase();
@@ -1987,7 +1762,6 @@ mod tests {
             );
             assert_ends_with_stop_and_feedforward_false(&backend.stimulus_log);
         }
-        // 4: refused enqueue.
         {
             let mut backend = position_tune_backend();
             backend.stimulus_refuse_after = Some(0);
@@ -1995,7 +1769,6 @@ mod tests {
             let _ = drive_sweep(&mut phase, &mut backend, |_state, _idx| 50, |_rung, _k| 0);
             assert_ends_with_stop_and_feedforward_false(&backend.stimulus_log);
         }
-        // 4b: insufficient queue capacity.
         {
             let mut backend = position_tune_backend();
             backend.stimulus_queue_free = 1;
@@ -2003,15 +1776,6 @@ mod tests {
             let _ = drive_sweep(&mut phase, &mut backend, |_state, _idx| 50, |_rung, _k| 0);
             assert_ends_with_stop_and_feedforward_false(&backend.stimulus_log);
         }
-        // 4c: outer safety fault mid-stroke -- covered by its own dedicated
-        // test above (`an_outer_safety_fault_mid_stroke_...`), which asserts
-        // the same Stop-then-Feedforward(false)-before-excitation-zeroing
-        // ordering through the outer dispatch path rather than this
-        // module's bare `step_position_tune`.
-        // 5: restoration timeout -- covered by its own dedicated test above
-        // (`a_restoration_timeout_fails_the_phase`), which already asserts
-        // this same ending.
-        // 6: trigger-blocked at admission.
         {
             let mut backend = position_tune_backend();
             backend.stimulus_trigger_blocked = true;
@@ -2023,11 +1787,6 @@ mod tests {
 
     #[fixture_test]
     fn the_terminal_carries_every_untuned_entry_gain() {
-        // The OuterDone restore path stores velocity_limit and the four
-        // biquad cutoffs to the channel config with no zero guard, so a
-        // terminal built from OuterResult::default() would leave the
-        // velocity controller's input clamped to zero after a *successful*
-        // tune.
         let entry = position_tune_entry_snapshot();
         let mut backend = position_tune_backend();
         let mut phase = position_tune_phase();
@@ -2050,14 +1809,9 @@ mod tests {
         assert_eq!(result.position_filter_hz, entry.position_filter_hz);
         assert_eq!(result.flux_filter_hz, entry.flux_filter_hz);
         assert_eq!(result.torque_filter_hz, entry.torque_filter_hz);
-        // Position P is the one field this phase tunes, so it comes from the
-        // accepted rung rather than from the snapshot.
         assert_ne!(result.position_p, entry.position_p.raw());
     }
 
-    // Pins `nominal_bandwidth_hz` against the host's independent
-    // reimplementation (`autotune.py`) so the two never drift apart --
-    // green on arrival, not a behavior change.
     #[test]
     fn nominal_bandwidth_hz_matches_the_host_formula() {
         let cases: [(u16, u32); 7] = [

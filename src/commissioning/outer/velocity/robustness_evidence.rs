@@ -1,13 +1,8 @@
 //! Per-direction reversal-robustness evidence for the robustness gate.
 //!
-//! [`RobustnessDirectionSummary`] is the schema-2 wire summary a terminal
-//! reports: median/max reconvergence, median forward-settle, an
-//! overshoot-peak count, and per-direction valid-cycle/trip/retry counts
-//! reduced from a K-cycle probe run. [`RobustnessEvidence`] bundles both
-//! directions' summaries with the off-terminal residual/IAE medians and the
-//! per-cycle wire triples. `summary_cause` derives the summary
-//! `ROBUSTNESS_CAUSE_*` code a terminal reply reports from both directions'
-//! tripped masks and inconclusive flags.
+//! [`RobustnessDirectionSummary`] is the per-direction wire summary of a K-cycle probe run;
+//! [`RobustnessEvidence`] bundles both directions with the off-terminal medians and
+//! per-cycle triples.
 
 use super::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION;
 use super::robustness_metrics::{TRIP_IAE, TRIP_RESIDUAL, TRIP_TIME, worse_of};
@@ -33,9 +28,8 @@ pub struct RobustnessDirectionSummary {
     pub overshoot_peak_counts: u16,
     /// Count of cycle slots that filled with conclusive evidence.
     pub valid_cycles: u8,
-    /// 1 if this direction contributed a rejection (a median threshold trip or
-    /// a latched tail), else 0. Not a per-cycle tally: the median gate keeps no
-    /// per-cycle trip count.
+    /// 1 if this direction contributed a rejection (median threshold trip or latched tail),
+    /// else 0.
     pub trip_count: u8,
     /// Count of bounded inconclusive retries this direction consumed.
     pub retry_count: u8,
@@ -49,50 +43,25 @@ pub struct RobustnessEvidence {
     /// Index 0 = forward->reverse, index 1 = reverse->forward.
     pub directions: [RobustnessDirectionSummary; 2],
     /// Median settled residual rate error per direction, in rate-Q units.
-    /// Off-terminal: carried for the detailed reply, not the compact wire
-    /// terminal.
     pub residual_medians_q: [i32; 2],
-    /// Median recovery IAE per direction, in rate-Q seconds. Off-terminal:
-    /// carried for the detailed reply, not the compact wire terminal.
+    /// Median recovery IAE per direction, in rate-Q seconds.
     pub iae_medians_qs: [i32; 2],
-    /// Median settled dAC_rms per direction, in raw rate-Q units (not IAE's
-    /// rate-Q-seconds). Off-terminal: carried for the detailed reply, not the
-    /// compact wire terminal.
+    /// Median settled dAC_rms per direction, in raw rate-Q units.
     pub dac_rms_medians_q: [i32; 2],
-    /// Per-cycle wire triples for each direction, in cycle order. An unfilled
-    /// slot is `None`. Off-terminal: carried by the per-cycle evidence reply,
-    /// not encoded into the compact 39-byte terminal. `pub(crate)` because
-    /// [`CycleWire`] is a crate-internal wire type.
+    /// Per-cycle wire triples for each direction, in cycle order; an unfilled slot is `None`.
     pub(crate) cycles: [[Option<CycleWire>; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
-    /// Count of conclusive tail cycles per direction (grace-retried plus any
-    /// that latched the rejection). Off-terminal: carried by the per-cycle
-    /// evidence reply so the pinning campaign can see tail incidence.
+    /// Count of conclusive tail cycles per direction.
     pub tail_counts: [u8; 2],
-    /// The grace-retried (displaced) tail cycle's wire triple per direction, or
-    /// `None` when no grace tail occurred. Off-terminal: recovers the displaced
-    /// tail's overshoot and forward-settle, which no slot retains.
+    /// The grace-retried (displaced) tail cycle per direction, if any.
     pub(crate) displaced_tails: [Option<CycleWire>; 2],
 }
 
-/// Derive the primary `ROBUSTNESS_CAUSE_*` from both directions' tripped
-/// masks and inconclusive flags.
+/// Derive the primary `ROBUSTNESS_CAUSE_*` from both directions tripped masks
+/// and inconclusive flags.
 ///
-/// Trips-first, to agree with the outcome mapping in `complete_terminal`
-/// (any trip -> `Rejected`): from the OR of both directions' tripped masks
-/// (`worse_of`), the first tripped threshold cause in time > residual > IAE
-/// priority; otherwise `RECONVERGENCE_INCONCLUSIVE` if either direction is
-/// inconclusive; otherwise `PASS`. A mixed result (one direction tripped,
-/// the other inconclusive) therefore reports the trip cause, matching
-/// `outcome = Rejected` rather than aliasing the inconclusive path.
-///
-/// Takes the tripped masks and inconclusive flags directly rather than a
-/// [`RobustnessEvidence`] so it stays pure over the terminal's schema-2
-/// summary fields, which no longer carry a per-direction tripped bitmask
-/// (only the derived [`RobustnessDirectionSummary::trip_count`]).
-///
-/// Never returns `ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY` or any of the
-/// dedicated internal-fault causes -- those are set only at terminal
-/// application and the fault path, not by this summary derivation.
+/// Priority: first tripped threshold cause (time > residual > IAE), then
+/// `RECONVERGENCE_INCONCLUSIVE` if either direction is inconclusive, else `PASS`.
+/// Never returns `ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY` or the internal-fault causes.
 pub(crate) fn summary_cause(
     tripped_a: u8,
     tripped_b: u8,
@@ -119,26 +88,21 @@ mod tests {
 
     #[test]
     fn summary_cause_prefers_trip_priority_then_inconclusive() {
-        use crate::commission_dispatch::robustness::*; // ROBUSTNESS_CAUSE_*
+        use crate::commission_dispatch::robustness::*;
         use crate::commissioning::outer::velocity::robustness_metrics::{TRIP_IAE, TRIP_TIME};
 
-        // All clean -> PASS.
         assert_eq!(summary_cause(0, 0, false, false), ROBUSTNESS_CAUSE_PASS);
 
-        // Inconclusive with no trip -> INCONCLUSIVE.
         assert_eq!(
             summary_cause(0, 0, false, true),
             ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE
         );
 
-        // A trip outranks IAE within the same direction (time > IAE).
         assert_eq!(
             summary_cause(0, TRIP_TIME | TRIP_IAE, false, false),
             ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED
         );
 
-        // Mixed: one direction tripped, the other inconclusive -> the TRIP
-        // cause, matching outcome = Rejected (trips dominate the outcome).
         assert_eq!(
             summary_cause(TRIP_TIME | TRIP_IAE, 0, false, true),
             ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED

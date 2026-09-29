@@ -1,11 +1,7 @@
 //! Per-direction cycle ledger for the K-cycle reversal-robustness probe.
 //!
-//! Pure accounting over a fixed run of [`ROBUSTNESS_CYCLES_PER_DIRECTION`]
-//! probe cycles: it tracks which slots are filled, spends the two disjoint
-//! per-direction budgets (inconclusive retries and the single tail grace),
-//! and reduces the filled slots to the summary statistics the robustness
-//! gate consumes. No phase wiring: this module has no knowledge of the
-//! commissioning state machine, backend, or wire encoding.
+//! Tracks filled slots, the inconclusive-retry and tail-grace budgets, and the summary
+//! statistics the robustness gate consumes.
 
 use super::robustness_metrics::ReversalMetrics;
 
@@ -16,18 +12,10 @@ pub(crate) const ROBUSTNESS_CYCLES_PER_DIRECTION: usize = 5;
 /// be trustworthy.
 pub(crate) const ROBUSTNESS_MIN_VALID_CYCLES: u8 = 4;
 
-/// Bounded retry count for an inconclusive probe leg, shared with
-/// [`super::robustness_metrics::ROBUSTNESS_MAX_RETRIES`]. Duplicated here as
-/// a `u8` constant so the ledger's budget arithmetic does not need to reach
-/// into a sibling module for a single scalar.
 const MAX_INCONCLUSIVE_RETRIES: u8 = super::robustness_metrics::ROBUSTNESS_MAX_RETRIES;
 
-/// Microseconds per millisecond, used for the wire-unit conversions the
-/// ledger's summary accessors perform.
 const MICROS_PER_MILLI: u32 = 1_000;
 
-/// Microseconds per second, used to convert `recovery_iae_q` (rate-Q
-/// microseconds) into rate-Q seconds for [`CycleLedger::median_recovery_iae_qs`].
 const MICROS_PER_SECOND_I64: i64 = 1_000_000;
 
 /// Outcome of one reversal-robustness probe cycle, as reported by the caller
@@ -61,13 +49,9 @@ pub(crate) enum LedgerAction {
 
 /// Per-direction accounting for the K-cycle reversal-robustness probe.
 ///
-/// Tracks up to [`ROBUSTNESS_CYCLES_PER_DIRECTION`] filled slots plus two
-/// disjoint budgets: `ROBUSTNESS_MAX_RETRIES` inconclusive retries (an
-/// exhausted budget leaves a slot permanently unfilled, the only path under
-/// the [`ROBUSTNESS_MIN_VALID_CYCLES`] floor) and a single per-direction
-/// tail grace (one free re-run for the first conclusive cycle whose
-/// `recovery_iae_q` exceeds the ledger's calibrated `iae_max_q`; a second
-/// tail cycle latches [`CycleLedger::tail_rejected`] instead of retrying).
+/// Holds up to [`ROBUSTNESS_CYCLES_PER_DIRECTION`] filled slots, `ROBUSTNESS_MAX_RETRIES`
+/// inconclusive retries, and one tail grace; a second tail cycle latches
+/// [`CycleLedger::tail_rejected`].
 #[derive(Debug, defmt::Format)]
 pub(crate) struct CycleLedger {
     slots: [Option<ReversalMetrics>; ROBUSTNESS_CYCLES_PER_DIRECTION],
@@ -75,9 +59,6 @@ pub(crate) struct CycleLedger {
     inconclusive_retries: u8,
     tail_grace_used: bool,
     tail_count: u8,
-    /// Reconvergence time, in milliseconds, of the first (grace-retried)
-    /// tail cycle. It never occupies a slot, so it is tracked separately to
-    /// still feed [`CycleLedger::max_reconvergence_ms`].
     displaced_tail_reconv_ms: u16,
     tail_rejected: bool,
     iae_max_q: i64,
@@ -85,8 +66,7 @@ pub(crate) struct CycleLedger {
 
 impl CycleLedger {
     /// Start a new, empty ledger for one direction against the probe's
-    /// calibrated `iae_max_q` tail threshold (see
-    /// [`super::robustness_metrics::RobustnessThresholds::iae_max_q`]).
+    /// Start an empty ledger against the calibrated `iae_max_q` tail threshold.
     pub(crate) fn new(iae_max_q: i64) -> Self {
         Self {
             slots: [None; ROBUSTNESS_CYCLES_PER_DIRECTION],
@@ -120,7 +100,6 @@ impl CycleLedger {
             self.inconclusive_retries += 1;
             return LedgerAction::RetryInconclusive;
         }
-        // Budget exhausted: the slot stays unfilled and the direction moves on.
         self.advance()
     }
 
@@ -135,11 +114,6 @@ impl CycleLedger {
             self.tail_count += 1;
             self.tail_rejected = true;
             self.slots[self.cursor] = Some(metrics);
-            // The rejection is latched, so the verdict survives regardless of
-            // which action routes the caller. When this second tail fills the
-            // last slot, `advance` signals `DirectionDone` and the caller must
-            // stop issuing cycles; returning `RejectTail` there would let it
-            // record again and index past the final slot.
             return match self.advance() {
                 LedgerAction::DirectionDone => LedgerAction::DirectionDone,
                 _ => LedgerAction::RejectTail,
@@ -153,8 +127,6 @@ impl CycleLedger {
         metrics.recovery_iae_q > self.iae_max_q
     }
 
-    /// Advance the cursor past the current slot and report whether more
-    /// slots remain.
     fn advance(&mut self) -> LedgerAction {
         self.cursor += 1;
         if self.cursor >= ROBUSTNESS_CYCLES_PER_DIRECTION {
@@ -258,8 +230,6 @@ impl CycleLedger {
         &self.slots
     }
 
-    /// Fill `out` with the millisecond conversion of `field` for each filled
-    /// slot and return how many were written.
     fn collect_ms(
         &self,
         out: &mut [u16; ROBUSTNESS_CYCLES_PER_DIRECTION],
@@ -273,8 +243,6 @@ impl CycleLedger {
         count
     }
 
-    /// Fill `out` with `field` for each filled slot and return how many
-    /// were written.
     fn collect_i64(
         &self,
         out: &mut [i64; ROBUSTNESS_CYCLES_PER_DIRECTION],
@@ -289,22 +257,15 @@ impl CycleLedger {
     }
 }
 
-/// Convert a microsecond duration to milliseconds, rounding up, saturating
-/// into `u16`.
 fn to_ms_saturating(value_us: u32) -> u16 {
     let ms = value_us.div_ceil(MICROS_PER_MILLI);
     u16::try_from(ms).unwrap_or(u16::MAX)
 }
 
-/// Saturating `i64 -> i32` clamp; never panics on out-of-range magnitudes.
-/// Mirrors `robustness_reporting::saturating_i64_to_i32`.
 fn saturating_i64_to_i32(value: i64) -> i32 {
     i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
 }
 
-/// Integer median of a `u16` slice, sorted in place: for an odd length, the
-/// middle element; for an even length, the mean of the two middle elements
-/// rounded toward zero. Returns `0` for an empty slice.
 fn median_u16(values: &mut [u16]) -> u16 {
     if values.is_empty() {
         return 0;
@@ -319,10 +280,6 @@ fn median_u16(values: &mut [u16]) -> u16 {
     }
 }
 
-/// Integer median of an `i64` slice, sorted in place: for an odd length, the
-/// middle element; for an even length, the mean of the two middle elements
-/// rounded toward zero (via `i128` to avoid overflow on the sum). Returns
-/// `0` for an empty slice.
 fn median_i64(values: &mut [i64]) -> i64 {
     if values.is_empty() {
         return 0;
@@ -341,28 +298,18 @@ fn median_i64(values: &mut [i64]) -> i64 {
 mod tests {
     use super::*;
 
-    /// Build a `ReversalMetrics` with a fixed, non-tail recovery IAE
-    /// (`LOW_IAE_Q`); `reconvergence_time_us` is the only varying field.
     fn metrics(reconv_ms: u32) -> ReversalMetrics {
         metrics_with_iae(reconv_ms, LOW_IAE_Q)
     }
 
-    /// iae_max_q large enough that `LOW_IAE_Q` (the plain `metrics()`
-    /// filler) is never classified as tail.
     const NON_TAIL_IAE_MAX_Q: i64 = 50_000_000;
 
-    /// Recovery IAE used by cycles that must not classify as tail.
     const LOW_IAE_Q: i64 = 100_000;
 
-    /// Recovery IAE used by the first tail-triggering cycle in a test.
     const HIGH_IAE_Q: i64 = 600_000;
 
-    /// Recovery IAE used by a second, distinct tail-triggering cycle.
     const HIGH_IAE_Q_2: i64 = 550_000;
 
-    /// Build a `ReversalMetrics` with only `recovery_iae_q` varying; the
-    /// other fields (including `reconvergence_time_us`) are fixed so tests
-    /// can assert that tail classification tracks recovery IAE alone.
     fn metrics_with_iae(reconv_ms: u32, recovery_iae_q: i64) -> ReversalMetrics {
         ReversalMetrics {
             reconvergence_time_us: reconv_ms * 1_000,
@@ -374,19 +321,15 @@ mod tests {
         }
     }
 
-    /// iae_max_q used by the IAE-tail test below.
     const TAIL_IAE_MAX_Q: i64 = 500_000;
 
     #[test]
     fn tail_classification_is_driven_by_recovery_iae_not_reconvergence_time() {
         let mut ledger = CycleLedger::new(TAIL_IAE_MAX_Q);
-        // Slow reconvergence, well past the retired time-based threshold,
-        // but low recovery IAE: must NOT be classified as tail.
         assert_eq!(
             ledger.record(CycleRecord::Conclusive(metrics_with_iae(900, 100_000))),
             LedgerAction::NextCycle
         );
-        // High recovery IAE, even with fast reconvergence: must be tail.
         assert_eq!(
             ledger.record(CycleRecord::Conclusive(metrics_with_iae(50, 600_000))),
             LedgerAction::RetryTail
@@ -419,10 +362,6 @@ mod tests {
     #[test]
     fn inconclusive_retries_are_bounded_and_only_inconclusive_draws_them() {
         let mut ledger = CycleLedger::new(NON_TAIL_IAE_MAX_Q);
-        // Band-entry measurement is stochastic and occasionally misses within a
-        // leg's budget; a cycle gets four fresh retries before its slot is
-        // consumed inconclusive, so a single slow cycle cannot fail the
-        // direction on its own.
         for _ in 0..4 {
             assert_eq!(
                 ledger.record(CycleRecord::Inconclusive),
@@ -465,7 +404,6 @@ mod tests {
             LedgerAction::RejectTail
         );
         assert!(ledger.tail_rejected());
-        // Subsequent slots keep filling normally.
         assert_eq!(
             ledger.record(CycleRecord::Conclusive(metrics(100))),
             LedgerAction::NextCycle
@@ -502,21 +440,16 @@ mod tests {
     #[test]
     fn second_tail_on_last_slot_signals_direction_done_not_reject() {
         let mut ledger = CycleLedger::new(TAIL_IAE_MAX_Q);
-        // Fill slots 0..=3 so the next filled slot is the last one.
         for _ in 0..4 {
             assert_eq!(
                 ledger.record(CycleRecord::Conclusive(metrics(100))),
                 LedgerAction::NextCycle
             );
         }
-        // Grace tail: consumes the one-shot grace, does not fill a slot.
         assert_eq!(
             ledger.record(CycleRecord::Conclusive(metrics_with_iae(700, HIGH_IAE_Q))),
             LedgerAction::RetryTail
         );
-        // The second tail fills the final slot. It must signal DirectionDone,
-        // not RejectTail: the latter would let the caller record again and
-        // index past the last slot. The rejection is still latched.
         assert_eq!(
             ledger.record(CycleRecord::Conclusive(metrics_with_iae(650, HIGH_IAE_Q_2))),
             LedgerAction::DirectionDone
@@ -545,8 +478,6 @@ mod tests {
     #[test]
     fn floor_breach_reachable_only_through_inconclusive_budget() {
         let mut ledger = CycleLedger::new(NON_TAIL_IAE_MAX_Q);
-        // Slot 0 spends the entire per-direction retry budget and is still
-        // abandoned.
         for _ in 0..4 {
             assert_eq!(
                 ledger.record(CycleRecord::Inconclusive),
@@ -557,7 +488,6 @@ mod tests {
             ledger.record(CycleRecord::Inconclusive),
             LedgerAction::NextCycle
         );
-        // Slot 1 has no budget left for even one retry.
         assert_eq!(
             ledger.record(CycleRecord::Inconclusive),
             LedgerAction::NextCycle

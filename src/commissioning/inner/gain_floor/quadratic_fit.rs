@@ -1,24 +1,7 @@
-//! Position-domain quadratic least-squares fit for the commissioning
-//! fallback gain-floor measurement.
-//!
-//! Fits `centered_position(t) = p0 + v0*t + 0.5*accel_raw*t^2` over the
-//! captured window via normal equations in i64 fixed-point arithmetic —
-//! deliberately not a per-sample velocity finite difference, which
-//! truncates to zero at this design's 30 us sample period (the failure mode
-//! an earlier draft of this design hit).
-
 const MIN_SAMPLES: usize = 20;
-/// About 2.8 degrees: twice the largest travel a torque step produced on
-/// hardware while only deflecting the belt, so a deflection-only capture is
-/// refused rather than fitted as a spring.
 const MIN_PEAK_TO_PEAK_POSITION_UNITS: i32 = 512;
 const RESIDUAL_FAIL_PERMILLE: i64 = 75;
-/// On the belted CoreXY the rotor's velocity peaks 2-3 ms after breakaway
-/// and then falls as the belt loads the carriage, ending the
-/// constant-acceleration regime the quadratic assumes.
 pub(crate) const CONSTANT_ACCELERATION_SPAN_US: u32 = 3_000;
-/// Under one encoder count at 4000 counts/rev: the first registered motion
-/// ends the stiction dead zone the fit must not see.
 pub(crate) const BREAKAWAY_THRESHOLD_UNITS: i32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -29,15 +12,6 @@ pub(crate) enum GainFloorFitError {
     WrongSign,
 }
 
-/// Fit `accel_raw` (raw position counts per microsecond^2) from a captured
-/// position trace, requiring the fitted sign to match `commanded_sign`
-/// (`1` or `-1`).
-///
-/// Only the constant-acceleration span after breakaway is fitted and
-/// residual-checked. What the axis does after that span (the normal belt
-/// deceleration, or a stop under still-commanded torque) is not judged
-/// here; a capture that never travelled is refused by the whole-window
-/// excitation floor.
 pub(crate) fn fit_accel_raw(
     samples: &[(u32, i32)],
     commanded_sign: i8,
@@ -46,8 +20,6 @@ pub(crate) fn fit_accel_raw(
         return Err(GainFloorFitError::TooFewSamples);
     }
 
-    // Excitation is judged on the whole window so a capture that never
-    // moved reads as no excitation, not as too few samples after trimming.
     let min_pos = samples.iter().map(|(_, p)| *p).min().unwrap_or(0);
     let max_pos = samples.iter().map(|(_, p)| *p).max().unwrap_or(0);
     if max_pos.saturating_sub(min_pos) < MIN_PEAK_TO_PEAK_POSITION_UNITS {
@@ -59,27 +31,11 @@ pub(crate) fn fit_accel_raw(
         return Err(GainFloorFitError::TooFewSamples);
     }
 
-    // Least-squares quadratic fit y = a0 + a1*t + a2*t^2 via normal
-    // equations, in f64 — not integer arithmetic. `accel_raw` for a real
-    // capture is typically well below 1 raw count per us^2 (e.g. a
-    // ~3,000-count displacement over a ~6,000 us window implies
-    // accel_raw ~= 2 * 3000 / 6000^2 ~= 1.7e-4), so an integer division
-    // here truncates every realistic fit to zero. f64 also avoids the i64
-    // overflow an i128-fixed-point sum-of-t^4-times-y term risks at the
-    // domain's extremes (200 samples, t up to ~6_000, |y| up to i32::MAX).
-    // This mirrors the current-response fit's own choice of floating point
-    // for the same class of one-shot, non-hot-path commissioning
-    // math — this codebase already accepts f32 in `autotune/current.rs` for
-    // exactly this reason; f64 here is a deliberate step up in precision
-    // for the wider dynamic range a t^4 term spans, not a new convention.
     let Some([a0, a1, a2]) = quadratic_coefficients(samples) else {
         return Err(GainFloorFitError::HighResidual);
     };
     let accel_raw_f64 = 2.0 * a2;
 
-    // Residual check: RMSE of the fit against the mean absolute response,
-    // in permille, reusing resistance identification's Balanced-profile
-    // high_residual_fail_permille numeric convention.
     let mut sum_sq_residual = 0.0f64;
     let mut sum_abs_y = 0.0f64;
     for &(t, y) in samples {
@@ -106,13 +62,7 @@ pub(crate) fn fit_accel_raw(
         return Err(GainFloorFitError::WrongSign);
     }
 
-    // Return accel_raw scaled by 2^32 (Q32 fixed point) so the caller
-    // (`measure_step`, feeding `gains::accel_raw_per_count_to_accel_per_count`
-    // via the plant-gain fit) carries the sub-unit precision
-    // this value needs through to the final PidPGain — the f64 value
-    // itself must not cross the fit/consumer boundary, since downstream
-    // register-domain math in this codebase is integer, not float.
-    const ACCEL_RAW_Q32_SHIFT: f64 = 4_294_967_296.0; // 2^32
+    const ACCEL_RAW_Q32_SHIFT: f64 = 4_294_967_296.0;
     let accel_raw_q32 = accel_raw_f64 * ACCEL_RAW_Q32_SHIFT;
     if !accel_raw_q32.is_finite() || accel_raw_q32.abs() >= i64::MAX as f64 {
         return Err(GainFloorFitError::HighResidual);
@@ -120,8 +70,6 @@ pub(crate) fn fit_accel_raw(
     Ok(accel_raw_q32 as i64)
 }
 
-/// Least-squares `y = a0 + a1*t + a2*t^2` via the normal equations, or
-/// `None` for a degenerate design matrix.
 fn quadratic_coefficients(samples: &[(u32, i32)]) -> Option<[f64; 3]> {
     let n = samples.len() as f64;
     let (mut sx, mut sx2, mut sx3, mut sx4) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
@@ -139,15 +87,9 @@ fn quadratic_coefficients(samples: &[(u32, i32)]) -> Option<[f64; 3]> {
         sx2y += t2 * y;
     }
 
-    // Solve the 3x3 normal-equations system for [a0, a1, a2] via Cramer's
-    // rule.
     let det =
         n * (sx2 * sx4 - sx3 * sx3) - sx * (sx * sx4 - sx2 * sx3) + sx2 * (sx * sx3 - sx2 * sx2);
     if det.abs() < f64::EPSILON {
-        // Degenerate design matrix. Guarded against by construction per the
-        // spec (a gap-free, evenly-spaced t grid with >= 20 samples cannot
-        // produce a singular system), but checked explicitly rather than
-        // dividing by (near-)zero.
         return None;
     }
     let det_a2 =
@@ -163,9 +105,6 @@ fn quadratic_coefficients(samples: &[(u32, i32)]) -> Option<[f64; 3]> {
     Some([a0, a1, a2])
 }
 
-/// Index range of the samples the fit uses: from breakaway (the first sample
-/// that moved `BREAKAWAY_THRESHOLD_UNITS` from the head) through
-/// `CONSTANT_ACCELERATION_SPAN_US` after it.
 pub(crate) fn fit_window(samples: &[(u32, i32)]) -> core::ops::Range<usize> {
     let Some(&(_, head)) = samples.first() else {
         return 0..0;
@@ -182,9 +121,6 @@ pub(crate) fn fit_window(samples: &[(u32, i32)]) -> core::ops::Range<usize> {
     start..end
 }
 
-/// Index range for integrating a step's motion: the same span as
-/// `fit_window`, opened one sample earlier so it starts on the last sample
-/// still at rest rather than the first that has already moved.
 pub(crate) fn integration_window(samples: &[(u32, i32)]) -> core::ops::Range<usize> {
     let fit = fit_window(samples);
     fit.start.saturating_sub(1)..fit.end
@@ -227,7 +163,7 @@ mod tests {
 
     #[test]
     fn too_few_samples_rejected() {
-        let samples = synthetic_samples(0.002, 10, 30); // < 20
+        let samples = synthetic_samples(0.002, 10, 30);
         assert_eq!(
             fit_accel_raw(&samples, 1),
             Err(GainFloorFitError::TooFewSamples)
@@ -294,8 +230,6 @@ mod tests {
 
     #[test]
     fn rise_then_plateau_under_torque_is_rejected_not_trimmed() {
-        // Enough travel to pass the excitation floor, then flat for the rest
-        // of the window while torque is still commanded.
         let mut v: heapless::Vec<(u32, i32), 200> = heapless::Vec::new();
         for i in 0..84u32 {
             let t = i * 60;
@@ -365,7 +299,6 @@ mod tests {
 
     #[test]
     fn wrong_sign_rejected() {
-        // Commanded positive torque, but position curves negative.
         let samples = synthetic_samples(-0.002, 40, 30);
         assert_eq!(
             fit_accel_raw(&samples, 1),
@@ -375,15 +308,9 @@ mod tests {
 
     #[test]
     fn valid_curvature_still_fits_across_a_position_register_wrap() {
-        // The caller (`measure_step`) centers samples via wrapping_sub against the
-        // first sample before calling this function, so a signed
-        // register-domain wrap must not appear as a large discontinuity here —
-        // simulate that by generating already-centered samples whose magnitude
-        // exceeds a plausible i16 wrap boundary, confirming the i32 domain this
-        // function operates on does not itself need any additional unwrapping.
         let mut samples = synthetic_samples(0.002, 40, 30);
         for (_, pos) in samples.iter_mut() {
-            *pos = pos.wrapping_add(40_000); // shift well past an i16 boundary
+            *pos = pos.wrapping_add(40_000);
         }
         let accel = fit_accel_raw(&samples, 1).expect("valid fit unaffected by a large offset");
         assert!(accel > 0);
@@ -391,8 +318,6 @@ mod tests {
 
     #[test]
     fn high_residual_non_quadratic_trace_rejected() {
-        // A trace that doesn't follow a quadratic (a square wave) should
-        // fail the residual check even with enough points and excitation.
         let mut v: heapless::Vec<(u32, i32), 200> = heapless::Vec::new();
         for i in 0..40u32 {
             let t = i * 30;

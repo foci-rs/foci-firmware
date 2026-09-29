@@ -1,20 +1,14 @@
 use foci_tmc4671::pid::PidPGain;
 
-/// Step to the next half-octave rung: `raw * 181 / 128` (`181/128 ~=
-/// 1.4141`, the closest 8-bit-denominator rational approximation of
-/// `sqrt(2)`), matching the outer velocity autotune's own rung convention.
-/// Returns `None` when the next step would exceed `PidPGain::MAX`.
+/// Next half-octave rung (`raw * 181 / 128`); `None` past `PidPGain::MAX`.
 pub fn next_rung(current: PidPGain) -> Option<PidPGain> {
     let scaled = u32::from(current.raw()).checked_mul(181)? / 128;
-    // Guarantee forward progress even at very small raw values, where
-    // integer rounding could otherwise repeat the same rung.
     let next_raw = scaled.max(u32::from(current.raw()) + 1);
     u16::try_from(next_raw)
         .ok()
         .and_then(|raw| PidPGain::new(raw).ok())
 }
 
-/// One rung's evaluated evidence for `decide`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct RungMeasurement {
     pub position_p: PidPGain,
@@ -25,7 +19,6 @@ pub(crate) struct RungMeasurement {
     pub ceiling_ratios_milli: [i64; 5],
 }
 
-/// Which guard tripped when `decide` reports `RungDecision::Conflict`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum ConflictKind {
     OvershootRatio,
@@ -33,7 +26,6 @@ pub(crate) enum ConflictKind {
     Dither,
 }
 
-/// What to do with the current rung, from `decide`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum RungDecision {
     Accept,
@@ -45,18 +37,8 @@ pub(crate) enum RungDecision {
 /// minimum overshoot seen so far without tripping a conflict.
 pub(crate) const OVERSHOOT_RATIO_LIMIT: u32 = 3;
 
-/// Decide what to do with one rung's measurement against the tracking
-/// bound and the dither/overshoot-ratio guards.
-///
-/// Order matches the design spec's `Selection` pseudocode exactly: the
-/// dither guard, then the overshoot-ratio guard (unconditional -- a
-/// resonance-transition rung conflicts on the ratio alone, whether or not
-/// tracking would separately pass or fail), then tracking (`Advance` on
-/// either bound miss), and only once tracking passes does the plain
-/// overshoot-vs-bound check decide `Accept` vs `Conflict`. `min.max(1)`
-/// keeps a zero running minimum from making any nonzero overshoot a ratio
-/// trip; the ratio guard is about growth, and a rung with zero overshoot has
-/// nothing to grow from.
+/// Decide what to do with one rung's measurement against the tracking bound and the
+/// dither/overshoot-ratio guards, checked in that order.
 pub(crate) fn decide(
     m: &RungMeasurement,
     bound_units: u32,
@@ -90,15 +72,12 @@ mod tests {
     fn next_rung_steps_by_half_octave() {
         let rung = PidPGain::new(100).unwrap();
         let next = next_rung(rung).expect("representable next rung");
-        // Half-octave: multiply by 2^0.5 ~= 1.414 -- integer approximation.
         assert!(next.raw() > 100 && next.raw() <= 150, "got {}", next.raw());
     }
 
     #[test]
     fn next_rung_returns_none_past_max() {
         let rung = PidPGain::new(0x7000).unwrap();
-        // Repeatedly stepping must eventually saturate to None rather than
-        // overflow or wrap.
         let mut current = rung;
         let mut steps = 0;
         while let Some(next) = next_rung(current) {
@@ -141,10 +120,6 @@ mod tests {
 
     #[test]
     fn overshoot_over_the_bound_with_tracking_met_and_ratio_clear_is_a_conflict() {
-        // min_overshoot_so_far = 200 keeps the ratio threshold (3 * 200 =
-        // 600) above this rung's overshoot (500), so only the plain
-        // bound guard is exercised, isolating `OvershootOverBound` from
-        // `OvershootRatio`.
         assert_eq!(
             decide(&measurement(300, 300, 200, 500), 409, Some(200), false),
             RungDecision::Conflict(ConflictKind::OvershootOverBound)
@@ -153,11 +128,6 @@ mod tests {
 
     #[test]
     fn overshoot_ratio_trips_before_tracking_is_ever_checked() {
-        // Homing tracking would independently fail too (600 > the 409
-        // bound), but the spec's ratio guard is unconditional and runs
-        // first: a rung whose motion overshoot has grown past 3x the
-        // running minimum (500 > 3*50 = 150) conflicts on the ratio alone,
-        // regardless of what tracking would have decided.
         assert_eq!(
             decide(&measurement(300, 600, 200, 500), 409, Some(50), false),
             RungDecision::Conflict(ConflictKind::OvershootRatio)

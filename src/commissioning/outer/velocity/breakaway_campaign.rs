@@ -1,55 +1,3 @@
-//! Breakaway campaign drivers: a deterministic upward excursion probe, additive
-//! discovery, and held-out confirmation over shared guarded-stroke primitives.
-//!
-//! This module drives motion. It reuses the lower-level primitives the trace-gated
-//! velocity sweep (`sweep.rs`) is built from -- [`velocity_clamp`](super::velocity_clamp),
-//! [`recovery`](super::recovery), and [`sweep_analysis`](super::sweep_analysis)'s
-//! `poll_stationarity`/`poll_scored_rest_confirmation`/`assemble_probe_observation_input`
-//! -- plus the probe-local physical-excursion accumulator. It does not
-//! copy or re-derive the sweep's rung/slot-folding state machine: a probe stroke is a
-//! single direction, single observation, with no operating-region or handoff
-//! bookkeeping.
-//!
-//! The live [`BreakawayCampaign`] wires all three phases into
-//! [`super::super::OuterPhase`]. Each phase exposes a single-tick
-//! cooperative stepper -- [`step_breakaway_probe`] -- that a caller (a future engine
-//! phase, or a test harness) drives exactly like every other outer phase stepper:
-//! poll until [`BreakawayProbeStep::Done`], running the host-declared periodic safety
-//! envelope check ([`crate::commissioning::outer::check_outer_safety`]) between ticks,
-//! same as every other outer phase.
-//!
-//! This module also drives the additive discovery phase --
-//! [`step_additive_discovery`] -- which walks the resolved
-//! [`super::breakaway_plan::AdditiveDiscoveryPlan`] upward, one rung at a time, with
-//! velocity I held at zero. It reuses the probe's own primitives directly: the same
-//! [`sample_one_tick`] per-tick safety guard, the same
-//! `assemble_velocity_observation_input`, the same origin-recovery calls, and the
-//! same safety short-circuit (a `WrongDirectionFault`/`HardClipFault` or
-//! `InvalidEvidenceFault` observation goes straight to its fault terminal with no
-//! settle/recovery stroke). It does not re-derive the probe's guarded-stroke
-//! sequence; it composes [`BreakawayProbeWorkspace`] into its own workspace and
-//! writes a parallel state machine over the same primitives, since a discovery
-//! stroke additionally folds observations into per-rung, per-direction consensus
-//! (`depth_three_consensus`) that the probe has no use for.
-//!
-//! This module also drives the held-out confirmation phase --
-//! [`step_band_confirmation`], entered via [`begin_band_confirmation`] -- once a
-//! finished additive discovery campaign has nominated a candidate and its
-//! confirmation plan has been frozen. It reuses the probe/discovery primitives
-//! directly: the same [`sample_one_tick`] per-tick safety guard, the same
-//! `assemble_velocity_observation_input`, the same origin-recovery calls, the
-//! same safety short-circuit, and discovery's own [`DirectionAccumulator`] for
-//! folding four fresh strokes into a
-//! [`super::sweep_consensus::DirectionalConsensus`]. It runs a FIXED
-//! eight-stroke block (`CONFIRMATION_SLOT_ORDER`: four forward, four reverse) at
-//! the frozen candidate gain -- no bisection cursor, no ladder walk, and no
-//! early stop on current headroom, because the confirmation contract requires
-//! all eight fresh observations regardless. Its only accept result,
-//! [`BandConfirmationOutcome::Accepted`], is the sole thing a later slice may
-//! use to authorize Integral; every other outcome is a confirmation-owned
-//! terminal.
-//!
-
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
@@ -145,13 +93,6 @@ use super::velocity_clamp::{
 use super::workflow_plan::CommissioningWorkflowPlan;
 use super::{clear_velocity_error_sum, clear_velocity_offset};
 
-/// Borrowed single-stroke scratch space: capture ring, stationarity analysis, and
-/// current-clamp evidence for one guarded stroke at a time.
-///
-/// Sized and shaped for a single guarded stroke's capture, stationarity, and
-/// current-clamp evidence so a future caller can carve this out of a shared
-/// workspace rather than allocating a second one. This type never allocates on
-/// the heap; every field is fixed-size.
 #[derive(Debug, defmt::Format)]
 pub(crate) struct BreakawayProbeWorkspace {
     previous_encoder_raw: u32,
@@ -170,7 +111,6 @@ pub(crate) struct BreakawayProbeWorkspace {
 }
 
 impl BreakawayProbeWorkspace {
-    /// Construct an empty workspace.
     pub(crate) const fn new() -> Self {
         Self {
             previous_encoder_raw: 0,
@@ -187,12 +127,6 @@ impl BreakawayProbeWorkspace {
     }
 }
 
-/// Frozen campaign inputs and the mutable upward-walk progress.
-///
-/// Bundles the immutable [`UpwardBreakawayProbePlan`] and one
-/// [`UpwardBreakawayCursor`] so [`step_breakaway_probe`] stays within the five
-/// parameter guideline. Constructed before the first stroke via
-/// [`BreakawayProbeSession::new`].
 #[derive(Debug, defmt::Format)]
 pub(crate) struct BreakawayProbeSession {
     plan: UpwardBreakawayProbePlan,
@@ -207,11 +141,6 @@ pub(crate) struct BreakawayProbeSession {
 }
 
 impl BreakawayProbeSession {
-    /// Freeze the campaign inputs and start the forward-direction cursor.
-    ///
-    /// This never touches `backend`: constructing a session is pure. Motion is only
-    /// reachable through [`step_breakaway_probe`], and only once its state has left
-    /// [`BreakawayProbeState::PlannedProbe`].
     pub(crate) fn new(
         plan: UpwardBreakawayProbePlan,
         target_velocity_rpm: TmcMechanicalRpm,
@@ -250,116 +179,66 @@ impl BreakawayProbeSession {
     }
 }
 
-/// Single-tick cooperative stroke cycle for one probe observation.
-///
-/// Runs the canonical outer velocity stroke states (write gain, command target,
-/// capture, command zero, settle-capture, analyze) at probe scale: one
-/// direction, one observation, no rung/slot folding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum BreakawayProbeState {
-    /// The frozen plan and cursors are admitted; no stroke has been issued yet.
     PlannedProbe,
-    /// Validate the frozen physical context and arm the campaign safety baseline.
     SetupSafety,
-    /// Write the search-grid gain and the outer-velocity ramp mode.
     WriteGain,
-    /// Arm the current clamp and command the signed velocity target.
     CommandTarget,
-    /// Sample the commanded stroke until its fixed moving duration elapses.
     Capture {
         next_sample_us: u64,
         deadline_us: u64,
     },
-    /// Command zero and record the moving-phase current evidence boundary.
     CommandZero,
-    /// Finalize excursion and comparison-only stationarity diagnostics.
     AnalyzeMoving {
         settle_deadline_us: u64,
         analysis_deadline_us: u64,
     },
-    /// Read the settle baseline before sampling the zero-target rest window.
-    BeginSettleCapture { settle_deadline_us: u64 },
-    /// Sample the zero-target rest window.
+    BeginSettleCapture {
+        settle_deadline_us: u64,
+    },
     SettleCapture {
         next_sample_us: u64,
         deadline_us: u64,
     },
-    /// Confirm rest and record the zero-phase current evidence boundary.
-    AnalyzeSettle { analysis_deadline_us: u64 },
-    /// Return to the parked origin through the shared recovery primitive.
+    AnalyzeSettle {
+        analysis_deadline_us: u64,
+    },
     Recover(RungOriginRecoveryRuntime),
-    /// Emit the recovered observation's decision before mutating the cursor.
     EmitDecision,
-    /// Fold the classified outcome into the active cursor and decide what is next.
     Advance,
 }
 
-/// One cooperative result from [`step_breakaway_probe`].
 #[derive(Debug, defmt::Format)]
 pub(crate) enum BreakawayProbeStep {
-    /// Call again immediately; no external wait is needed.
     ReadyNow,
-    /// Call again no earlier than this `elapsed_us` deadline.
     At(u64),
-    /// One raw observation is ready for immediate trace emission.
     Observation(CollectedObservation),
-    /// One recovered observation is ready to commit to replay.
     Decision {
-        /// Direction of the committed observation.
         direction: VelocityDirection,
-        /// Zero-based probe-grid index.
         rung_index: u8,
-        /// Disposition: 0 no motion, 1 moved.
         disposition: u8,
     },
-    /// The scored-rest selector rejected this stroke's recovery rest window.
-    /// Diagnostic only: the campaign layer streams it and the recovery worker
-    /// still reaches its own terminal on a following tick. Call again
-    /// immediately.
     RestRejected(RecoveryRestRejectedInput),
-    /// This stroke's recovery refused to start because the origin moved.
-    /// Diagnostic only: the worker raises its fault on the following tick.
     OriginMismatch(RecoveryOriginMismatchEvidence),
-    /// The probe campaign concluded.
     Done(BreakawayProbeOutcome),
 }
 
-/// Terminal result of a complete probe campaign (both directions).
-///
-/// Every variant other than [`Self::BreakawayFound`] is a probe-owned terminal: the
-/// caller must not advance toward discovery. The probe never asserts
-/// `set_enable_pin` itself, matching every other outer velocity phase (sweep,
-/// integral): arming happens once, earlier, during inner commissioning's
-/// closed-loop entry, and centralized safe-state restoration on any
-/// outer-phase terminal happens at the surrounding
-/// engine boundary (`commissioning::mod::restore_safe_state_via_backend`), not
-/// per-phase. A caller wiring these terminals into that boundary gets safe-disarm
-/// for free, the same way the other outer fault terminals already do.
 #[derive(Debug, defmt::Format)]
 pub(crate) enum BreakawayProbeOutcome {
-    /// The first rung with repeatable motion in both directions.
     BreakawayFound(ResolvedUpwardBreakaway),
-    /// The authority rung was exhausted without repeatable motion.
     NoRepeatableMotionAtAuthority,
-    /// Excursion timing or arithmetic was not trustworthy enough to advance.
     ExcursionEvidenceInvalid,
-    /// The observation reached the inclusive usable-current boundary before a
-    /// motion or inert verdict was reached.
     AuthorityFailure,
-    /// An existing safety, current, travel, encoder, or register-I/O fault,
-    /// returned unchanged.
     SafetyFault {
         error: CommissionError,
         safety: Option<OuterSafetyFault>,
     },
 }
 
-/// Resolved upward-probe result retained for reporting and discovery planning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct ResolvedUpwardBreakaway {
-    /// Zero-based resolved rung in the realized probe grid.
     pub(crate) breakaway_index: u8,
-    /// Total observations consumed across the upward walk.
     pub(crate) observations: u8,
 }
 
@@ -393,7 +272,6 @@ fn checkpoint_breakaway_operation(checkpoint: BreakawayCheckpoint) {
     crate::diagnostic::checkpoint_breakaway_campaign(checkpoint);
 }
 
-/// Map a resolved [`BreakawaySearchError`] to its owning probe outcome.
 fn search_error_outcome(error: BreakawaySearchError) -> BreakawayProbeStep {
     match error {
         BreakawaySearchError::InvalidRequest | BreakawaySearchError::Arithmetic => {
@@ -402,14 +280,6 @@ fn search_error_outcome(error: BreakawaySearchError) -> BreakawayProbeStep {
     }
 }
 
-/// Advance the probe by one cooperative step.
-///
-/// `workspace` is caller-owned scratch space (see [`BreakawayProbeWorkspace`]);
-/// `session` is caller-owned campaign state (see [`BreakawayProbeSession`]). Neither
-/// is allocated here. The caller is responsible for running
-/// [`crate::commissioning::outer::check_outer_safety`] against `safety` between
-/// ticks, exactly as `step_outer_with_trace` does for every other outer phase; this
-/// function never performs that check itself, matching every other phase stepper.
 pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
     state: &mut BreakawayProbeState,
     workspace: &mut BreakawayProbeWorkspace,
@@ -613,8 +483,6 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             {
                 return fault(CommissionError::Spi);
             }
-            // The axis is braking under no commanded amplitude from here until
-            // the primitive ends.
             safety.enter_settle_phase();
             if let Err(error) = boundary {
                 return current_guard_fault(error);
@@ -673,8 +541,6 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 usable_torque_limit: workspace.current_observer.clamp_limit(),
                 hard_torque_limit: session.plan.context.hard_torque_limit,
                 initial_lead_in: false,
-                // Comparison-only diagnostics retain the stationarity work path's
-                // family. Physical excursion alone decides probe motion.
                 confidence_family_size: 3,
                 counts_per_rev: safety.counts_per_rev(),
             }) {
@@ -1063,24 +929,6 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
     }
 }
 
-/// Sample one 1 kHz tick shared by the moving-capture and settle-capture states.
-///
-/// On success, returns the sample's `elapsed_us` timestamp so the caller can drive
-/// its own deadline arithmetic. Every failure here -- register I/O, the observation
-/// gap fault, or the quarter-turn fault -- is resolved to the exact
-/// [`BreakawayProbeStep`] the caller must return.
-///
-/// This mirrors the per-tick fault prologue `integral_sweep.rs` inlines -- same gap
-/// window, same quarter-turn test, same current-input check, same fault constructors,
-/// same order. Deliberately not force-extracted into a shared primitive: doing so
-/// would need to preserve the interleaved trace-observation recording
-/// (`record_velocity_trace_observation`, diagnostic reads, stroke-index bookkeeping)
-/// byte-for-byte across both call sites, real surgery that deserves its own dedicated,
-/// behavior-preservation-tested slice. Numeric drift between the copies is not
-/// possible -- they close over the same shared constants
-/// (`MAX_SAFETY_OBSERVATION_GAP_US`, the safety/current-guard fault constructors) and
-/// fields (`OuterSafetyLimits`, `VelocityCurrentObserver`) -- so a documented
-/// follow-up is a safe deferral, not a live risk.
 async fn sample_one_tick<B: CommissioningBackend>(
     workspace: &mut BreakawayProbeWorkspace,
     safety: &mut OuterSafetyLimits,
@@ -1168,18 +1016,6 @@ async fn sample_one_tick<B: CommissioningBackend>(
     Ok(read_us)
 }
 
-// ============================================================================
-// Additive discovery driver
-// ============================================================================
-
-/// Maximum in-band discovery rungs retained for later nomination.
-///
-/// Bounded at [`MAX_SWEEP_RUNGS`] because, in the worst case, every rung on the
-/// ladder could independently satisfy its own 70-80% containment; retaining fewer
-/// would silently drop candidate evidence that 6d/6e's nomination screen is
-/// entitled to see. This driver is not yet wired into
-/// [`super::super::OuterPhase`]/`CommissioningEngine` (see the module-level docs),
-/// so it is not subject to `size_regression_gates` until that wiring lands.
 const MAX_IN_BAND_DISCOVERY_RUNGS: usize = MAX_SWEEP_RUNGS;
 
 const EMPTY_DISCOVERY_RUNG_BOUNDS: DiscoveryRungNominationBounds = DiscoveryRungNominationBounds {
@@ -1191,14 +1027,6 @@ const EMPTY_DISCOVERY_RUNG_BOUNDS: DiscoveryRungNominationBounds = DiscoveryRung
 
 /// Every discovery rung whose own response was contained in 70-80%, collected in
 /// ascending rung order for [`nominate_confirmation_candidate_from_bounds`].
-///
-/// Stores each rung's compact [`DiscoveryRungNominationBounds`] -- the
-/// candidate `p`, its enveloped nomination interval, and whether it is
-/// nominatable at all -- rather than the raw observation atoms nomination no
-/// longer needs once [`rung_nomination_bounds`] has folded them at collection
-/// time. At [`MAX_IN_BAND_DISCOVERY_RUNGS`] worst case this is roughly
-/// [`MAX_SWEEP_RUNGS`] times `size_of::<DiscoveryRungNominationBounds>()`, a
-/// few hundred bytes rather than the raw-atom representation's ~14 KB.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 pub struct CollectedInBandRungs {
     rungs: [DiscoveryRungNominationBounds; MAX_IN_BAND_DISCOVERY_RUNGS],
@@ -1213,12 +1041,10 @@ impl CollectedInBandRungs {
         }
     }
 
-    /// Every collected in-band rung's nomination bounds, in ascending rung order.
     pub(crate) fn as_slice(&self) -> &[DiscoveryRungNominationBounds] {
         &self.rungs[..usize::from(self.count)]
     }
 
-    /// Number of collected in-band rungs.
     pub(crate) const fn count(&self) -> u8 {
         self.count
     }
@@ -1234,8 +1060,6 @@ impl CollectedInBandRungs {
     }
 }
 
-/// Per-direction accumulator for one rung's four observations, folded into a
-/// [`DirectionalConsensus`] once the direction's full slot schedule is collected.
 #[derive(Debug, defmt::Format)]
 struct DirectionAccumulator {
     classes: [VelocityObservationClass; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
@@ -1266,11 +1090,6 @@ impl DirectionAccumulator {
         self.atoms[index] = Some(atom);
     }
 
-    /// The mask of slots this accumulator has actually recorded, derived from
-    /// which `atoms` entries are `Some`. On a complete rung this is
-    /// `FULL_OBSERVATION_MASK`; on a partial/mid-block failure terminal (a
-    /// `ConfirmationEvidenceExcluded` or `SafetyFault` reached after some but
-    /// not all four strokes ran) it reports exactly the slots gathered.
     fn collected_mask(&self) -> u8 {
         self.atoms
             .iter()
@@ -1279,26 +1098,11 @@ impl DirectionAccumulator {
             .fold(0u8, |mask, (index, _)| mask | (1u8 << index))
     }
 
-    /// Fold this direction's collected observations into their depth-three
-    /// consensus.
-    ///
-    /// The reported `collected_mask` reflects the slots actually recorded, not
-    /// an assumed-full rung. On a complete rung every slot is present, so
-    /// `collected_mask == FULL_OBSERVATION_MASK` and the fold is unchanged. On
-    /// a partial terminal the honest partial mask flows to
-    /// [`depth_three_consensus`], which gates completeness on it (a
-    /// non-full `collected_mask` yields an `IncompleteRung` consensus), so the
-    /// wire record carries a truthful mask instead of falsely claiming a full
-    /// rung's worth of evidence was gathered.
     fn consensus(&self) -> DirectionalConsensus {
         depth_three_consensus(self.collected_mask(), self.classes, self.intervals)
     }
 }
 
-/// One classified stroke's evidence, held between [`AdditiveDiscoveryState::AnalyzeMoving`]
-/// and [`AdditiveDiscoveryState::Advance`] the same way
-/// [`BreakawayProbeSession::pending_class`](BreakawayProbeSession) holds the probe's
-/// classification across origin-recovery.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 struct PendingObservationAtom {
     mean_rate_q: i64,
@@ -1317,10 +1121,6 @@ impl PendingObservationAtom {
     }
 }
 
-/// One discovery stroke retained until recovery finishes and the cursor consumes it.
-///
-/// Direction is owned by [`AdditiveDiscoverySession`] throughout this interval,
-/// so the compact pending atom does not duplicate it in retained RAM.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 struct PendingDiscoveryRecord {
     classification: VelocityObservationClass,
@@ -1329,11 +1129,6 @@ struct PendingDiscoveryRecord {
     classifier_inputs: ObservationClassifierInputs,
 }
 
-/// Frozen campaign inputs and the mutable ladder-walk progress.
-///
-/// Bundles the immutable [`AdditiveDiscoveryPlan`] together with the ladder-walk
-/// cursor (rung, direction, slot), the per-rung accumulators, and the collected
-/// in-band evidence, mirroring [`BreakawayProbeSession`]'s role for the probe.
 #[derive(Debug, defmt::Format)]
 pub(crate) struct AdditiveDiscoverySession {
     plan: AdditiveDiscoveryPlan,
@@ -1349,39 +1144,12 @@ pub(crate) struct AdditiveDiscoverySession {
     pending_lower_rate_q: Option<u64>,
     pending_headroom_stop: bool,
     pending_record: Option<PendingDiscoveryRecord>,
-    /// The frozen planning request, retained (it is tiny and `Copy`) so the
-    /// planned-report can be assembled at report time via
-    /// [`discovery_plan_report`], mirroring how [`BreakawayProbeSession`]
-    /// retains its own plan for reporting.
     request: AdditiveDiscoveryRequest,
-    /// Whether the resolved floor was clamped to the search grid's origin.
     floor_origin_clamped: bool,
-    /// Rung zero's own per-direction motion classification, retained
-    /// specifically for [`rung_zero_diagnostic_report`] once discovery walks
-    /// past rung zero (spec section 6: reported purely as evidence).
     rung_zero_classification: Option<(BreakawayMotionClass, BreakawayMotionClass)>,
 }
 
 impl AdditiveDiscoverySession {
-    /// Freeze the resolved additive ladder from `request` and start at rung zero,
-    /// forward direction, slot zero.
-    ///
-    /// This never touches a backend: constructing a session is pure, and motion is
-    /// only reachable through [`step_additive_discovery`], matching
-    /// [`BreakawayProbeSession::new`]. On
-    /// [`AdditiveLadderPlanError::InsufficientAdditiveSpan`] or
-    /// [`AdditiveLadderPlanError::AdditiveLadderResolutionBudgetExceeded`], the
-    /// caller receives the matching discovery-owned terminal directly, with no
-    /// session and no motion. Every other planning failure collapses to the
-    /// existing generic invalid-schedule fault, mirroring
-    /// [`search_error_outcome`]'s `InvalidRequest | Arithmetic` arm.
-    ///
-    /// `AdditiveDiscoveryOutcome` is deliberately large (it carries
-    /// [`CollectedInBandRungs`], sized at [`MAX_SWEEP_RUNGS`] worst case); returning
-    /// it as this constructor's error is the same terminal-unification tradeoff
-    /// already accepted elsewhere in this crate (see the `large_enum_variant`
-    /// precedents in `commission_dispatch::mod` and `commissioning::schedule`),
-    /// not an oversight.
     #[allow(clippy::result_large_err)]
     pub(crate) fn new(
         request: AdditiveDiscoveryRequest,
@@ -1425,13 +1193,6 @@ impl AdditiveDiscoverySession {
     }
 }
 
-/// Map a resolved [`AdditiveLadderPlanError`] to its owning discovery outcome.
-///
-/// Only the two errors with a dedicated discovery-owned terminal
-/// (`InsufficientAdditiveSpan`, `AdditiveLadderResolutionBudgetExceeded`) get one;
-/// every other planning failure is a structural precondition violation, not a
-/// discovery-time result, so it collapses to the same generic invalid-schedule
-/// fault [`search_error_outcome`] uses for the probe's `InvalidRequest | Arithmetic`.
 fn additive_discovery_plan_error_outcome(
     error: AdditiveLadderPlanError,
 ) -> AdditiveDiscoveryOutcome {
@@ -1455,175 +1216,81 @@ fn additive_discovery_plan_error_outcome(
     }
 }
 
-/// Single-tick cooperative stroke cycle for one discovery observation.
-///
-/// Mirrors [`BreakawayProbeState`]'s stroke states exactly (write gain, command
-/// target, capture, command zero, analyze moving, settle-capture, analyze settle,
-/// recover, advance): a discovery stroke and a probe stroke are the same guarded
-/// primitive. The two states are kept separate rather than shared because
-/// `Advance` means different things for each driver: the probe folds a
-/// physical-motion verdict into the upward cursor, while discovery folds one into a
-/// per-rung, per-direction consensus accumulator and a ladder-wide stop rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum AdditiveDiscoveryState {
-    /// The frozen plan is admitted; no stroke has been issued yet.
     PlannedDiscovery,
-    /// Write the current rung's gain and the outer-velocity ramp mode.
     WriteGain,
-    /// Arm the current clamp and command the signed velocity target.
     CommandTarget,
-    /// Sample the commanded stroke until its fixed moving duration elapses.
     Capture {
         next_sample_us: u64,
         deadline_us: u64,
     },
-    /// Command zero and record the moving-phase current evidence boundary.
     CommandZero,
-    /// Classify the moving-phase stationarity result.
     AnalyzeMoving {
         settle_deadline_us: u64,
         analysis_deadline_us: u64,
     },
-    /// Read the settle baseline before sampling the zero-target rest window.
     BeginSettleCapture {
         settle_deadline_us: u64,
         retry_available: bool,
     },
-    /// Sample the zero-target rest window.
     SettleCapture {
         next_sample_us: u64,
         deadline_us: u64,
         retry_available: bool,
     },
-    /// Confirm rest and record the zero-phase current evidence boundary.
     AnalyzeSettle {
         analysis_deadline_us: u64,
         retry_available: bool,
     },
-    /// Return to the parked origin through the shared recovery primitive.
     Recover(RungOriginRecoveryRuntime),
-    /// Fold the classified observation into the active accumulator and decide
-    /// what is next: another slot, another direction, another rung, or a
-    /// terminal.
     Advance,
-    /// The walk selected the target band; stream one collected in-band rung's
-    /// margin per tick from the retained `session.in_band` before concluding.
-    /// `cursor` is the next collected index to stream; the walk is complete, so
-    /// the collected set no longer changes. Only reached with a non-empty
-    /// in-band set.
-    StreamMargins { cursor: u8 },
+    StreamMargins {
+        cursor: u8,
+    },
 }
 
-/// One cooperative result from [`step_additive_discovery`].
-///
-/// `Done`'s payload is deliberately much larger than `ReadyNow`/`At`: see
-/// [`AdditiveDiscoveryOutcome`]'s own doc comment for why that size is accepted
-/// rather than boxed (this crate has no heap).
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum AdditiveDiscoveryStep {
-    /// Call again immediately; no external wait is needed.
     ReadyNow,
-    /// Call again no earlier than this `elapsed_us` deadline.
     At(u64),
-    /// A stroke just completed; its raw settled-rate evidence is ready to stream
-    /// before the atom is folded into the rung's nomination bounds. Call again
-    /// immediately; the fold happens on the following tick.
     Observation(CollectedObservation),
-    /// One collected in-band rung's margin is ready to stream, identified by its
-    /// index within the retained collected set. The campaign layer owns wire
-    /// identity: it attaches the run/evidence sequences and the plan digest and
-    /// builds the record (a non-nominatable index yields no record). Call again
-    /// immediately; the next index streams on the following tick.
     Margin { collected_index: u8 },
-    /// The scored-rest selector rejected this stroke's recovery rest window.
-    /// Diagnostic only: the campaign layer streams it and the recovery worker
-    /// still reaches its own terminal on a following tick. Call again
-    /// immediately.
     RestRejected(RecoveryRestRejectedInput),
-    /// This stroke's recovery refused to start because the origin moved.
-    /// Diagnostic only: the worker raises its fault on the following tick.
     OriginMismatch(RecoveryOriginMismatchEvidence),
-    /// The discovery campaign concluded.
     Done(AdditiveDiscoveryOutcome),
 }
 
-/// One collected observation's raw evidence, surfaced from a driver on the tick
-/// its stroke completes so [`step_breakaway_campaign`] can stream a
-/// [`crate::commissioning::types::BreakawayRawObservation`] before the atom is
-/// folded (discovery) or judged (confirmation). Carries only the driver-local
-/// coordinates and the raw atom; the owning plan digest and the run/evidence
-/// sequences are attached by the campaign, exactly as the `*_advance` helpers
-/// attach them to terminal records.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) struct CollectedObservation {
-    /// The raw settled-rate atom (mean, family-free variance, target, direction).
     pub(crate) atom: DiscoveryObservationAtom,
-    /// Probe or discovery rung index; zero for confirmation.
     pub(crate) rung_index: u8,
-    /// Probe direction-local slot, discovery within-direction slot, or fixed
-    /// `0..=7` confirmation schedule slot.
     pub(crate) slot_index: u8,
-    /// The frozen inputs `classify_velocity_observation` and
-    /// `depth_three_consensus` consume, streamed so an offline decoder derives
-    /// the consensus masks itself instead of trusting firmware's decision.
     pub(crate) classifier_inputs: ObservationClassifierInputs,
-    /// Probe-only minimum start-relative displacement; zero in later phases.
     pub(crate) stroke_min_displacement_counts: i32,
-    /// Probe-only maximum start-relative displacement; zero in later phases.
     pub(crate) stroke_max_displacement_counts: i32,
-    /// Probe-only maximum capture interval; zero in later phases.
     pub(crate) capture_max_interval_us: u32,
 }
 
-/// The exact inputs the depth-three consensus decision consumes for one stroke,
-/// captured at classification time so they can ride the streamed raw-observation
-/// record. This is deliberately the frozen classify/consensus input set, not
-/// every capture diagnostic: `foci-trace` ports
-/// [`classify_velocity_observation`] and the depth-three consensus over these,
-/// reproducing `collected_mask`/`eligible_mask`/`included_mask` independently
-/// Firmware's own masks are never authoritative replay inputs.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) struct ObservationClassifierInputs {
-    /// Stationarity outcome: `0` usable, otherwise the exclusion reason code
-    /// (see [`stationarity_wire_code`]).
     pub(crate) stationarity_code: u8,
-    /// Inclusive lower settled-rate confidence edge.
     pub(crate) settled_rate_low_q: i64,
-    /// Inclusive upper settled-rate confidence edge.
     pub(crate) settled_rate_high_q: i64,
-    /// Inclusive lower signed-deficit confidence edge.
     pub(crate) deficit_low_q: i64,
-    /// Inclusive upper signed-deficit confidence edge.
     pub(crate) deficit_high_q: i64,
-    /// Predicted absolute velocity-controller torque target. Already folded
-    /// with the measured peak: `max(P * rpm / 256, moving_pid_output_peak)`.
     pub(crate) predicted_torque_target_abs: u16,
-    /// Measured peak velocity-controller output for this stroke's moving
-    /// window, carried alongside `predicted_torque_target_abs` so the `max`
-    /// above stays decomposable offline for clamp-evidence analysis.
     pub(crate) moving_pid_output_peak: u16,
-    /// Inclusive current-headroom terminus.
     pub(crate) usable_torque_limit: u16,
-    /// Hard controller-output clip boundary.
     pub(crate) hard_torque_limit: u16,
-    /// Whether a representable controller-domain disturbance interval exists.
     pub(crate) disturbance_present: bool,
-    /// Lower disturbance-interval bound in equivalent torque-target Q16.16 counts
-    /// (`0` when absent).
     pub(crate) disturbance_low_q16: i32,
-    /// Upper disturbance-interval bound in the same units (`0` when absent).
     pub(crate) disturbance_high_q16: i32,
-    /// Drift ratio in parts per million, or `u32::MAX` when unavailable.
     pub(crate) drift_ratio_ppm: u32,
-    /// Post-fit lag-one state: 0 unavailable, 1 failed, 2 passed.
     pub(crate) post_fit_lag_one_state: u8,
 }
 
-/// Map a [`StationarityResult`] to its compact wire code: `0` usable, `1..=6`
-/// the precise exclusion reason. The reason is carried (not just usable/excluded)
-/// so an offline decoder reproduces the exact `StationarityExcluded` class
-/// variant, matching [`classify_velocity_observation`].
 fn stationarity_wire_code(result: StationarityResult) -> u8 {
     match result {
         StationarityResult::Usable(_) => 0,
@@ -1636,8 +1303,6 @@ fn stationarity_wire_code(result: StationarityResult) -> u8 {
     }
 }
 
-/// Capture the frozen classify/consensus inputs from a built
-/// [`VelocityObservationInput`] at classification time.
 fn observation_classifier_inputs(
     input: &VelocityObservationInput,
     moving_pid_output_peak: u16,
@@ -1664,61 +1329,17 @@ fn observation_classifier_inputs(
     }
 }
 
-/// Terminal result of a complete additive discovery campaign.
-///
-/// Every variant other than [`Self::TargetBandSelected`] and
-/// [`Self::TargetBandSkipped`] is unambiguously a non-nominating terminal; even
-/// those two never authorize Integral by themselves (spec section 6, "Discovery
-/// does not authorize Integral") -- they only classify and collect evidence for
-/// 6d/6e's nomination screen and held-out confirmation. Matching every other
-/// outer velocity phase, this driver never asserts `set_enable_pin` itself and
-/// centralized safe-state restoration on any terminal happens at the surrounding
-/// engine boundary, not per-phase.
-///
-/// `TargetBandSelected` carries [`CollectedInBandRungs`], sized at
-/// [`MAX_SWEEP_RUNGS`] because, in the worst case, every rung on the ladder
-/// could independently satisfy its own containment and no candidate evidence
-/// may be silently dropped. Since 6e-1, each collected rung is its compact
-/// [`DiscoveryRungNominationBounds`] rather than its raw observation atoms, so
-/// this variant is now a few hundred bytes rather than ~14 KB.
-/// `large_enum_variant` is accepted here the same way it already is at the
-/// `commission_dispatch::mod` and `commissioning::schedule` terminal types,
-/// rather than boxed -- this crate has no heap.
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum AdditiveDiscoveryOutcome {
-    /// At least one rung's own response was contained in 70-80%. Carries every
-    /// in-band rung collected before the ladder stopped, in ascending order,
-    /// ready for
-    /// [`nominate_confirmation_candidate_from_bounds`](super::band_confirmation::nominate_confirmation_candidate_from_bounds).
-    /// Reached either by completing the ladder (ceiling, both-directions-above-80,
-    /// or budget exhaustion) with at least one in-band rung already found, or by
-    /// current authority binding after an in-band rung was already found -- current
-    /// headroom above an already-safe candidate ends exploration without
-    /// invalidating that candidate.
     TargetBandSelected(CollectedInBandRungs),
-    /// The ladder satisfied its resolution constraint at plan time, but no rung's
-    /// own response was ever contained in 70-80%: responses crossed from below
-    /// 70% to above 80% between adjacent rungs (or the ladder ended without ever
-    /// entering the band), before any in-band rung was found. A discovery-time
-    /// RESULT, distinct from the plan-time refusal
-    /// [`Self::AdditiveLadderResolutionBudgetExceeded`].
     TargetBandSkipped,
-    /// Current authority bound before any rung's own response was contained in
-    /// 70-80%.
     CurrentHeadroomBeforeBand,
-    /// No candidate rung count could hold the minimum structural span (plan-time,
-    /// no motion).
     InsufficientAdditiveSpan,
-    /// Every surviving planning candidate's first additive gap exceeded the
-    /// provisional resolution guard (plan-time, no motion).
     AdditiveLadderResolutionBudgetExceeded,
-    /// Target-independent stationarity evidence, or another controller-domain
-    /// evidence field, was unusable for classification -- or the completed
-    /// origin-recovery return could not confirm rest.
-    DiscoveryEvidenceExcluded { error: CommissionError },
-    /// An existing safety, current, travel, encoder, or register-I/O fault,
-    /// returned unchanged.
+    DiscoveryEvidenceExcluded {
+        error: CommissionError,
+    },
     SafetyFault {
         error: CommissionError,
         safety: Option<OuterSafetyFault>,
@@ -1750,14 +1371,6 @@ fn discovery_current_guard_fault(error: VelocityCurrentGuardError) -> AdditiveDi
     })
 }
 
-/// Adapt [`sample_one_tick`]'s probe-flavored fault into a discovery step.
-///
-/// `sample_one_tick` only ever fails through its own `fault`/`safety_fault`
-/// constructors, both of which resolve to
-/// `BreakawayProbeStep::Done(BreakawayProbeOutcome::SafetyFault { .. })`; no other
-/// probe outcome variant is reachable from it. Reusing the function directly
-/// (rather than re-deriving its per-tick safety prologue a fourth time) means this
-/// thin, total re-wrap is the only seam between the two drivers' fault shapes.
 fn discovery_step_from_probe_fault(step: BreakawayProbeStep) -> AdditiveDiscoveryStep {
     match step {
         BreakawayProbeStep::Done(BreakawayProbeOutcome::SafetyFault { error, safety }) => {
@@ -1769,8 +1382,6 @@ fn discovery_step_from_probe_fault(step: BreakawayProbeStep) -> AdditiveDiscover
     }
 }
 
-/// Positive commanded-magnitude target rate shared by both directions, matching
-/// the existing `fixed_gain_amplitude_target_rate_q` conversion in `integral_sweep.rs`.
 fn discovery_target_rate_q(
     target_velocity_rpm: TmcMechanicalRpm,
     counts_per_rev: u32,
@@ -1782,50 +1393,15 @@ fn discovery_target_rate_q(
         .ok_or(CommissionError::TargetRateInvalid)
 }
 
-/// No confirmation-style inflation on top of discovery's own multiplier
-/// (`c_sigma = 1.0`, versus confirmation's
-/// [`super::band_confirmation::NOMINATION_SCREEN_C_SIGMA`]).
-///
-/// Discovery pools each direction's included observations
-/// ([`rung_directional_pooled_bounds_percent`](super::band_confirmation::rung_directional_pooled_bounds_percent))
-/// rather than taking nomination's min/max union
-/// ([`rung_response_bounds_percent`](super::band_confirmation::rung_response_bounds_percent)):
-/// a union can only widen as observations accrue, so one noisy stroke could
-/// veto an otherwise well-contained rung. The two stay separate
-/// implementations on purpose.
-///
-/// The pooled interval borrows the plan's observation-level multiplier
-/// (`rung_count * observations_per_direction`), which over-corrects for the
-/// one pooled claim per rung and direction actually made here. Kept as is:
-/// nomination and confirmation bind at roughly half the noise level where
-/// this test would, so the surplus never decides an outcome.
 const DISCOVERY_CONTAINMENT_C_SIGMA: f32 = 1.0;
 
-/// One rung's classification against the 70-80% target band, judged entirely on
-/// its own containment -- no interval-separation or response-model requirement
-/// against neighboring rungs (spec section 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 enum RungBandVerdict {
-    /// Both directions' own pooled response intervals are wholly contained in
-    /// 70-80%.
     InBand,
-    /// Both directions' own pooled response intervals are wholly above 80%:
-    /// confidently past the band.
     ConfidentlyAboveBand,
-    /// Neither of the above: still below the band, straddling it without full
-    /// containment in at least one direction, or not judgeable (loss of
-    /// consensus other than current headroom). Not a stop condition by
-    /// itself; the ladder continues.
     Ambiguous,
 }
 
-/// Reduce one direction's four per-slot classifications to a single
-/// moving/inert diagnostic verdict, mirroring
-/// the discovery classification-to-motion mapping (`Eligible`/`DeficitUnresolved` => moving,
-/// `Inert` => inert) but folded across a whole rung's four-slot consensus
-/// schedule instead of a single probe observation: moving if any slot shows
-/// motion, inert otherwise. Used only for the rung-zero diagnostic (spec
-/// section 6), which is evidence, not a stop-rule input.
 fn direction_motion_class(
     classes: [VelocityObservationClass; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
 ) -> BreakawayMotionClass {
@@ -1870,15 +1446,6 @@ fn classify_rung_band(rung: &DiscoveryRungNominationInput, own_multiplier: f32) 
     }
 }
 
-/// Conclude the discovery walk once a stop rule fires.
-///
-/// A non-empty in-band set means the target band was selected: enter
-/// [`AdditiveDiscoveryState::StreamMargins`] to stream each collected rung's
-/// margin on its own tick before the `TargetBandSelected` outcome (which
-/// `StreamMargins` itself produces once the collected set is exhausted). An
-/// empty in-band set terminates immediately with `empty_outcome`
-/// (`TargetBandSkipped` or `CurrentHeadroomBeforeBand`). The walk is over at
-/// this point, so the retained collected set no longer changes.
 fn finish_discovery_walk(
     state: &mut AdditiveDiscoveryState,
     in_band_count: u8,
@@ -1892,14 +1459,6 @@ fn finish_discovery_walk(
     }
 }
 
-/// Advance the additive discovery campaign by one cooperative step.
-///
-/// `workspace` is caller-owned scratch space; `session` is caller-owned campaign
-/// state (see [`AdditiveDiscoverySession`]). Neither is allocated here. The caller
-/// is responsible for running [`crate::commissioning::outer::check_outer_safety`]
-/// against `safety` between ticks, exactly as `step_outer_with_trace` does for
-/// every other outer phase; this function never performs that check itself,
-/// matching [`step_breakaway_probe`].
 pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
     state: &mut AdditiveDiscoveryState,
     workspace: &mut BreakawayProbeWorkspace,
@@ -2073,8 +1632,6 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             {
                 return discovery_fault(CommissionError::Spi);
             }
-            // The axis is braking under no commanded amplitude from here until
-            // the primitive ends.
             safety.enter_settle_phase();
             if let Err(error) = boundary {
                 return discovery_current_guard_fault(error);
@@ -2136,16 +1693,6 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 Ok(input) => input,
                 Err(error) => return discovery_fault(error),
             };
-            // Mirror the probe's own AnalyzeMoving short-circuit (this file, above)
-            // and sweep.rs's AnalyzeMoving `terminal_error` match (sweep.rs:1076):
-            // wrong-direction and hard-clip mean the direction-to-motion assumption
-            // origin-recovery relies on is untrustworthy, or current is already
-            // clipped, so recovery must not run another energized stroke on top of
-            // this observation. Invalid controller-domain evidence is likewise an
-            // immediate terminal here. `CurrentHeadroom` is deliberately NOT a
-            // short-circuit: discovery still runs settle + recovery for it, then
-            // stops the campaign in `Advance` once recovery completes, exactly the
-            // "current authority binds" stop condition from spec section 6.
             let classification = classify_velocity_observation(input).classification;
             match classification {
                 VelocityObservationClass::WrongDirectionFault => {
@@ -2360,12 +1907,6 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     "settle rest not confirmed at rung={} (capping ladder from collected evidence if any)",
                     session.rung_index,
                 );
-                // A rung's return-to-rest that rings above the usable band must
-                // not discard the whole campaign: cap the ladder and nominate
-                // from the in-band rungs already collected, exactly as a ceiling
-                // or budget stop does. finish_discovery_walk still excludes when
-                // no in-band rung has been found, so an under-characterized band
-                // cannot be nominated.
                 return finish_discovery_walk(
                     state,
                     session.in_band.count(),
@@ -2461,12 +2002,6 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     AdditiveDiscoveryStep::OriginMismatch(evidence)
                 }
                 RungOriginRecoveryStep::Finished(_) | RungOriginRecoveryStep::Contained(_) => {
-                    // The stroke is complete and classified: stream its raw
-                    // settled-rate atom now, on the collection tick, before the
-                    // `Advance` state folds it into this rung's nomination
-                    // bounds and drops the atom. `session.rung_index`/`slot`
-                    // still name this observation's coordinates -- `Advance`
-                    // advances them only after it records.
                     *state = AdditiveDiscoveryState::Advance;
                     match session.pending_record.as_ref() {
                         Some(record) => AdditiveDiscoveryStep::Observation(CollectedObservation {
@@ -2556,11 +2091,6 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         reverse_observations: session.reverse.atoms,
                     };
                     let verdict = classify_rung_band(&rung_input, session.own_multiplier);
-                    // Per-rung band classification plus the +/-1 sigma response-percent
-                    // bounds it turns on. The verdict alone shows a campaign ended with
-                    // no in-band rung; the bounds show why -- whether each direction's
-                    // interval straddles the 70-80% band (too wide / off-center) or is
-                    // cleanly outside it.
                     let [(fwd_lo, fwd_hi), (rev_lo, rev_hi)] =
                         rung_directional_pooled_bounds_percent(
                             &rung_input,
@@ -2578,12 +2108,6 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         rev_lo,
                         rev_hi,
                     );
-                    // Retain rung zero's own per-direction motion classification before
-                    // its accumulators reset below, regardless of `verdict`: rung zero
-                    // (the diagnostic floor, expected inert) is never pushed into
-                    // `in_band` unless it happens to classify `InBand`, so without this
-                    // capture its evidence would be silently discarded. Every other
-                    // rung's handling is unchanged.
                     if session.rung_index == 0 {
                         session.rung_zero_classification = Some((
                             direction_motion_class(session.forward.classes),
@@ -2591,13 +2115,6 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         ));
                     }
                     if verdict == RungBandVerdict::InBand {
-                        // Compute the NOMINATION interval and eligibility now, while
-                        // the raw atoms are still fresh, and retain only the compact
-                        // result: nomination never needs the atoms again after this
-                        // point. This is a SEPARATE computation from `classify_rung_band`
-                        // above -- discovery's own stop-rule containment check, unchanged
-                        // (`DISCOVERY_CONTAINMENT_C_SIGMA`, no rounding) -- not a
-                        // replacement for it.
                         let bounds = rung_nomination_bounds(&rung_input);
                         if session.in_band.push(bounds).is_err() {
                             return discovery_fault(CommissionError::EvidenceBufferFull);
@@ -2648,13 +2165,6 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
     }
 }
 
-// ============================================================================
-// Held-out confirmation driver
-// ============================================================================
-
-/// One classified confirmation stroke's evidence, held between
-/// [`BandConfirmationState::AnalyzeMoving`] and [`BandConfirmationState::Advance`],
-/// mirroring [`PendingDiscoveryRecord`]'s role for discovery.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 struct PendingConfirmationRecord {
     classification: VelocityObservationClass,
@@ -2663,93 +2173,30 @@ struct PendingConfirmationRecord {
     classifier_inputs: ObservationClassifierInputs,
 }
 
-/// Terminal result of the held-out confirmation campaign.
-///
-/// [`Self::Accepted`] is the ONLY variant that may authorize Integral (a later
-/// slice's job to route); every other variant is a confirmation-owned
-/// terminal and must not. Matching every other outer velocity phase, this
-/// driver never asserts `set_enable_pin` itself, and centralized safe-state
-/// restoration on any terminal happens at the surrounding engine boundary,
-/// not per-phase.
 #[derive(Debug, defmt::Format)]
 pub(crate) enum BandConfirmationOutcome {
-    /// All eight held-out strokes were collected with complete
-    /// `collected == eligible == included == 0b1111` masks in both directions
-    /// and every fresh interval contained in 70-80%. Carries the confirmed
-    /// gain and the frozen plan for a later slice's Integral construction.
     Accepted {
-        /// The held-out acceptance itself.
         acceptance: BandConfirmationAcceptance,
-        /// The frozen confirmation plan the acceptance was judged against.
         plan: BandConfirmationPlan,
     },
-    /// No discovery rung's own margin reached zero (spec section 7); zero
-    /// confirmation strokes were spent.
     TargetBandUnconfirmableFromDiscovery,
-    /// Discovery selected a band, but every band-admissible rung's proportional
-    /// gain exceeds the Integral transition-capability ceiling, so nominating any
-    /// would seed a plan Integral admission must refuse. Refused before motion;
-    /// zero confirmation strokes were spent. Distinct from
-    /// [`Self::TargetBandUnconfirmableFromDiscovery`] (an empty band) so the
-    /// refusal names its own reason on the wire.
     TargetBandNoTransitionCapableCandidate,
-    /// Current authority bound before discovery ever collected an in-band
-    /// rung (spec section 9). Consumed directly from
-    /// [`AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand`] rather than
-    /// re-derived here -- 6c has already fully classified this condition.
-    /// Zero confirmation strokes were spent.
     TargetBandNotReachedAtAuthority,
-    /// The held-out family-eight block failed strict acceptance; `cause`
-    /// reports why.
     TargetBandConfirmationInconclusive(BandConfirmationFailureCause),
-    /// Target-independent stationarity evidence, or another controller-domain
-    /// evidence field, was unusable for classification -- or the completed
-    /// origin-recovery return could not confirm rest.
     ConfirmationEvidenceExcluded,
-    /// An existing safety, current, travel, encoder, or register-I/O fault,
-    /// returned unchanged.
     SafetyFault {
         error: CommissionError,
         safety: Option<OuterSafetyFault>,
     },
 }
 
-/// Outcome of routing a finished discovery campaign into confirmation.
-///
-/// `Ready` is far larger than `Done`: it embeds [`BandConfirmationSession`],
-/// which carries two [`DirectionAccumulator`]s worth of per-slot evidence.
-/// `large_enum_variant` is accepted here the same way it already is at
-/// [`AdditiveDiscoveryStep`] and the other terminal types in this crate,
-/// rather than boxed -- this crate has no heap.
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum BandConfirmationEntry {
-    /// The confirmation plan is frozen; step the returned session from
-    /// [`BandConfirmationState::PlannedConfirmation`] via
-    /// [`step_band_confirmation`] to run the eight-stroke block.
     Ready(BandConfirmationSession),
-    /// A confirmation-owned terminal was reached before any confirmation
-    /// stroke; zero strokes were spent.
     Done(BandConfirmationOutcome),
 }
 
-/// Nominate a candidate from a finished discovery campaign and freeze the
-/// held-out confirmation plan. Touches no backend and spends zero
-/// confirmation strokes; motion is only reachable afterward, through
-/// [`step_band_confirmation`].
-///
-/// Confirmation may only begin from the two discovery outcomes that leave a
-/// meaningful confirmation question open:
-/// [`AdditiveDiscoveryOutcome::TargetBandSelected`] (screen the collected
-/// rungs through [`nominate_confirmation_candidate_from_bounds`]) and
-/// [`AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand`] (consumed directly
-/// as [`BandConfirmationOutcome::TargetBandNotReachedAtAuthority`], spec
-/// section 9 -- 6c has already fully classified this condition, so it is not
-/// re-derived here). Every other discovery outcome is itself already a
-/// discovery-owned terminal that ends the whole outer campaign before
-/// confirmation is ever reached; handing one to this function is a caller
-/// (routing) defect, not a confirmation result, and is reported as
-/// `InvalidSchedule` rather than panicking.
 pub(crate) fn begin_band_confirmation(
     discovery_outcome: AdditiveDiscoveryOutcome,
     discovery_plan_digest: u64,
@@ -2805,10 +2252,6 @@ pub(crate) fn begin_band_confirmation(
             });
         }
     };
-    // Single canonical contract check, run before the fixed eight-stroke block
-    // drives any motion. The same `validate_fixed_contract` gates Integral
-    // construction, so a plan that reaches confirmation and a plan that reaches
-    // Integral are held to one identical, non-drifting contract.
     if validate_fixed_contract(&plan).is_err() {
         return BandConfirmationEntry::Done(BandConfirmationOutcome::SafetyFault {
             error: CommissionError::PlanContractChanged,
@@ -2823,14 +2266,6 @@ pub(crate) fn begin_band_confirmation(
     ))
 }
 
-/// Frozen confirmation plan and the mutable eight-stroke walk progress.
-///
-/// Bundles the immutable [`BandConfirmationPlan`] together with the
-/// fixed-schedule stroke index and the two per-direction accumulators,
-/// mirroring [`AdditiveDiscoverySession`]'s role for discovery. Constructed
-/// only via [`begin_band_confirmation`], after nomination and plan-freeze have
-/// already happened, so [`step_band_confirmation`] is the only path to
-/// motion.
 #[derive(Debug, defmt::Format)]
 pub(crate) struct BandConfirmationSession {
     plan: BandConfirmationPlan,
@@ -2841,10 +2276,6 @@ pub(crate) struct BandConfirmationSession {
     reverse: DirectionAccumulator,
     pending_lower_rate_q: Option<u64>,
     pending_record: Option<PendingConfirmationRecord>,
-    /// The nominated candidate's `M_i = min(L_i - 70, 80 - U_i)`, retained
-    /// (rather than the whole [`NominatedConfirmationCandidate`], which
-    /// `begin_band_confirmation` otherwise fully consumes) so
-    /// [`confirmation_plan_report`] can be assembled at report time.
     nominated_margin_percent: f32,
 }
 
@@ -2868,87 +2299,50 @@ impl BandConfirmationSession {
         }
     }
 
-    /// Commanded direction for the stroke about to run (or just completed),
-    /// read from the fixed [`CONFIRMATION_SLOT_ORDER`] schedule.
     fn current_direction(&self) -> VelocityDirection {
         CONFIRMATION_SLOT_ORDER[usize::from(self.stroke_index)]
     }
 
-    /// This stroke's position within its own direction's four-slot schedule.
-    ///
-    /// `CONFIRMATION_SLOT_ORDER` is four forward strokes followed by four
-    /// reverse strokes, so `stroke_index % 4` is always the correct
-    /// within-direction slot -- matching both
-    /// `CONFIRMATION_OBSERVATIONS_PER_DIRECTION` and
-    /// `CONSENSUS_OBSERVATIONS_PER_DIRECTION`, both 4.
     fn slot_within_direction(&self) -> u8 {
         self.stroke_index % 4
     }
 }
 
-/// Single-tick cooperative stroke cycle for one confirmation observation.
-///
-/// Mirrors [`AdditiveDiscoveryState`]/[`BreakawayProbeState`]'s stroke states
-/// exactly (write gain, command target, capture, command zero, analyze
-/// moving, settle-capture, analyze settle, recover, advance): a confirmation
-/// stroke is the same guarded primitive, at a frozen gain and a fixed
-/// eight-slot schedule instead of a bisection cursor or a ladder walk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum BandConfirmationState {
-    /// The frozen plan is admitted; no stroke has been issued yet.
     PlannedConfirmation,
-    /// Write the frozen candidate gain and the outer-velocity ramp mode.
     WriteGain,
-    /// Arm the current clamp and command the signed velocity target.
     CommandTarget,
-    /// Sample the commanded stroke until its fixed moving duration elapses.
     Capture {
         next_sample_us: u64,
         deadline_us: u64,
     },
-    /// Command zero and record the moving-phase current evidence boundary.
     CommandZero,
-    /// Classify the moving-phase stationarity result.
     AnalyzeMoving {
         settle_deadline_us: u64,
         analysis_deadline_us: u64,
     },
-    /// Read the settle baseline before sampling the zero-target rest window.
-    BeginSettleCapture { settle_deadline_us: u64 },
-    /// Sample the zero-target rest window.
+    BeginSettleCapture {
+        settle_deadline_us: u64,
+    },
     SettleCapture {
         next_sample_us: u64,
         deadline_us: u64,
     },
-    /// Confirm rest and record the zero-phase current evidence boundary.
-    AnalyzeSettle { analysis_deadline_us: u64 },
-    /// Return to the parked origin through the shared recovery primitive.
+    AnalyzeSettle {
+        analysis_deadline_us: u64,
+    },
     Recover(RungOriginRecoveryRuntime),
-    /// Fold the classified observation into the active accumulator and decide
-    /// what is next: another stroke, or the held-out judgement.
     Advance,
 }
 
-/// One cooperative result from [`step_band_confirmation`].
 #[derive(Debug, defmt::Format)]
 pub(crate) enum BandConfirmationStep {
-    /// Call again immediately; no external wait is needed.
     ReadyNow,
-    /// Call again no earlier than this `elapsed_us` deadline.
     At(u64),
-    /// A stroke just completed; its raw settled-rate evidence is ready to stream
-    /// before the atom is folded and judged. Call again immediately; the fold
-    /// happens on the following tick.
     Observation(CollectedObservation),
-    /// The scored-rest selector rejected this stroke's recovery rest window.
-    /// Diagnostic only: the campaign layer streams it and the recovery worker
-    /// still reaches its own terminal on a following tick. Call again
-    /// immediately.
     RestRejected(RecoveryRestRejectedInput),
-    /// This stroke's recovery refused to start because the origin moved.
-    /// Diagnostic only: the worker raises its fault on the following tick.
     OriginMismatch(RecoveryOriginMismatchEvidence),
-    /// The confirmation campaign concluded.
     Done(BandConfirmationOutcome),
 }
 
@@ -2977,12 +2371,6 @@ fn confirmation_current_guard_fault(error: VelocityCurrentGuardError) -> BandCon
     })
 }
 
-/// Adapt [`sample_one_tick`]'s probe-flavored fault into a confirmation step.
-///
-/// Mirrors [`discovery_step_from_probe_fault`]: `sample_one_tick` only ever
-/// fails through its own `fault`/`safety_fault` constructors, both of which
-/// resolve to `BreakawayProbeStep::Done(BreakawayProbeOutcome::SafetyFault { .. })`;
-/// no other probe outcome variant is reachable from it.
 fn confirmation_step_from_probe_fault(step: BreakawayProbeStep) -> BandConfirmationStep {
     match step {
         BreakawayProbeStep::Done(BreakawayProbeOutcome::SafetyFault { error, safety }) => {
@@ -2994,17 +2382,6 @@ fn confirmation_step_from_probe_fault(step: BreakawayProbeStep) -> BandConfirmat
     }
 }
 
-/// Map [`evaluate_band_confirmation`]'s result onto this driver's own outcome
-/// type, attaching `plan` to an acceptance.
-///
-/// Extracted as its own pure function (taking the already-built directional
-/// inputs and the already-evaluated result, rather than a session) so a test
-/// can exercise this exact mapping directly against crafted
-/// [`ConfirmationDirectionalInput`] fixtures -- mirroring
-/// `band_confirmation_tests.rs`'s own fixture style -- without needing to
-/// reproduce every [`BandConfirmationFailureCause`] via a physically
-/// simulated encoder script: `evaluate_band_confirmation`'s own statistical
-/// math is exhaustively covered there and is not re-derived here.
 fn confirmation_evaluation_outcome(
     result: Result<BandConfirmationAcceptance, TargetBandConfirmationInconclusive>,
     plan: BandConfirmationPlan,
@@ -3017,8 +2394,6 @@ fn confirmation_evaluation_outcome(
     }
 }
 
-/// Fold this session's two completed direction accumulators into the held-out
-/// confirmation judgement.
 fn evaluate_confirmation_session(session: &BandConfirmationSession) -> BandConfirmationOutcome {
     let forward = ConfirmationDirectionalInput {
         consensus: session.forward.consensus(),
@@ -3036,15 +2411,6 @@ fn evaluate_confirmation_session(session: &BandConfirmationSession) -> BandConfi
     )
 }
 
-/// Advance the confirmation campaign by one cooperative step.
-///
-/// `workspace` is caller-owned scratch space; `session` is caller-owned
-/// campaign state (see [`BandConfirmationSession`]). Neither is allocated
-/// here. The caller is responsible for running
-/// [`crate::commissioning::outer::check_outer_safety`] against `safety`
-/// between ticks, exactly as `step_outer_with_trace` does for every other
-/// outer phase; this function never performs that check itself, matching
-/// [`step_breakaway_probe`] and [`step_additive_discovery`].
 pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
     state: &mut BandConfirmationState,
     workspace: &mut BreakawayProbeWorkspace,
@@ -3195,8 +2561,6 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             {
                 return confirmation_fault(CommissionError::Spi);
             }
-            // The axis is braking under no commanded amplitude from here until
-            // the primitive ends.
             safety.enter_settle_phase();
             if let Err(error) = boundary {
                 return confirmation_current_guard_fault(error);
@@ -3255,18 +2619,6 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 Ok(input) => input,
                 Err(error) => return confirmation_fault(error),
             };
-            // Mirrors the probe's and discovery's own AnalyzeMoving short-circuit
-            // (this file, above): wrong-direction and hard-clip mean the
-            // direction-to-motion assumption origin-recovery relies on is
-            // untrustworthy, or current is already clipped, so recovery must not
-            // run another energized stroke on top of this observation. Invalid
-            // controller-domain evidence is likewise an immediate terminal here.
-            // `CurrentHeadroom` is deliberately NOT a short-circuit and does NOT
-            // stop the campaign early (unlike discovery): the confirmation
-            // contract requires the fixed eight-stroke block to run to
-            // completion regardless, and `evaluate_band_confirmation` itself
-            // reports incomplete-mask exclusions traced to current headroom as
-            // `BandConfirmationFailureCause::CurrentAuthority`.
             let classification = classify_velocity_observation(input).classification;
             match classification {
                 VelocityObservationClass::WrongDirectionFault => {
@@ -3517,13 +2869,6 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                     BandConfirmationStep::OriginMismatch(evidence)
                 }
                 RungOriginRecoveryStep::Finished(_) | RungOriginRecoveryStep::Contained(_) => {
-                    // The held-out stroke is complete and classified: stream its
-                    // raw settled-rate atom now, on the collection tick, before
-                    // the `Advance` state folds it and the block is judged for
-                    // [70, 80] containment. The fixed schedule slot is the
-                    // within-direction slot for forward strokes and `+ 4` for
-                    // reverse, matching `confirmation_observation_report`'s own
-                    // slot numbering.
                     let slot_index = match session.current_direction() {
                         VelocityDirection::Forward => session.slot_within_direction(),
                         VelocityDirection::Reverse => session.slot_within_direction() + 4,
@@ -3590,26 +2935,12 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
     }
 }
 
-// ============================================================================
-// Campaign orchestrator
-// ============================================================================
-
-/// Frozen physical and envelope inputs the campaign retains across every phase.
-///
-/// Computed once at [`BreakawayCampaign::new`], before any probe motion: the
-/// current-representable `(p_start, p_top)` gain span (shared with the classic
-/// sweep via [`current_gain_span`]), the physical acquisition parameters the
-/// Integral tail needs, and the reserved command-level workflow envelope. The
-/// probe outcome supplies only the resolved breakaway grid index; every other
-/// discovery-plan input is derived from these retained values, matching the
-/// spec's plan-time authority-ceiling rule (`authority_ceiling = p_top`).
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) struct BreakawayCampaignInputs {
     p_start: PidPGain,
     p_top: PidPGain,
     target_velocity_rpm: TmcMechanicalRpm,
     planned_velocity_mrev_s: u32,
-    /// Frozen `M_effective`, the settle-phase velocity bound.
     effective_ceiling_mrev_s: u32,
     hard_torque_limit: u16,
     usable_torque_limit: u16,
@@ -3619,93 +2950,44 @@ pub(crate) struct BreakawayCampaignInputs {
     workflow_envelope_ms: u32,
     channel: u8,
     run_sequence: u32,
-    /// Plan-time PWM carrier frequency, in Hz, frozen from the command request.
-    /// Cross-checked against the live PWM frequency at Integral construction so
-    /// confirmation evidence cannot be admitted under a different timebase.
     pwm_hz: u32,
-    /// Plan-time encoder counts per mechanical revolution, frozen from the
-    /// command request. Cross-checked against the live resolution at Integral
-    /// construction.
     encoder_counts_per_rev: u32,
-    /// `sweep_plan::CEILING_BINDING_CURRENT_LIMIT` or
-    /// `sweep_plan::CEILING_BINDING_REPRESENTABILITY_CLAMP`: which `p_top`
-    /// candidate bound the plan-time authority ceiling this campaign's probe
-    /// and discovery ladders are both anchored against.
     ceiling_binding_source: u8,
 }
 
-/// Frozen command request the campaign is planned from.
-///
-/// Every field is a command-admission input; `nominal_workflow_ms` and
-/// `maximum_workflow_ms` are the worst-case sums reserved for the whole campaign
-/// (probe, discovery, confirmation, and the Integral continuation) before probe
-/// motion, so every phase plan must fit inside `maximum_workflow_ms`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BreakawayCampaignRequest {
-    /// Frozen signed-target magnitude in mechanical RPM register units.
     pub(crate) target_velocity_rpm: TmcMechanicalRpm,
-    /// Frozen encoder-domain velocity amplitude.
     pub(crate) planned_velocity_mrev_s: u32,
-    /// Frozen `M_effective`: the tightest of the host machine ceiling and the
-    /// firmware's own encoder-observability bound. The runtime safety envelope
-    /// uses it as the settle-phase velocity bound.
     pub(crate) effective_ceiling_mrev_s: u32,
-    /// Configured hard torque-target limit.
     pub(crate) hard_torque_limit: u16,
-    /// Available authority for proving absence of transient clamp contact.
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
-    /// Host-declared per-primitive safety cap for each discovery rung.
     pub(crate) max_duration_ms: u16,
-    /// Conservative fixed-schedule campaign duration.
     pub(crate) nominal_workflow_ms: u32,
-    /// Reserved maximum campaign duration; every phase plan must fit inside it.
     pub(crate) maximum_workflow_ms: u32,
-    /// Physical firmware channel bound into the Integral authority.
     pub(crate) channel: u8,
-    /// Trace/run sequence carried into the Integral continuation.
     pub(crate) run_sequence: u32,
-    /// PWM carrier frequency the campaign is planned under, in Hz. Bound into
-    /// the probe plan's digest as part of its acquisition context.
     pub(crate) pwm_hz: u32,
-    /// Encoder counts per mechanical revolution the campaign is planned under.
-    /// Bound into the probe plan's digest as part of its acquisition context.
     pub(crate) encoder_counts_per_rev: u32,
 }
 
-/// The active campaign phase: exactly one committed driver's state plus its
-/// session at a time, so the largest retained footprint is one phase's session,
-/// never all three.
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum BreakawayCampaignPhase {
-    /// The upward physical-excursion probe locating the campaign breakaway.
     Probe {
         state: BreakawayProbeState,
         session: BreakawayProbeSession,
     },
-    /// The additive discovery ladder walking upward from the resolved breakaway.
     Discovery {
         state: AdditiveDiscoveryState,
         session: AdditiveDiscoverySession,
     },
-    /// The held-out eight-stroke confirmation block at the nominated candidate.
     Confirmation {
         state: BandConfirmationState,
         session: BandConfirmationSession,
     },
 }
 
-/// Frozen campaign inputs plus the active phase.
-///
-/// `pending_event`/`pending_done` defer a not-yet-returned evidence record or
-/// terminal by exactly one [`step_breakaway_campaign`] tick: a phase's
-/// terminal transition (or the campaign's own accept) can need to report more
-/// than one wire record before the next state is actually reachable (for
-/// example a discovery terminal's rung-margin/rung-zero bundle, followed by a
-/// zero-stroke confirmation terminal it routes straight into, followed by the
-/// campaign's own closure record). Each field holds at most the ONE item not
-/// yet returned; [`step_breakaway_campaign`] drains `pending_event` before
-/// `pending_done`, and both before touching the active phase driver again.
 #[derive(Debug, defmt::Format)]
 pub(crate) struct BreakawayCampaign {
     inputs: BreakawayCampaignInputs,
@@ -3713,40 +2995,14 @@ pub(crate) struct BreakawayCampaign {
     evidence_sequence: u16,
     pending_event: Option<crate::commissioning::types::BreakawayCampaignTerminal>,
     pending_done: Option<BreakawayCampaignOutcome>,
-    /// Phase-owned terminal record deferred by
-    /// [`breakaway_campaign_fault_terminal`], drained before `pending_event`.
-    ///
-    /// Holds the record, not the [`BreakawayCampaignEvent`] wrapper: that enum
-    /// is sized at `MAX_SWEEP_RUNGS` worst case and this phase lives on the
-    /// RTIC interrupt stack, which the outer-phase size gates enforce.
-    ///
-    /// A fault raised at the dispatch boundary still has to report the phase's
-    /// own terminal record: it carries `has_safety_fault` and the count of
-    /// in-band rungs already collected, and the host's safety-fault gate reads
-    /// it. Emitting only the campaign closure made a dispatcher-detected fault
-    /// indistinguishable from one that collected nothing, and left the
-    /// retained safety evidence unreachable.
     pending_phase_terminal: Option<crate::commissioning::types::AdditiveDiscoveryTerminal>,
 }
 
 impl BreakawayCampaign {
-    /// Plan the campaign from a command request and start at the probe's
-    /// [`BreakawayProbeState::PlannedProbe`].
-    ///
-    /// This never touches a backend: planning is pure, and motion is only
-    /// reachable through [`step_breakaway_campaign`], and only once the probe's
-    /// state has left `PlannedProbe`. The command-level workflow envelope is
-    /// reserved here, before the probe's first stroke, via
-    /// [`CommissioningWorkflowPlan::new_breakaway`]; a malformed envelope
-    /// refuses the whole campaign without motion.
     pub(crate) fn new(request: BreakawayCampaignRequest) -> Result<Self, CommissionError> {
         let (p_start, p_top, usable_torque_limit, ceiling_binding_source) =
             current_gain_span(request.target_velocity_rpm, request.hard_torque_limit)
                 .map_err(|_| CommissionError::CampaignPlanInvalid)?;
-        // Reserve the command-level envelope before any probe motion; every
-        // phase plan must later fit inside `maximum_workflow_ms`. Its digest is
-        // bound into the probe plan below, so the whole downstream digest chain
-        // is pinned to this command-level envelope.
         let workflow = CommissioningWorkflowPlan::new_breakaway(
             request.run_sequence,
             request.nominal_workflow_ms,
@@ -3799,70 +3055,35 @@ impl BreakawayCampaign {
         })
     }
 
-    /// Trace/run sequence the Integral continuation is emitted under.
     pub(crate) const fn run_sequence(&self) -> u32 {
         self.inputs.run_sequence
     }
 
-    /// Number of recovery slots the campaign reserves before probe motion.
-    ///
-    /// The implemented state machines recover after every observation, not once
-    /// per rung, so the reservation must cover every observation across probe,
-    /// discovery, and confirmation: every possible upward-probe stroke, every
-    /// discovery rung driven in both directions at
-    /// [`OBSERVATIONS_PER_DIRECTION_PER_RUNG`], and the confirmation family. Each
-    /// slot is reserved at the plan's per-slot maximum, bounding the recovery term
-    /// of [`breakaway_workflow_envelope_ms`]. This evaluates to 392
-    /// (`128 + 32 * 2 * 4 + 8`); a unit test asserts both the concrete value and
-    /// that it tracks the derivation constants.
     pub(crate) const RECOVERY_SLOT_COUNT: u32 = PROBE_MAX_OBSERVATIONS as u32
         + MAX_SWEEP_RUNGS as u32 * 2 * OBSERVATIONS_PER_DIRECTION_PER_RUNG as u32
         + CONFIRMATION_FAMILY_SIZE as u32;
 
-    /// Hard torque-target limit the campaign energizes the motor with.
-    ///
-    /// This is the operational torque limit that safe-state restoration must
-    /// restore when a campaign phase is torn down while still armed. It is the
-    /// same frozen limit the Integral hand-off carries into the confirmed plan
-    /// (`hard_torque_limit` in [`BreakawayCampaignInputs`]).
     pub(crate) const fn hard_torque_limit(&self) -> u16 {
         self.inputs.hard_torque_limit
     }
 
-    /// Encoder counts per mechanical revolution frozen before campaign motion.
     pub(crate) const fn encoder_counts_per_rev(&self) -> u32 {
         self.inputs.encoder_counts_per_rev
     }
 
-    /// Planned encoder-domain velocity amplitude frozen before campaign motion.
     pub(crate) const fn planned_velocity_mrev_s(&self) -> u32 {
         self.inputs.planned_velocity_mrev_s
     }
 
-    /// Frozen `M_effective`, the settle-phase bound of the safety envelope.
     pub(crate) const fn effective_ceiling_mrev_s(&self) -> u32 {
         self.inputs.effective_ceiling_mrev_s
     }
 
-    /// The active campaign phase, for engine-adapter routing and test scripting.
     pub(crate) const fn phase(&self) -> &BreakawayCampaignPhase {
         &self.phase
     }
 }
 
-/// Derive the command-level campaign plan and its worst-case workflow envelope
-/// from the same host sweep request the combined workflow admits.
-///
-/// This is pure command admission: it commands no motion and touches no backend.
-/// It reuses [`plan_proportional_velocity_sweep`] to derive the shared target
-/// velocity, planned amplitude, and per-slot recovery reservations, and
-/// [`integral_continuation_geometry`] for the worst-case Integral continuation, then
-/// sums the whole pre-motion envelope with [`breakaway_workflow_envelope_ms`]
-/// (392 recovery slots per [`BreakawayCampaign::RECOVERY_SLOT_COUNT`]). The
-/// returned [`CommissioningWorkflowPlan`] carries the exact envelope the
-/// campaign reserves, so disclosing it before construction matches the envelope
-/// [`BreakawayCampaign::new`] validates. Any planning failure is a zero-motion
-/// refusal reported as [`CommissionError::InvalidSchedule`].
 pub(crate) fn plan_breakaway_campaign_command(
     request: VelocitySweepRequest,
     encoder_counts_per_rev: u32,
@@ -3922,100 +3143,43 @@ pub(crate) fn plan_breakaway_campaign_command(
     Ok((campaign, workflow))
 }
 
-/// Terminal result of a complete breakaway campaign.
-///
-/// [`Self::IntegralPlanReady`] is the ONLY variant that authorizes Integral, and it
-/// is reachable only from an accepted held-out confirmation whose confirmed P
-/// also passed the 6a plan-time safety admission. Every other terminal --
-/// including an accepted confirmation whose P the 6a constructor refuses WITHOUT
-/// motion -- is a [`Self::Terminal`] that carries NO Integral plan, so no
-/// failure or inconclusive path can begin Integral.
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum BreakawayCampaignOutcome {
-    /// The confirmed candidate P was accepted and admitted by 6a plan-time
-    /// safety; the exact Integral plan built through the token route is ready to
-    /// hand off to the `VelocityIntegral` phase.
     IntegralPlanReady(VelocityIntegralPlan),
-    /// A non-accept campaign terminal, or an accept whose confirmed P the 6a
-    /// constructor refused WITHOUT motion. Never carries an Integral plan.
     Terminal {
         error: CommissionError,
         safety: Option<OuterSafetyFault>,
     },
 }
 
-/// One cooperative result from [`step_breakaway_campaign`].
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum BreakawayCampaignStep {
-    /// Call again immediately; no external wait is needed.
     ReadyNow,
-    /// Call again no earlier than this `elapsed_us` deadline.
     At(u64),
-    /// One evidence record is ready for wire emission; call again immediately.
     Event(BreakawayCampaignEvent),
-    /// The campaign concluded.
     Done(BreakawayCampaignOutcome),
 }
 
-/// Internal transition control: either a live per-tick step passed straight
-/// through, or one evidence record to emit now plus what happens next.
-///
-/// Every phase transition (probe success, and every probe/discovery/
-/// confirmation terminal) reports at least its own phase-owned record before
-/// the campaign either enters the next phase or closes, so `Emit` -- not a
-/// bare `EnterPhase` -- is the only transition variant; see
-/// [`EmitContinuation`]. Both variants are large -- one carries a `Done`-sized
-/// outcome, the other an event plus a phase or a second deferred event -- so
-/// there is no small variant to shrink toward; boxing is unavailable in this
-/// heapless crate, matching the sibling terminal enums here.
 #[allow(clippy::large_enum_variant)]
 enum CampaignAdvance {
-    /// Pass a non-terminal, non-eventful driver result straight through.
     Step(BreakawayCampaignStep),
-    /// Emit `now` immediately; `next` says what happens starting the
-    /// following tick.
     Emit {
         now: BreakawayCampaignEvent,
         next: EmitContinuation,
     },
 }
 
-/// What [`step_breakaway_campaign`] does after an [`CampaignAdvance::Emit`]'s
-/// `now` event has been returned.
-///
-/// `Terminal` carries the campaign closure record as the bare
-/// [`crate::commissioning::types::BreakawayCampaignTerminal`] struct, not the
-/// full [`BreakawayCampaignEvent`] enum: this value is staged in
-/// [`BreakawayCampaign::pending_event`], which -- unlike `now`, always
-/// returned immediately and never retained -- is embedded in [`OuterPhase`]
-/// for a whole extra tick. Sizing that field to `BreakawayCampaignEvent`'s
-/// largest variant (the batch discovery/confirmation terminals, which only
-/// ever appear as an immediate `now`) would blow `OuterPhase`'s stack budget
-/// for a record that is always the small campaign-terminal shape in practice.
 #[allow(clippy::large_enum_variant)]
 enum EmitContinuation {
-    /// Enter this phase; its own `Planned*` interception reports the new
-    /// phase's plan-freeze event(s) on the following tick, before its first
-    /// stroke.
     EnterPhase(BreakawayCampaignPhase),
-    /// Emit the campaign's own closure record on the following tick, then
-    /// return `done` the tick after that.
     Terminal {
         campaign_terminal: crate::commissioning::types::BreakawayCampaignTerminal,
         done: BreakawayCampaignOutcome,
     },
 }
 
-/// Map a non-`BreakawayFound` probe outcome to its campaign terminal.
-///
-/// The three-way fold into `VelocityValidationFailed` below is not a real
-/// collapse: each of these outcomes already gets its own dedicated
-/// `BreakawayTerminalCause` (`ProbeNoRepeatableMotionAtAuthority`,
-/// `ProbeExcursionEvidenceInvalid`, `ProbeAuthorityFailure`) on a separate
-/// wire field, so the shared generic value here loses no information the
-/// host doesn't already have from that field.
 fn probe_terminal(outcome: BreakawayProbeOutcome) -> BreakawayCampaignOutcome {
     match outcome {
         BreakawayProbeOutcome::BreakawayFound(_) => {
@@ -4033,11 +3197,6 @@ fn probe_terminal(outcome: BreakawayProbeOutcome) -> BreakawayCampaignOutcome {
     }
 }
 
-/// Map a non-`Accepted` confirmation outcome to its campaign terminal.
-///
-/// The five-way fold into `VelocityValidationFailed` below is not a real
-/// collapse, for the same reason as `probe_terminal`'s: each outcome already
-/// gets its own dedicated `BreakawayTerminalCause` on a separate wire field.
 fn confirmation_terminal(outcome: BandConfirmationOutcome) -> BreakawayCampaignOutcome {
     match outcome {
         BandConfirmationOutcome::Accepted { .. } => {
@@ -4059,22 +3218,12 @@ fn confirmation_terminal(outcome: BandConfirmationOutcome) -> BreakawayCampaignO
     }
 }
 
-/// Hand out the next monotonic evidence sequence number and advance the
-/// counter, mirroring `VelocityTraceIntegrity::next_evidence_sequence` for
-/// the breakaway campaign, which has no integrity tracker of its own.
 fn next_sequence(evidence_sequence: &mut u16) -> u16 {
     let sequence = *evidence_sequence;
     *evidence_sequence = evidence_sequence.wrapping_add(1);
     sequence
 }
 
-/// Build the streamed raw-observation event for a just-collected stroke.
-///
-/// Attaches the owning plan digest, run sequence, and a fresh evidence sequence
-/// to the driver-local [`CollectedObservation`], exactly as the `*_advance`
-/// helpers attach them to terminal records. The event is returned immediately
-/// as a bare [`BreakawayCampaignStep::Event`]; it is never staged in
-/// `pending_event`, so streaming it retains no state.
 fn raw_observation_step(
     plan_digest: u64,
     phase: super::breakaway_reporting::BreakawayPhase,
@@ -4093,10 +3242,6 @@ fn raw_observation_step(
     BreakawayCampaignStep::Event(BreakawayCampaignEvent::RawObservation(report))
 }
 
-/// Build the streamed rejected-rest event, mirroring [`raw_observation_step`]:
-/// the phase driver names the stroke and its scored evidence, and this attaches
-/// the wire identity (owning phase, plan digest, run sequence, a fresh evidence
-/// sequence).
 fn rest_rejected_step(
     plan_digest: u64,
     phase: super::breakaway_reporting::BreakawayPhase,
@@ -4115,9 +3260,6 @@ fn rest_rejected_step(
     BreakawayCampaignStep::Event(BreakawayCampaignEvent::RecoveryRestRejected(report))
 }
 
-/// Build the streamed origin-mismatch event, mirroring [`rest_rejected_step`]:
-/// the worker supplies the measured discrepancy, the phase driver's session
-/// names the stroke, and this attaches the wire identity.
 fn origin_mismatch_step(
     plan_digest: u64,
     phase: super::breakaway_reporting::BreakawayPhase,
@@ -4140,18 +3282,6 @@ fn origin_mismatch_step(
     BreakawayCampaignStep::Event(BreakawayCampaignEvent::RecoveryOriginMismatch(report))
 }
 
-/// Gate a scored-rest decision down to the rejections worth reporting.
-///
-/// A campaign passes roughly 160 recovery rest gates, so reporting every
-/// decision would cost two orders of magnitude more wire traffic than the
-/// single rejection that ends the campaign is worth. Only
-/// [`RestSelectionDisposition::Rejected`] survives; every acceptance yields
-/// `None` and the driver simply continues, exactly as it did before this
-/// record existed.
-///
-/// `settle` is `(net, min, max)` read straight off the recovery worker's
-/// resources after the step returned, so the bounds are the ones the selector
-/// was handed rather than a later window's.
 fn rest_rejected_input(
     decision: crate::autotune::velocity_measurement::RestSelectionDecision,
     stage: RecoveryStage,
@@ -4190,17 +3320,6 @@ fn rest_rejected_input(
     )
 }
 
-/// Log a rejected scored-rest decision from the per-observation zero-target
-/// settle check (`BeginSettleCapture`/`AnalyzeSettle` in
-/// [`AdditiveDiscoveryState`]).
-///
-/// This is a structurally separate rest check from the one
-/// [`rest_rejected_input`] covers: it runs inline in the discovery ladder's
-/// own per-observation settle, never through the recovery module, and (unlike
-/// the recovery module's own instrumentation) previously discarded its
-/// [`RestSelectionDecision`] on rejection with no evidence at all -- the only
-/// signal was the generic `VelocityRestNotConfirmed` soft-failure line, wire-
-/// indistinguishable from the recovery-module path's own rejections.
 fn settle_rest_rejected_input(
     decision: crate::autotune::velocity_measurement::RestSelectionDecision,
     rung_index: u8,
@@ -4241,14 +3360,6 @@ fn probe_decision_step(
     BreakawayCampaignStep::Event(BreakawayCampaignEvent::ProbeDecision(report))
 }
 
-/// Build the streamed margin event for one collected in-band rung, mirroring
-/// [`raw_observation_step`]: the discovery driver names the collected index, and
-/// this attaches the wire identity (plan digest, run sequence, a fresh evidence
-/// sequence) and builds the record.
-///
-/// A non-nominatable in-band rung legitimately produces no record; that index
-/// consumes no evidence sequence and simply advances the stream on the next
-/// tick.
 fn margin_step(
     plan_digest: u64,
     in_band: &[DiscoveryRungNominationBounds],
@@ -4277,7 +3388,6 @@ fn margin_step(
     }
 }
 
-/// Build the campaign's own closure record.
 fn campaign_terminal_event(
     phase: BreakawayPhase,
     terminal_cause: super::breakaway_reporting::BreakawayTerminalCause,
@@ -4299,34 +3409,6 @@ fn campaign_terminal_event(
     )
 }
 
-/// Report a breakaway-campaign closure record for a fault raised by the
-/// caller's own global outer-safety check -- an invalid motion budget, a
-/// tripped safety envelope, or a safety-check I/O error -- rather than by any
-/// of the three drivers' own internal state machines, while a breakaway
-/// campaign phase is active.
-///
-/// Mirrors [`super::integral_sweep::integral_fault_terminal`]: a mid-campaign
-/// safety fault must still produce a campaign-closure record before the phase fails,
-/// because offline replay (foci-trace `velocity_measurement.py`) requires
-/// exactly one closure record per campaign. Unlike that report-only
-/// phase, the campaign streams multiple wire records per run and cannot
-/// return its closure record directly from here without dropping whatever
-/// record the caller's next tick would otherwise have produced, so this
-/// reuses the campaign's own `pending_event`/`pending_done` deferral -- the
-/// same mechanism [`discovery_construction_fault`] and the other internal
-/// terminal builders use -- rather than a new bespoke `StepResult` path: the
-/// closure event drains on the next tick, and the `OuterFailed`/
-/// `FailedWithSafety` transition follows on the tick after that.
-///
-/// The reported `terminal_cause` reuses the owning phase's own SafetyFault
-/// cause code (`ProbeSafetyFault`/`DiscoverySafetyFault`/
-/// `ConfirmationSafetyFault`), the same code that phase's own internal safety
-/// short-circuit would have reported, so a host decoder sees one safety-fault
-/// taxonomy regardless of whether the fault originated inside the driver or
-/// at the surrounding dispatch boundary.
-///
-/// Falls back to a bare `OuterFailed` if `phase` is not a breakaway campaign,
-/// matching every other fault-terminal reporter's defensive fallback.
 pub(crate) fn breakaway_campaign_fault_terminal(
     phase: &mut OuterPhase,
     error: CommissionError,
@@ -4335,9 +3417,6 @@ pub(crate) fn breakaway_campaign_fault_terminal(
     let OuterPhase::BreakawayCampaign { campaign, .. } = phase else {
         return StepResult::OuterFailed(error);
     };
-    // A fault carrying no safety fault is an internal fault, not a safety
-    // event; reporting it as one puts `*_safety_fault` next to
-    // `has_safety_fault = 0` in the capture.
     let raised_safety = safety_fault.is_some();
     let (owning_phase, terminal_cause) = match campaign.phase() {
         BreakawayCampaignPhase::Probe { .. } => (
@@ -4365,11 +3444,6 @@ pub(crate) fn breakaway_campaign_fault_terminal(
             },
         ),
     };
-    // Report the owning phase's own terminal before the campaign closure. For
-    // discovery that record carries `collected_count`, so a fault that
-    // destroyed measured in-band rungs is distinguishable from one that had
-    // collected nothing, and `has_safety_fault`, which the host's safety-fault
-    // gate reads before it will surface the retained evidence.
     let phase_terminal = match &campaign.phase {
         BreakawayCampaignPhase::Discovery { session, .. } => {
             let sequence = next_sequence(&mut campaign.evidence_sequence);
@@ -4386,8 +3460,6 @@ pub(crate) fn breakaway_campaign_fault_terminal(
                 sequence,
             ))
         }
-        // Probe and confirmation have no collected-rung evidence to preserve,
-        // and their terminal records are not what the host gate consults.
         BreakawayCampaignPhase::Probe { .. } | BreakawayCampaignPhase::Confirmation { .. } => None,
     };
     let campaign_terminal = campaign_terminal_event(
@@ -4408,17 +3480,6 @@ pub(crate) fn breakaway_campaign_fault_terminal(
     StepResult::ReadyNow
 }
 
-/// True when a breakaway campaign is holding a deferred terminal record or
-/// outcome that still needs to drain through [`step_breakaway_campaign`].
-///
-/// The outer dispatcher consults this before re-running its own outer-safety
-/// check. A *persistent* fault (an invalid motion budget, an elapsed-duration
-/// violation) re-fires that check every tick; without this guard the dispatcher
-/// would call [`breakaway_campaign_fault_terminal`] again on each of those
-/// ticks, overwriting `pending_event`/`pending_done` before the campaign driver
-/// ever runs to drain them -- so the closure record would never reach the wire
-/// and the phase would never fail out. Draining first lets the deferred closure
-/// emit and the `OuterFailed`/`FailedWithSafety` transition follow.
 pub(crate) fn breakaway_campaign_pending_terminal(phase: &OuterPhase) -> bool {
     matches!(
         phase,
@@ -4427,13 +3488,6 @@ pub(crate) fn breakaway_campaign_pending_terminal(phase: &OuterPhase) -> bool {
     )
 }
 
-/// A discovery plan-time construction failure never freezes a discovery plan
-/// (`plan_additive_discovery_ladder` refused before `AdditiveDiscoveryPlan`
-/// existed), so there is no discovery-owned terminal record to report -- only
-/// the campaign's own closure record, with `BreakawayPhase::ProportionalResponseDiscovery` and
-/// [`super::breakaway_reporting::BreakawayTerminalCause::DiscoverySafetyFault`],
-/// matching [`discovery_terminal_cause`]'s own mapping for
-/// [`AdditiveDiscoveryOutcome::SafetyFault`].
 fn discovery_construction_fault(
     inputs: &BreakawayCampaignInputs,
     evidence_sequence: &mut u16,
@@ -4456,33 +3510,12 @@ fn discovery_construction_fault(
     }
 }
 
-/// Route a finished discovery outcome into confirmation, or into its terminal.
-///
-/// Every discovery outcome -- whether a discovery-run `Done` or a discovery
-/// plan-time construction error -- is routed through the single
-/// [`begin_band_confirmation`] gate, so the discovery-to-confirmation mapping
-/// (including the impossible-outcome-to-`InvalidSchedule` safety fault) has
-/// exactly one implementation. `discovery_plan_digest` is only consulted on the
-/// `Ready` path; terminal outcomes ignore it.
-///
-/// The zero-stroke confirmation outcomes reachable here
-/// ([`BandConfirmationOutcome::TargetBandNotReachedAtAuthority`],
-/// [`BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery`], and the
-/// impossible-outcome safety fault) never freeze a confirmation plan, so --
-/// mirroring [`discovery_construction_fault`] -- only the campaign's own
-/// closure record is reported, not a zero-stroke confirmation terminal.
 fn route_discovery_outcome(
     outcome: AdditiveDiscoveryOutcome,
     discovery_plan_digest: u64,
     inputs: &BreakawayCampaignInputs,
     evidence_sequence: &mut u16,
 ) -> EmitContinuation {
-    // The Integral transition-capability ceiling for the live acquisition
-    // context. Nomination refuses any candidate above it, so a confirmed gain
-    // can never reach `route_confirmed_accept` only to be refused without
-    // motion. The acquisition context is validated upstream, so an error here
-    // is a should-never; report it as an internal planning fault rather than
-    // masking it as a legitimate no-transition-capable-candidate refusal.
     let entry = match max_transition_capable_p(
         inputs.target_velocity_rpm.raw(),
         inputs.encoder_counts_per_rev,
@@ -4532,21 +3565,6 @@ fn route_discovery_outcome(
     }
 }
 
-/// Route an accepted held-out confirmation through the ONE authorized Integral
-/// chain: [`bind_breakaway_integral_authority`] -> `ConfirmedAcquisitionDigest`
-/// token -> [`plan_breakaway_velocity_integral_response`], which builds the
-/// `IntegralAcquisitionAuthority` internally from the token.
-///
-/// This is the sole breakaway path from a confirmed acceptance to an Integral
-/// plan. It is reachable only from [`BandConfirmationOutcome::Accepted`]; it
-/// takes the acceptance and its frozen plan by value, so no failure or
-/// inconclusive confirmation terminal can even be expressed as an argument, and
-/// no other campaign terminal mints a confirmation token. The 6a
-/// constructor still applies its own plan-time safety admission and MAY refuse
-/// Integral WITHOUT motion; that refusal is returned here as a
-/// [`BreakawayCampaignOutcome::Terminal`], never bypassed. This function touches
-/// no backend excitation and commands no motion; it only reads the frozen PWM
-/// timebase and encoder resolution.
 fn route_confirmed_accept<B: CommissioningBackend>(
     acceptance: BandConfirmationAcceptance,
     plan: BandConfirmationPlan,
@@ -4563,11 +3581,6 @@ fn route_confirmed_accept<B: CommissioningBackend>(
             };
         }
     };
-    // The gate builds the `IntegralAcquisitionAuthority` itself from the token, so no
-    // pre-built authority is handed across. `channel` and the plan-time
-    // PWM/encoder freeze travel in the acquisition context; the gate rejects
-    // if the plan-time physical parameters diverge from the live ones passed
-    // below.
     let context = AcquisitionContext {
         planned_velocity_mrev_s: inputs.planned_velocity_mrev_s,
         target_velocity_rpm: inputs.target_velocity_rpm.raw(),
@@ -4597,14 +3610,6 @@ fn route_confirmed_accept<B: CommissioningBackend>(
     }
 }
 
-/// Build the additive discovery session from a resolved probe breakaway.
-///
-/// `authority_ceiling = p_top` (the retained plan-time ceiling), per the spec's
-/// plan-time authority rule: the Integral transition-authority guard is applied
-/// only at Integral, by [`plan_breakaway_velocity_integral_response`], never as a
-/// pre-sweep discovery ceiling. Dedicated plan-time discovery refusals retain
-/// their discovery-owned terminal causes; structural failures retain the generic
-/// discovery safety fault.
 fn enter_discovery(
     resolved: &ResolvedUpwardBreakaway,
     probe_plan: &UpwardBreakawayProbePlan,
@@ -4698,9 +3703,6 @@ fn enter_discovery(
     }
 }
 
-/// Build the campaign's probe-success advance: report the resolved rung now,
-/// then enter discovery (or report its
-/// construction failure) starting the following tick.
 fn probe_success_advance(
     resolved: ResolvedUpwardBreakaway,
     probe_plan: &UpwardBreakawayProbePlan,
@@ -4720,9 +3722,6 @@ fn probe_success_advance(
     CampaignAdvance::Emit { now, next }
 }
 
-/// Build the campaign's probe-failure advance: report the probe's own
-/// terminal now, then the campaign's closure record starting the following
-/// tick.
 fn probe_failure_advance(
     outcome: BreakawayProbeOutcome,
     probe_plan: &UpwardBreakawayProbePlan,
@@ -4755,11 +3754,6 @@ fn probe_failure_advance(
     }
 }
 
-/// Build the campaign's discovery-terminal advance: report every collected
-/// in-band rung's margin, the rung-zero diagnostic (when available), and the
-/// discovery terminal itself now, then route into confirmation -- or, for a
-/// zero-stroke confirmation outcome, the campaign's closure record -- starting
-/// the following tick.
 fn discovery_done_advance(
     outcome: AdditiveDiscoveryOutcome,
     session: &AdditiveDiscoverySession,
@@ -4784,20 +3778,11 @@ fn discovery_done_advance(
             sequence,
         )
     });
-    // Per-rung margins already streamed one per tick from `StreamMargins` before
-    // this terminal, so the terminal event carries only the rung-zero diagnostic
-    // and the terminal record (two frames, no burst).
     let now = BreakawayCampaignEvent::DiscoveryTerminal {
         terminal,
         rung_zero,
     };
     let plan_digest = session.plan.plan_digest;
-    // Every discovery outcome other than a nominating success or the
-    // spec-section-9 current-headroom reclassification is a discovery-OWNED
-    // terminal: keep its own specific discovery cause on the campaign's
-    // closure record too, rather than the generic `SafetyFault`
-    // `begin_band_confirmation`'s impossible-outcome gate collapses every one
-    // of them to.
     let next = match outcome {
         AdditiveDiscoveryOutcome::TargetBandSelected(_)
         | AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand => {
@@ -4865,9 +3850,6 @@ fn discovery_done_advance(
     CampaignAdvance::Emit { now, next }
 }
 
-/// One direction's fresh confirmation evidence, assembled from a live
-/// session's accumulator -- the same construction
-/// [`evaluate_confirmation_session`] uses to judge acceptance.
 fn confirmation_directional_input(
     session: &BandConfirmationSession,
     direction: VelocityDirection,
@@ -4883,9 +3865,6 @@ fn confirmation_directional_input(
     }
 }
 
-/// No observations collected: reported for a confirmation terminal whose
-/// masks are all zero (see [`confirmation_zero_stroke_terminal_report`]), so
-/// the event's own fan-out reports zero strokes too, never a partial session.
 const EMPTY_CONFIRMATION_DIRECTIONAL_INPUT: ConfirmationDirectionalInput =
     ConfirmationDirectionalInput {
         consensus: DirectionalConsensus {
@@ -4901,10 +3880,6 @@ const EMPTY_CONFIRMATION_DIRECTIONAL_INPUT: ConfirmationDirectionalInput =
         observations: [None; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
     };
 
-/// Build the campaign's confirmation-terminal advance: report every fresh
-/// held-out stroke's response interval and the confirmation terminal itself
-/// now, then the campaign's closure record starting the following tick,
-/// routing an acceptance through the Integral token chain.
 fn confirmation_done_advance<B: CommissioningBackend>(
     outcome: BandConfirmationOutcome,
     session: &BandConfirmationSession,
@@ -4946,17 +3921,6 @@ fn confirmation_done_advance<B: CommissioningBackend>(
         }
         BandConfirmationOutcome::ConfirmationEvidenceExcluded
         | BandConfirmationOutcome::SafetyFault { .. } => {
-            // Unlike the genuinely zero-stroke outcomes below, both exclusion
-            // and a safety fault can strike after earlier strokes already
-            // folded evidence into the session's accumulators --
-            // `confirmation_fault`/`confirmation_safety_fault` are reachable
-            // from every stroke state, including `Advance`'s successors --
-            // so report that partial evidence rather than the empty fixture.
-            // Without this, a mid-block safety fault would falsely claim no
-            // confirmation work happened, exactly the evidence loss fixed for
-            // `ConfirmationEvidenceExcluded`. `has_safety_fault` is threaded
-            // through so a `SafetyFault`'s retained-evidence flag survives
-            // here the same way it does on the zero-stroke path.
             let forward = confirmation_directional_input(session, VelocityDirection::Forward);
             let reverse = confirmation_directional_input(session, VelocityDirection::Reverse);
             let terminal = confirmation_partial_evidence_terminal_report(
@@ -5035,13 +3999,6 @@ fn confirmation_done_advance<B: CommissioningBackend>(
     }
 }
 
-/// If the active phase is at its `Planned*` state (frozen but no stroke
-/// issued yet), report that phase's plan-freeze event(s) and advance past the
-/// interception point, the same way a phase stepper's `Setup` arm does: mutate
-/// the state and return the event in the same tick. The probe's next tick performs
-/// its motion-free safety setup; discovery and confirmation continue into their
-/// first stroke. Returns `None` once the active phase has left its `Planned*`
-/// state, so the caller falls through to the normal per-tick driver dispatch.
 fn emit_phase_planned_event(campaign: &mut BreakawayCampaign) -> Option<BreakawayCampaignStep> {
     let BreakawayCampaign {
         inputs,
@@ -5121,41 +4078,6 @@ fn checkpoint_event_routing(step: BreakawayCampaignStep) -> BreakawayCampaignSte
     step
 }
 
-/// Advance the breakaway campaign by one cooperative step.
-///
-/// Sequences the three committed drivers -- probe, additive discovery, held-out
-/// confirmation -- through the ONE borrowed `workspace`, then routes an accepted
-/// confirmation through the Integral token chain. `safety` and `workspace` are
-/// caller-owned; neither is allocated here. The caller runs
-/// [`crate::commissioning::outer::check_outer_safety`] against `safety` between
-/// ticks, exactly as it does for every other outer phase; this function never
-/// performs that check itself, matching the three underlying drivers.
-///
-/// Each MOVING state is reachable only after its owning `Planned` event: a new
-/// phase is always entered at its `PlannedProbe`/`PlannedDiscovery`/
-/// `PlannedConfirmation` state, and entering a phase returns `ReadyNow` without
-/// issuing that phase's first stroke, so the phase plan is always frozen before
-/// its first stroke.
-///
-/// Most evidence emission is layered on top of this same sequencing rather than
-/// woven into the three drivers' own per-tick state machines: the frozen plan
-/// is available in full at phase entry (just before the first stroke) and the
-/// terminal evidence just after the driver's last stroke, so
-/// [`emit_phase_planned_event`] intercepts the former and the `*_advance`
-/// helpers (called from the `Done` arms below) build the latter, deferring
-/// anything beyond one record per tick through
-/// `campaign.pending_event`/`campaign.pending_done` (drained at the top of
-/// this function, before the active phase driver runs again).
-///
-/// The one exception is the raw per-observation evidence: the discovery and
-/// confirmation drivers surface an [`AdditiveDiscoveryStep::Observation`]/
-/// [`BandConfirmationStep::Observation`] on the tick each stroke completes, and
-/// [`raw_observation_step`] turns it into a streamed
-/// [`BreakawayCampaignEvent::RawObservation`] right then -- before the atom is
-/// folded and reduced to bounds. This is deliberately at collection time, one
-/// observation per tick, never bundled into a terminal-time burst, so an
-/// offline auditor sees the raw inputs even though the firmware retains only
-/// the reduced bounds.
 pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
     campaign: &mut BreakawayCampaign,
     workspace: &mut BreakawayProbeWorkspace,
@@ -5370,20 +4292,6 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
     checkpoint_event_routing(step)
 }
 
-/// Engine adapter: step the embedded breakaway campaign by one cooperative tick,
-/// then translate its terminal into the engine's [`StepResult`].
-///
-/// On an accepted, admitted confirmation this performs the Confirmed -> Integral
-/// hand-off in place: it replaces the [`OuterPhase::BreakawayCampaign`] with the
-/// existing [`OuterPhase::VelocityIntegral`] variant carrying the exact Integral
-/// plan, so
-/// Integral execution state lives in that variant, off the campaign variant's
-/// retained budget. Every non-accept campaign terminal -- including an accept
-/// the 6a constructor refused WITHOUT motion -- fails the outer phase and never
-/// begins Integral, so no failure or inconclusive path can reach an Integral
-/// stroke. Safe-state restoration on the resulting `Failed`/`FailedWithSafety`
-/// terminal happens at the surrounding engine/dispatch boundary, as it does for
-/// every other outer phase.
 pub(crate) async fn step_breakaway_campaign_with_trace<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     backend: &mut B,
@@ -5421,11 +4329,6 @@ pub(crate) async fn step_breakaway_campaign_with_trace<B: CommissioningBackend>(
             crate::diagnostic::complete_breakaway_campaign(
                 crate::diagnostic::BreakawayCheckpoint::IntegralHandedOff,
             );
-            // Report the plan with the transition. The combined path emits its
-            // Integral plan alongside the equivalent transition; returning a bare
-            // `ReadyNow` here left the host assembler with no plan at all, so
-            // its first Integral observation failed `_require_plan` with
-            // "integral-response evidence arrived before exact plan".
             StepResult::BreakawayIntegralPlanReady { run_sequence, plan }
         }
         BreakawayCampaignStep::Done(BreakawayCampaignOutcome::Terminal {

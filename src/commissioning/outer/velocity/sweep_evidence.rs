@@ -39,8 +39,7 @@ pub struct VelocityObservationInput {
     pub initial_lead_in: bool,
     /// Drift across the regression span, parts per million of settled rate.
     ///
-    /// Sourced from the suffix on a usable result and from the completion
-    /// envelope otherwise. [`u32::MAX`] means no finite reportable ratio.
+    /// [`u32::MAX`] means no finite ratio.
     pub drift_ratio_ppm: u32,
     /// Post-fit lag-one state: 0 unavailable, 1 failed, 2 passed.
     pub post_fit_lag_one_state: u8,
@@ -100,10 +99,7 @@ pub struct VelocityObservationSummary {
     pub predicted_torque_target_abs: u16,
     /// Drift across the regression span, parts per million of settled rate.
     ///
-    /// Present on every observation, not only rejections, so the tunability of
-    /// the moving-stroke drift bound can be judged from passing observations
-    /// too. [`u32::MAX`] means no finite reportable ratio, which is what the
-    /// paths that never reached a regression report.
+    /// [`u32::MAX`] means no finite ratio.
     pub drift_ratio_ppm: u32,
     /// Whether this was the exceptional first campaign observation.
     pub initial_lead_in: bool,

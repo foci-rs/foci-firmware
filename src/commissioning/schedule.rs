@@ -7,47 +7,28 @@ use crate::commissioning::types::{
 };
 
 /// Nonterminal commissioning evidence emitted independently of scheduling.
-// The bounded velocity report remains inline so scheduling stays heap-free and `Copy`.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CommissionEvent {
     /// The engine entered a new commissioning phase.
     PhaseChanged {
-        /// Object id of the commissioning channel.
         oid: u8,
-        /// Newly active phase.
         phase_id: CommissionPhase,
         /// Engine kind used to route the progress reply.
         engine_kind: EngineKind,
     },
     /// Streamed report-only Integral velocity-integral evidence.
     VelocityIntegral {
-        /// Object id of the commissioning channel.
         oid: u8,
-        /// Transport-neutral evidence group.
         event: VelocityIntegralEvent,
     },
     /// Streamed breakaway-campaign evidence.
-    ///
-    /// Without this the scheduled tick -- the only path a cooperative campaign
-    /// runs on -- has no way to turn campaign evidence into a Klipper reply, so
-    /// the host's campaign assembler never completes and refuses every later
-    /// Integral reply.
     BreakawayCampaign {
-        /// Object id of the commissioning channel.
         oid: u8,
-        /// Transport-neutral evidence group.
         event: crate::commissioning::types::BreakawayCampaignEvent,
     },
     /// The exact Integral plan an accepted breakaway campaign handed off to.
-    ///
-    /// Carried as its own variant because the host assembler refuses every
-    /// Integral observation until it has seen a complete plan, and no
-    /// [`VelocityIntegralEvent`] delivers one. A breakaway campaign reaches
-    /// Integral on the scheduled-tick path, which only speaks
-    /// [`CommissionEvent`], so it needs this route.
     VelocityIntegralPlan {
-        /// Object id of the commissioning channel.
         oid: u8,
         /// Campaign run sequence the Integral evidence chains to.
         run_sequence: u32,
@@ -101,36 +82,23 @@ impl CommissionTerminal {
 #[allow(clippy::large_enum_variant)]
 pub enum CommissionPoll {
     /// Poll again without inserting an artificial delay.
-    ReadyNow {
-        /// Optional nonterminal event produced by this poll.
-        event: Option<CommissionEvent>,
-    },
+    ReadyNow { event: Option<CommissionEvent> },
     /// Poll again at a strictly future absolute microsecond timestamp.
     At {
         /// Absolute timestamp in the [`crate::commissioning::CommissionTiming`] domain.
         timestamp_us: u64,
-        /// Optional nonterminal event produced by this poll.
         event: Option<CommissionEvent>,
     },
     /// The engine reached a terminal result.
-    Terminal {
-        /// Final result for dispatch and reply generation.
-        result: CommissionTerminal,
-    },
+    Terminal { result: CommissionTerminal },
 }
 
 /// Advance a due periodic deadline to the first strictly future grid point.
 ///
-/// Callers must establish `now_us >= previous_deadline_us` before invoking
-/// this helper. An early invocation is rejected.
-///
 /// # Errors
 ///
-/// Returns [`CommissionError::SchedulePeriodZero`],
-/// [`CommissionError::ScheduleEarlyInvocation`], or
-/// [`CommissionError::ScheduleDeadlineOverflow`]. These are separate codes
-/// because they point at different faults: a misconfigured grid, a caller that
-/// polled early, and an unrepresentable deadline.
+/// Returns [`CommissionError::SchedulePeriodZero`], [`CommissionError::ScheduleEarlyInvocation`]
+/// (`now_us < previous_deadline_us`), or [`CommissionError::ScheduleDeadlineOverflow`].
 pub(crate) fn next_grid_deadline(
     previous_deadline_us: u64,
     period_us: u64,
@@ -139,9 +107,6 @@ pub(crate) fn next_grid_deadline(
     if period_us == 0 {
         return Err(CommissionError::SchedulePeriodZero);
     }
-    // Distinguished from overflow: an early invocation means the caller polled
-    // before its previous deadline was due, which is a sequencing error and
-    // points somewhere entirely different from an unrepresentable value.
     let elapsed_us = now_us
         .checked_sub(previous_deadline_us)
         .ok_or(CommissionError::ScheduleEarlyInvocation)?;
@@ -202,11 +167,6 @@ pub fn adapt_step_result(
                 event: Some(CommissionEvent::BreakawayCampaign { oid, event }),
             })
         }
-        // The hand-off already installed the Integral phase, so the engine stays
-        // immediately runnable -- but the plan must ride along as an event. A
-        // bare `ReadyNow` here drops it, and the host then fails its first
-        // Integral observation with "integral-response evidence arrived before
-        // exact plan".
         StepResult::BreakawayIntegralPlanReady { run_sequence, plan } => {
             let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;
             Ok(CommissionPoll::ReadyNow {
@@ -253,11 +213,6 @@ mod tests {
         assert_eq!(next_grid_deadline(1_000, 200, 1_000), Ok(1_200));
     }
 
-    /// A dropped campaign event never reaches the host, so the host's campaign
-    /// assembler never completes and every later Integral reply is refused as
-    /// arriving "before an accepted campaign terminal". The scheduled tick is
-    /// the only path a cooperative campaign runs on, so this is the sole route
-    /// its evidence has.
     #[test]
     fn breakaway_campaign_evidence_reaches_the_host() {
         use crate::commissioning::types::{BreakawayCampaignEvent, BreakawayProbeTerminal};

@@ -5,8 +5,6 @@ use crate::commissioning::stimulus::trapezoid::StrokeProfile;
 
 const MICROS_PER_MILLI: u32 = 1_000;
 
-/// The emitted stroke's boundaries, captured once per stroke from the
-/// profile so the capture windows follow the schedule the ISR runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct StrokeTiming {
     pub ramp_end_us: u32,
@@ -26,8 +24,6 @@ impl StrokeTiming {
     }
 }
 
-/// Smallest whole-millisecond sample period that fits `stroke_us` into
-/// the capture buffer.
 pub(crate) fn sample_period_us(stroke_us: u32) -> u32 {
     let samples = TRANSIENT_LEN as u32;
     let raw = stroke_us.div_ceil(samples);
@@ -82,14 +78,8 @@ pub(crate) fn leg_metrics(
     let peak_abs = leg.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
     let cruise_abs_sum: u64 = cruise.iter().map(|s| u64::from(s.unsigned_abs())).sum();
     let cruise_mean_abs = u32::try_from(cruise_abs_sum / cruise.len() as u64).unwrap_or(u32::MAX);
-    // RMS is about the signed mean: it measures ripple around the lead.
     let cruise_sum: i64 = cruise.iter().map(|&s| i64::from(s)).sum();
     let cruise_mean = cruise_sum / cruise.len() as i64;
-    // Widened to i128/u128: an i32 sample can sit up to ~2^32 away from
-    // cruise_mean, and squaring that difference is ~2^64 -- one past what a
-    // u64 accumulator (let alone the running sum over up to TRANSIENT_LEN
-    // samples) can represent. i128 keeps the square and the summed total
-    // far below its range for every representable i32 input.
     let squares: u128 = cruise
         .iter()
         .map(|&s| {
@@ -99,17 +89,6 @@ pub(crate) fn leg_metrics(
         .sum();
     let cruise_rms = u32::try_from((squares / cruise.len() as u128).isqrt()).unwrap_or(u32::MAX);
 
-    // Steady-state reference for overshoot: the mean of the cruise window's
-    // last 10% (at least 1 sample), the same convention `position_tune/mod.rs`
-    // itself used before this module replaced its floor/ceiling reduction --
-    // steady-state must be measured
-    // after the loop has settled, not blended with a window that may still
-    // be transient. But the cruise window's own *final* sample sits right at
-    // the reversal boundary, exactly where a reversal-adjacent overshoot
-    // spike lands, so it is trimmed out of the tail average before that
-    // average is taken (leaving at least 1 sample): an un-trimmed tail would
-    // let the spike itself pull its own reference toward it and undercount
-    // the overshoot it is meant to measure.
     let tail_len = (cruise.len() / 10).max(1);
     let tail = &cruise[cruise.len() - tail_len..];
     let trim = tail.len().saturating_sub(1).min(2);
@@ -161,9 +140,6 @@ pub(crate) fn median3(mut values: [u32; 3]) -> u32 {
 mod tests {
     use super::*;
 
-    /// Boundaries as a 1b profile would report them for the 400 mm/s
-    /// worked example (values rounded for the test; only the structure
-    /// matters here).
     fn fast_timing() -> StrokeTiming {
         StrokeTiming {
             ramp_end_us: 50_000,
@@ -214,8 +190,6 @@ mod tests {
 
     #[test]
     fn cruise_mean_is_the_mean_of_absolute_errors_not_the_absolute_mean() {
-        // +30 and -30 alternating: the signed mean is 0, the mean absolute
-        // error is 30, and the bound must see 30.
         let mut samples = std::vec![0_i32; 40];
         for (i, s) in samples.iter_mut().enumerate() {
             *s = if i % 2 == 0 { 30 } else { -30 };
@@ -232,19 +206,17 @@ mod tests {
 
     #[test]
     fn leg_metrics_measure_mean_peak_overshoot_and_rms() {
-        // Approach from below to a steady +40, one overshoot to +52 at the
-        // reversal end, a peak of |-90| during the ramp.
         let mut samples = std::vec![0_i32; 100];
         for (i, s) in samples.iter_mut().enumerate().take(25) {
             *s = -(i as i32) * 4;
-        } // ramp: down to -96
+        }
         for s in samples.iter_mut().take(75).skip(25) {
             *s = 40;
-        } // cruise at +40
-        samples[74] = 52; // overshoot past steady
+        }
+        samples[74] = 52;
         for s in samples.iter_mut().skip(75) {
             *s = 10;
-        } // decel
+        }
         let window = LegWindow {
             start: 0,
             cruise_start: 25,
@@ -260,12 +232,6 @@ mod tests {
 
     #[test]
     fn cruise_rms_does_not_overflow_a_u64_accumulator() {
-        // Half the window at i32::MIN, half at i32::MAX: both are values a
-        // caller can legally pass. cruise_mean truncates to 0, so each
-        // squared deviation is ~2^62 and the summed total across all 256
-        // samples is ~1.18e21 -- about 64x past u64::MAX. A `u64` squares
-        // accumulator panics (debug) or silently wraps (release) on this
-        // input; the widened i128/u128 accumulator does not.
         let mut samples = std::vec![0_i32; 256];
         for (i, s) in samples.iter_mut().enumerate() {
             *s = if i < 128 { i32::MIN } else { i32::MAX };

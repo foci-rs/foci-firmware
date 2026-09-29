@@ -15,28 +15,9 @@ pub const FIRST_CAP_SAFE_PROPORTIONAL_SCHEMA_REVISION: u16 = 10;
 /// Live Integral schema for the shared Integral continuation planner.
 pub const INTEGRAL_PLAN_SCHEMA_REVISION: u16 = 13;
 /// Live Proportional schema for the breakaway-seeded campaign.
-///
-/// The breakaway probe, additive discovery, and held-out confirmation plans
-/// replace the combined proportional sweep entirely; there is no Proportional
-/// sweep plan under this schema. Historical
-/// schemas 8 through [`PROPORTIONAL_PLAN_SCHEMA_REVISION`] keep their exact
-/// digest and behavior; this schema is additive.
 pub const BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION: u16 = 17;
-/// Live Integral schema for the breakaway-seeded campaign.
-///
-/// An Integral plan built under this schema binds the accepted
-/// [`super::band_confirmation::BandConfirmationPlan`] digest instead of a
-/// Proportional sweep digest -- see
-/// `super::integral_plan::bind_breakaway_integral_authority`. Historical
-/// schemas up to and including [`INTEGRAL_PLAN_SCHEMA_REVISION`] keep
-/// their exact digest and behavior; this schema is additive.
-///
-/// 16 -> 18 (17 belongs to the half-octave standalone range): rung-origin
-/// recovery was unified onto the stabilized rest schedule, so every recovery
-/// that completes a scored rest now emits a rest record where schema-16
-/// captures emitted one only for fixed-gain-amplitude runs. That is an evidence
-/// grammar change, not a measurement rule change, so offline decoding has to
-/// be able to tell the two apart rather than widen the existing range.
+/// Live Integral schema for the breakaway-seeded campaign; binds the accepted
+/// [`super::band_confirmation::BandConfirmationPlan`] digest instead of a Proportional sweep digest.
 pub const BREAKAWAY_INTEGRAL_SCHEMA_REVISION: u16 = 18;
 
 const I_RESPONSE_TARGET_PERCENT: i128 = 98;

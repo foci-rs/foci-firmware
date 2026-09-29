@@ -149,9 +149,8 @@ pub(crate) struct RecoveryOriginMismatchEvidence {
 pub(crate) enum RungOriginRecoveryStep {
     ReadyNow,
     At(u64),
-    /// The origin moved out from under this recovery. Diagnostic only: the
-    /// worker reports the measured discrepancy now and raises the fault it
-    /// explains on the following tick, so the fault itself is unchanged.
+    /// The origin moved out from under this recovery; diagnostic only, the fault follows on
+    /// the next tick.
     OriginMismatch(RecoveryOriginMismatchEvidence),
     RestSelection {
         decision: crate::autotune::velocity_measurement::RestSelectionDecision,
@@ -264,9 +263,7 @@ pub(crate) struct RungOriginRecoveryRuntime {
     authority_source: RecoveryBindingSource,
     plan: RungOriginRecoveryPlan,
     runtime_us: u32,
-    /// Offset the moving phase drives to before commanding zero: the Zone-3
-    /// target for an above-band return, the recenter target for a Zone-2
-    /// return. Carried per attempt so `Observe` does not assume a single zone.
+    /// Offset the moving phase drives to before commanding zero.
     moving_target_counts: u32,
     flags: u8,
     recovery_started_us: ExactU64Parts,
@@ -300,35 +297,9 @@ impl RungOriginRecoveryRuntime {
 
     /// Construct one checked recovery attempt without touching hardware.
     ///
-    /// # Unreachable preconditions
+    /// # Errors
     ///
-    /// Every branch of the five-way precondition `if` below, and the
-    /// `lower_rate_q`/`authority_source` mismatch arm that follows it, is
-    /// unreachable from every real call site (`robustness_reversal.rs`,
-    /// `breakaway_campaign.rs`'s three `AnalyzeSettle` sites, and
-    /// `integral_sweep.rs`'s `plan_integral_recovery`):
-    ///
-    /// - `p == PidPGain::ZERO`: every call site's `p` traces back to either
-    ///   `plan_band_confirmation`'s nonzero-`nominated_p` guard or
-    ///   `build_gain_ladder_generic`/`plan_additive_discovery_ladder`'s own
-    ///   nonzero-floor guards.
-    /// - `target_velocity_rpm.raw() <= 0` and `planned_velocity_mrev_s == 0`
-    ///   share one root (a zero commissioning amplitude) already excluded,
-    ///   earlier in the same call chain, by an existing `?`-propagated zero
-    ///   check before `RungOriginRecoveryRuntime::new` is ever reached.
-    /// - `plan.origin_band_counts == 0`: `plan_rung_origin_recovery` derives
-    ///   this as a product/`div_ceil` of two values already guarded nonzero,
-    ///   which can never round down to zero.
-    /// - `start_offset_counts == i32::MIN`: `start_offset_counts` is
-    ///   `safety.unwrapped_position`, which the outer dispatch loop's
-    ///   `check_outer_safety` already faults on (via a distinct
-    ///   `OuterSafetyFault` path) well before it could approach `i32::MIN` --
-    ///   this one depends on that check continuing to run ahead of recovery
-    ///   construction, not on arithmetic alone.
-    /// - The rate/authority mismatch: every call site constructs the pair
-    ///   consistently (`Some`+`SettledRate` only when the rate is proven
-    ///   nonzero, `None`+`MissingRate` otherwise); no call site can produce
-    ///   the mismatched combination.
+    /// Returns [`CommissionError::InvalidSchedule`] for zero or inconsistent inputs.
     pub(crate) fn new(
         config: RungOriginRecoveryConfig,
         plan: RungOriginRecoveryPlan,
@@ -350,7 +321,6 @@ impl RungOriginRecoveryRuntime {
         let recenter_target = recovery_recenter_target_counts(plan.origin_band_counts);
         let (state, runtime_us, lower_rate_q, moving_target_counts) =
             if offset_abs <= recenter_target {
-                // Zone 1: already within the tight recenter target -- no motion.
                 (
                     RecoveryState::Terminal {
                         outcome: RungOriginRecoveryOutcome::AlreadyCentered,
@@ -361,12 +331,6 @@ impl RungOriginRecoveryRuntime {
                     recenter_target,
                 )
             } else if offset_abs <= plan.origin_band_counts {
-                // Zone 2: dormant-but-drifted. Re-center toward origin when the
-                // settled-rate authority to move inward is held. Without a rate the
-                // primitive cannot move at all, so report a surfaced containment
-                // rather than a false AlreadyCentered -- an in-band offset above the
-                // recenter target is drift by definition, and reporting it centered
-                // would silently preserve the accumulation this zone exists to bound.
                 match lower_rate_q {
                     Some(rate) => {
                         let return_distance = offset_abs - recenter_target;
@@ -397,13 +361,6 @@ impl RungOriginRecoveryRuntime {
                     ),
                 }
             } else {
-                // Zone 3: existing absolute-band moving recovery -- unchanged.
-                // Unreachable: recovery_return_distance_counts's only two
-                // `None` conditions (start_offset_counts == i32::MIN,
-                // origin_band_counts == 0) are both already excluded by this
-                // function's own upfront five-way precondition guard
-                // (RungOriginRecoveryRuntime::new, above) before Zone 3 can
-                // ever run. Defensive check retained.
                 let return_distance = recovery_return_distance_counts(
                     config.start_offset_counts,
                     plan.origin_band_counts,
@@ -506,9 +463,6 @@ impl RungOriginRecoveryRuntime {
     }
 
     /// Raw velocity P gain this recovery is running under.
-    ///
-    /// Exposed so a phase driver can name the gain on a diagnostic record
-    /// without reaching into the runtime's private plan state.
     pub(crate) fn p_raw(&self) -> u16 {
         self.p.raw()
     }
@@ -638,33 +592,22 @@ pub(crate) const RECOVERY_BAND_MARGIN_DIVISOR: u32 = 8;
 
 /// Return the offset the moving phase drives to before commanding zero.
 ///
-/// The moving phase stops on the first sample at or inside this target, which
-/// sits inside [`RungOriginRecoveryPlan::origin_band_counts`] rather than on its
-/// edge. Position moves outward between that sample and the post-settle
-/// acceptance test, so stopping at the edge leaves the outcome to that
-/// movement: measured across 29 moving recoveries, the final position was
-/// outward of the closest approach every time, by 11 to 50 counts.
-///
-/// The band is unchanged. It is the settle travel reserve expressed in counts
-/// and remains the acceptance test, the return-distance basis, and the
-/// already-centered short-circuit; only the stopping point moves.
+/// Sits inside [`RungOriginRecoveryPlan::origin_band_counts`] rather than on its edge; the
+/// band remains the acceptance test.
 pub(crate) const fn recovery_moving_target_counts(origin_band_counts: u32) -> u32 {
     origin_band_counts - origin_band_counts / RECOVERY_BAND_MARGIN_DIVISOR
 }
 
 /// Fraction of the origin band a dormant-but-drifted axis is re-centered to.
 ///
-/// The middle recovery zone pulls an axis resting between this target and the
-/// band back toward origin, bounding cumulative per-rung drift that the
-/// absolute-band check alone leaves unbounded. `/6` keeps the target well below
-/// a single rung's drift while leaving margin to the band.
+/// The middle recovery zone pulls an axis resting between this target and the band back
+/// toward origin.
 pub(crate) const RECOVERY_RECENTER_DIVISOR: u32 = 6;
 
 /// Return the offset the middle recovery zone re-centers a drifted axis to.
 ///
-/// Floor division scales with band and encoder resolution. It is strictly
-/// inside the band for any band `>= RECOVERY_RECENTER_DIVISOR`; a smaller band
-/// floors to 0 and is rejected at plan construction.
+/// Floor division; a band smaller than `RECOVERY_RECENTER_DIVISOR` floors to 0 and is
+/// rejected at plan construction.
 pub(crate) const fn recovery_recenter_target_counts(origin_band_counts: u32) -> u32 {
     origin_band_counts / RECOVERY_RECENTER_DIVISOR
 }

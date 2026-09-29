@@ -63,11 +63,6 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             contained,
             current_contact,
         } => {
-            // Clamp contact binds the outcome ahead of the rest verdict: it is
-            // the reason the return stopped, so an unconfirmed rest under
-            // contact is the contained headroom outcome rather than a fault.
-            // Only a policy that set out to prove passive settle can upgrade to
-            // the recovered variant, and only on a confirmed in-band rest.
             if current_contact {
                 let outcome = if runtime.proves_passive_settle() && confirmed_rest && in_band {
                     RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom
@@ -144,29 +139,11 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                     resources.current_observer.peak_pid_output_abs(),
                 ));
             }
-            // The captured start offset feeds only the planned return distance
-            // (hence the deadline budget) and, before this, the drive
-            // direction. Every verdict -- `in_band`, containment, the final
-            // offset -- reads the live position instead, so a slightly stale
-            // plan input cannot produce a wrong outcome, only a deadline off by
-            // that much travel against a budget carrying `MOVING_STROKE_US` of
-            // slack. Exact equality therefore failed campaigns for drift three
-            // orders of magnitude below anything that mattered: one
-            // outer-safety encoder sample landing between the tick that
-            // captured the origin and this one was enough, and it discarded
-            // every stroke collected so far.
-            //
-            // Tolerate drift up to the band recovery is aiming for. A
-            // perturbation smaller than the target band cannot change whether
-            // the return lands inside it, which makes the bound self-justifying
-            // rather than a constant fitted to one observation.
             let origin_drift_counts = resources
                 .safety
                 .unwrapped_position
                 .saturating_sub(runtime.start_offset_counts);
             if origin_drift_counts.unsigned_abs() > runtime.plan.origin_band_counts {
-                // Report the measured discrepancy before containing; the
-                // containment is applied unchanged on the next tick.
                 runtime.state = RecoveryState::OriginMismatchContained;
                 return RungOriginRecoveryStep::OriginMismatch(RecoveryOriginMismatchEvidence {
                     expected_counts: runtime.start_offset_counts,
@@ -200,24 +177,11 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             RungOriginRecoveryStep::ReadyNow
         }
         RecoveryState::CommandTowardOrigin => {
-            // Derive the direction from the live position, not the offset
-            // captured when the runtime was built. Driving on a stale sign is
-            // the one way a moved origin can do real harm -- it would command
-            // the motor away from the origin -- and reading it live removes
-            // that hazard outright rather than relying on the tolerance below
-            // to notice.
             let direction = if resources.safety.unwrapped_position > 0 {
                 -1
             } else {
                 1
             };
-            // `ArithmeticOverflow`, `ZeroTarget`, and `InvalidDirection` cannot
-            // fire here: `RungOriginRecoveryRuntime::new` rejects
-            // `target_velocity_rpm.raw() <= 0` at construction (excluding
-            // ZeroTarget), the stored value is bounded well within i32 range
-            // by the same constructor path (excluding ArithmeticOverflow),
-            // and `direction` above is always +-1 (excluding InvalidDirection).
-            // All three arms below are defensive and provably unreachable.
             let target = match runtime
                 .target_velocity_rpm
                 .with_direction(direction)
@@ -246,18 +210,6 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 resources.safety.end_primitive();
                 return recovery_fault(CommissionError::Spi, None);
             }
-            // Unreachable: runtime.runtime_us is set exactly once, in
-            // RungOriginRecoveryRuntime::new, as
-            // recovery_allowance_us(measured_return_us) + RECOVERY_STABILIZATION_US,
-            // which itself decomposes to
-            // measured_return_us + MOVING_STROKE_US + rest_allowance_us().
-            // Since measured_return_us >= 0 and MOVING_STROKE_US > 0,
-            // runtime.runtime_us always exceeds rest_allowance_us() by
-            // at least MOVING_STROKE_US (512,000us) whenever this state
-            // is reached, regardless of any caller-supplied budget --
-            // that budget only ever acts as an upper-bound ceiling
-            // check elsewhere in construction, never as a lower bound
-            // feeding this subtraction.
             let Some(moving_budget_us) =
                 runtime.runtime_us.checked_sub(runtime.rest_allowance_us())
             else {
@@ -302,9 +254,6 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 return recovery_fault(CommissionError::SafetyEnvelopeViolation, Some(fault));
             }
             let in_band = offset.unsigned_abs() <= runtime.plan.origin_band_counts;
-            // Stop inside the band, not on its edge: position moves outward
-            // between here and the post-settle acceptance test. Containment
-            // still judges against the band itself.
             let reached_target = offset.unsigned_abs() <= runtime.moving_target_counts;
             let deadline_reached = backend.elapsed_us() >= moving_deadline_us;
             if reached_target || deadline_reached {
@@ -416,11 +365,6 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                     .recovery_wrong_way_fault(runtime.start_offset_counts, elapsed_us);
                 return recovery_fault(CommissionError::SafetyEnvelopeViolation, Some(fault));
             }
-            // Every accepted safety sample sets `previous_velocity_observation`, and
-            // this arm's own elapsed gate above only lets a tick through once a
-            // sample is due -- the identical condition `check_outer_safety` uses to
-            // accept one -- so the `None` case is currently unreachable. Classified
-            // for the retained-state contract it protects.
             let Some((delta, elapsed_us)) = resources.safety.last_accepted_observation() else {
                 return recovery_fault(CommissionError::MissingCaptureState, None);
             };
@@ -531,11 +475,6 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             {
                 return current_guard_fault(runtime, resources, backend, error);
             }
-            // The scored rest has completed and already committed its selection,
-            // so its evidence exists and is reported before any terminal binds --
-            // contact included. Contact discovered only now still needs the same
-            // zero-target hold the earlier detection points apply; only the
-            // terminal resolution waits, and `RestTerminal` performs it.
             let current_contact = if runtime.current_contact_detected() {
                 true
             } else if recovery_current_contact(resources.current_observer) {
@@ -663,10 +602,6 @@ async fn recovery_safety_sample<B: CommissioningBackend>(
     None
 }
 
-/// Hold zero velocity target on clamp contact, returning any fault step.
-///
-/// This is the safety response every contact path shares, independent of which
-/// terminal the contact eventually binds.
 async fn hold_zero_for_current_contact<B: CommissioningBackend>(
     backend: &mut B,
 ) -> Option<RungOriginRecoveryStep> {
@@ -767,18 +702,6 @@ fn update_closest(runtime: &mut RungOriginRecoveryRuntime, offset: i32) {
     }
 }
 
-/// Return whether recovery is driving away from the origin rather than toward it.
-///
-/// The tolerance is `origin_band_counts`: the same band recovery aims for and
-/// accepts as success two statements later, and the same band
-/// `recovery_origin_mismatch` was independently widened for the identical
-/// defect shape.
-///
-/// A fixed one-count allowance made this a per-stroke, exact-threshold,
-/// campaign-fatal gate on a physical quantity: two counts of jitter discarded a
-/// whole campaign of accumulated evidence, against a containment window three
-/// orders of magnitude larger. Growth inside the band is harmless by
-/// construction, because recovery would accept that same offset as complete.
 fn wrong_way(start_offset: i32, current_offset: i32, origin_band_counts: u32) -> bool {
     current_offset.unsigned_abs()
         > start_offset

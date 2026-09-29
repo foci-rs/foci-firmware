@@ -19,15 +19,10 @@ use crate::commissioning::outer::velocity::{
 
 use super::safety::OuterSafetyLimits;
 
-/// Number of validated observations retained from the end of one moving stroke.
 pub(crate) const VELOCITY_OBSERVATION_CAPACITY: usize = 256;
 /// Dyadic levels required to analyze every retained suffix through 256 samples.
-///
-/// Used for `DyadicBlocker<VELOCITY_SWEEP_BLOCK_LEVELS>` in
-/// `VelocityIntegralRuntime` and `RungOriginRecoveryResources`.
 pub(crate) const VELOCITY_SWEEP_BLOCK_LEVELS: usize = 5;
 
-/// Fixed-memory tail ring with split arrays to avoid tuple padding.
 #[derive(Debug)]
 pub(crate) struct VelocityObservationRing {
     delta_counts: [i32; VELOCITY_OBSERVATION_CAPACITY],
@@ -93,7 +88,6 @@ impl VelocityObservationRing {
     }
 }
 
-/// Chronological iterator over the retained tail, including after wraparound.
 #[cfg(test)]
 pub(crate) struct VelocityObservationIter<'a> {
     ring: &'a VelocityObservationRing,
@@ -148,7 +142,6 @@ impl crate::autotune::velocity_measurement::VelocityObservationSource for Veloci
     }
 }
 
-/// Phase-local state for the Integral velocity-integral response sweep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct VelocitySettleTransition {
     pub(crate) sample_index: u16,
@@ -197,39 +190,15 @@ impl VelocitySettleMetrics {
     /// `duration_us`, or `transition_count` counters overflow their
     /// representation, and [`CommissionError::NetDisplacementOverflow`] if
     /// the `net_displacement_counts` accumulator does.
-    ///
-    /// The `sample_count`, `duration_us`, and `transition_count` overflow
-    /// guards are unreachable in practice: this struct is phase-local state
-    /// reset to `EMPTY` per zero-target settle capture (a single bounded
-    /// window no longer than `ZERO_SETTLE_US` = 500ms), and each of these
-    /// three counters has 100x+ headroom against that window even at an
-    /// aggressive 1kHz sample rate (`sample_count: u16` allows ~500 samples
-    /// in 500ms; `duration_us: u32` allows ~4.29e9us against a 500,000us
-    /// window; `transition_count` is bounded in turn by `sample_count`, at
-    /// most one transition per sample). This reasoning depends on no future
-    /// plan running a single settle window materially longer than 500ms.
-    ///
-    /// The `net_displacement_counts` overflow guard is reachable: it
-    /// accumulates an arbitrary `i32` delta per sample
-    /// (`delta.signed_counts()`) rather than a fixed increment, and the
-    /// bound on that delta is `counts_per_rev.div_ceil(4)` (the per-sample
-    /// quarter-turn-fault gate) -- a function of the host-supplied
-    /// `encoder_ppr` wire value, which the firmware validates only for
-    /// `i32` representability, not physical plausibility. At the largest
-    /// `counts_per_rev` the firmware still accepts, as few as 5
-    /// same-direction max-magnitude samples overflow this accumulator,
-    /// trivially inside the ~500-sample window.
     pub(crate) fn observe(
         &mut self,
         delta_counts: i32,
         elapsed_us: u32,
     ) -> Result<(), CommissionError> {
-        // Unreachable: see this function's doc comment.
         self.sample_count = self
             .sample_count
             .checked_add(1)
             .ok_or(CommissionError::InvalidSchedule)?;
-        // Unreachable: see this function's doc comment.
         self.duration_us = self
             .duration_us
             .checked_add(elapsed_us)
@@ -245,7 +214,6 @@ impl VelocitySettleMetrics {
             .maximum_displacement_counts
             .max(self.net_displacement_counts);
         if delta_counts != 0 {
-            // Unreachable: see this function's doc comment.
             self.transition_count = self
                 .transition_count
                 .checked_add(1)
@@ -265,7 +233,6 @@ impl VelocitySettleMetrics {
     }
 }
 
-/// Exact active-I rest loss retained while the I=0 cleanup proof runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct PositiveIRestBoundary {
     pub(crate) rung_index: u8,
@@ -281,58 +248,53 @@ pub(crate) struct PositiveIRestBoundary {
 /// Phase-local state for the Integral velocity-integral response sweep.
 #[derive(Debug, defmt::Format)]
 pub(crate) enum VelocityIntegralState {
-    /// Validate the already-emitted immutable plan and arm measurement safety.
     Setup,
-    /// Prepare one moving slot without yielding between ordered controller writes.
-    PrepareMovingSlot { reset_rung: bool },
-    /// Apply the next F/R target in the fixed eight-slot schedule.
-    CommandTarget { entry_transition_us: u32 },
-    /// Capture one fixed moving window.
+    PrepareMovingSlot {
+        reset_rung: bool,
+    },
+    CommandTarget {
+        entry_transition_us: u32,
+    },
     Capture {
         next_sample_us: u64,
         deadline_us: u64,
         entry_transition_us: u32,
     },
-    /// Disable integral action, command zero, and clear the sum before rest.
-    PrepareZeroSettle { entry_transition_us: u32 },
-    /// Analyze the moving tail within the fixed settle budget.
+    PrepareZeroSettle {
+        entry_transition_us: u32,
+    },
     AnalyzeMoving {
         settle_deadline_us: u64,
         analysis_deadline_us: u64,
     },
-    /// Refresh the encoder baseline for the terminal rest capture.
-    BeginSettleCapture { settle_deadline_us: u64 },
-    /// Capture the terminal zero-target rest window.
+    BeginSettleCapture {
+        settle_deadline_us: u64,
+    },
     SettleCapture {
         next_sample_us: u64,
         deadline_us: u64,
     },
-    /// Confirm rest without extending the declared schedule.
-    AnalyzeSettle { analysis_deadline_us: u64 },
-    /// Program I=0 and begin the fixed cleanup proof after an active-I rest loss.
+    AnalyzeSettle {
+        analysis_deadline_us: u64,
+    },
     BeginPositiveIRestCleanup,
-    /// Capture the fixed I=0 cleanup rest window.
     PositiveIRestCleanupCapture {
         next_sample_us: u64,
         deadline_us: u64,
     },
-    /// Analyze the fixed I=0 cleanup rest window.
-    AnalyzePositiveIRestCleanup { analysis_deadline_us: u64 },
-    /// Advance the fixed slot/rung cursor after confirmed rest.
+    AnalyzePositiveIRestCleanup {
+        analysis_deadline_us: u64,
+    },
     Advance,
-    /// Fold the completed rung into anchor, curve, or bookend evidence.
     AnalyzeRung,
-    /// Execute the shared return-to-origin primitive after rung evidence is emitted.
     RecoverRung(RungOriginRecoveryRuntime),
-    /// Preserve the recovery report for causal emission before routing onward.
     FinalizeRecovery(RungOriginRecoveryReport),
-    /// Emit a structural-fault terminal after its observation evidence.
-    FaultTerminal { error: CommissionError },
-    /// Emit the report-only Integral terminal.
+    FaultTerminal {
+        error: CommissionError,
+    },
     Terminal,
 }
 
-/// Engine-owned Integral acquisition and exact raw-curve state.
 #[derive(Debug, defmt::Format)]
 pub(crate) struct VelocityIntegralRuntime {
     pub(crate) plan: VelocityIntegralExecutionPlan,
@@ -420,74 +382,39 @@ impl VelocityIntegralRuntime {
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum OuterPhase {
-    /// Integral fixed-P velocity-integral response phase.
     VelocityIntegral {
         state: VelocityIntegralState,
         data: VelocityIntegralRuntime,
         safety: OuterSafetyLimits,
     },
-    /// Breakaway-seeded campaign: probe, additive discovery, and held-out
-    /// confirmation, sequenced through one borrowed workspace before the
-    /// confirmed Integral continuation. On an accepted, admitted confirmation
-    /// this phase is replaced in place by [`Self::VelocityIntegral`], so
-    /// Integral execution state never occupies this variant's footprint.
     BreakawayCampaign {
         campaign: super::velocity::breakaway_campaign::BreakawayCampaign,
         workspace: super::velocity::breakaway_campaign::BreakawayProbeWorkspace,
         safety: OuterSafetyLimits,
     },
-    /// Reversal-standstill robustness gate over the retained acceptance point.
-    ///
-    /// Reads the retained accepted point read-only; it never advances or closes
-    /// `FixedGainAmplitudeProgress`. Its cooperative stepper owns its own capture
-    /// and analysis state; the shared outer-safety envelope check runs against
-    /// `safety` between ticks like every other outer phase.
     RobustnessReversal {
         state: super::velocity::robustness_reversal::RobustnessReversalState,
         workspace: super::velocity::robustness_reversal::RobustnessReversalWorkspace,
         session: super::velocity::robustness_reversal::RobustnessReversalSession,
         safety: OuterSafetyLimits,
     },
-    /// Two-bound position-P ladder sweep.
-    ///
-    /// Its cooperative stepper owns its own capture scheduling and reuses the
-    /// engine's shared `TransientBuffer`; the shared outer-safety envelope
-    /// check runs against `safety` between ticks like every other outer phase.
     PositionTune {
         state: super::position_tune::PositionTuneState,
         safety: OuterSafetyLimits,
     },
-    /// A phase failed.
     Failed(CommissionError),
-    /// The position-P sweep failed for one of its own diagnostic reasons.
-    ///
-    /// Behaves exactly as [`Self::Failed`] everywhere the phase is inspected;
-    /// it exists only so the specific outcome survives the failure transition
-    /// and can be read back when the terminal reply is assembled. The generic
-    /// `error` alone reduces every distinct sweep failure to one status code.
-    /// Only the position-P sweep ever constructs this.
+    /// The position-P sweep failed for a specific diagnostic reason; behaves as [`Self::Failed`].
     PositionTuneFailed {
-        /// Terminal status. `CommissionError::PositionTuneFailed` when
-        /// `outcome` is `Some`; the generic engine error that failed the
-        /// phase when it's `None`.
+        /// `PositionTuneFailed` when `outcome` is `Some`, else the generic engine error.
         error: CommissionError,
-        /// Which sweep failure this was, for the host-visible outcome code.
-        /// `None` for a generic engine-level failure (e.g. an SPI error),
-        /// which reports outcome code 0.
+        /// `None` for a generic engine-level failure, which reports outcome code 0.
         outcome: Option<crate::autotune::PositionTuneOutcome>,
-        /// The last rung the walk measured before this failure, so the
-        /// reply carries real evidence instead of a zeroed block.
         provenance: crate::commissioning::types::PositionTuneProvenance,
     },
-    /// A phase failed because an installed-tuning safety envelope tripped.
     FailedWithSafety {
-        /// Terminal installed-tuning status.
         error: CommissionError,
-        /// Host-visible safety-envelope evidence.
         safety_fault: OuterSafetyFault,
-        /// The position-P sweep's evidence at the moment of the fault, when
-        /// the failing phase was `PositionTune`; `Default` for every other
-        /// phase.
+        /// Position-P evidence when the failing phase was `PositionTune`; `Default` otherwise.
         position_tune: crate::commissioning::types::PositionTuneProvenance,
     },
 }
@@ -495,9 +422,7 @@ pub(crate) enum OuterPhase {
 impl OuterPhase {
     /// Return the stable phase ID for the active non-terminal outer phase.
     ///
-    /// `VelocityIntegral` dispatches on its plan's `acquisition_kind`: the
-    /// response ladder and the fixed-gain amplitude sweep are distinct workflows on the
-    /// wire even though they share this engine variant.
+    /// `VelocityIntegral` dispatches on its plan's `acquisition_kind`.
     pub(crate) fn current_phase_id(&self) -> Option<CommissionPhase> {
         use super::velocity::integral_plan::VelocityIntegralAcquisitionKind;
 
@@ -587,10 +512,6 @@ mod tests {
 
     #[test]
     fn outer_phase_size_stays_within_reasonable_stack_budget() {
-        // `OuterPhase` is the largest thing the outer engine holds inline, so
-        // its bound is what keeps retained phase state from creeping. This is a
-        // struct bound; the per-future stack gates live in
-        // `commissioning::tests::size_regression_gates`.
         assert!(
             size_of::<OuterPhase>() <= 4288,
             "OuterPhase grew to {} bytes",

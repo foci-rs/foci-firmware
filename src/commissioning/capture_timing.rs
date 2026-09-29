@@ -61,12 +61,9 @@ pub struct SampleSlot {
     pub next_deadline_us: u64,
 }
 
-/// Pre-SPI disposition for one selected sample slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum SampleStart {
-    /// The selected slot is inside the start-lateness envelope.
     Sample,
-    /// The selected slot was too late and the caller must wait for this deadline.
     Skip { next_deadline_us: u64 },
 }
 
@@ -107,9 +104,7 @@ pub fn sample_slot(due_us: u64, period_us: u16, now_us: u64) -> Result<SampleSlo
 pub struct CaptureTimingEvidence {
     /// Requested absolute sample period in microseconds.
     pub requested_period_us: u16,
-    /// Number of accepted logical samples.
     pub valid_samples: u16,
-    /// Number of skipped sample slots.
     pub missed_samples: u16,
     /// Largest number of consecutive logical sample slots skipped in one observation gap.
     pub max_consecutive_misses: u8,
@@ -174,11 +169,6 @@ impl CaptureTiming {
         }
     }
 
-    /// Classify sample-start lateness before performing any sample I/O.
-    ///
-    /// An excessively late selected slot is recorded as one additional miss
-    /// beyond any fully elapsed slots. The caller advances to the returned
-    /// absolute deadline without taking a catch-up sample.
     pub(crate) fn classify_sample_start(
         &mut self,
         due_us: u64,
@@ -307,7 +297,6 @@ impl CaptureTiming {
         self.consecutive_misses = 0;
     }
 
-    /// Mark an external timing source overflow and retain its saturated SPI span.
     pub(crate) fn mark_source_overflow(&mut self, max_spi_wall_us: u32) {
         self.overflowed = true;
         self.max_spi_wall_us = self.max_spi_wall_us.max(max_spi_wall_us);

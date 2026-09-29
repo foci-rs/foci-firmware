@@ -22,7 +22,6 @@ use super::velocity::sweep_plan::{
 use super::{mechanical_id_velocity_cap_counts_per_ms, position_window_counts, state::OuterPhase};
 
 const MIN_USEFUL_DURATION_MS: u16 = 4;
-/// Fixed observation period for the independent outer safety envelope.
 pub(super) const OUTER_SAFETY_SAMPLE_PERIOD_US: u64 = 1_000;
 
 const INTEGRAL_POSITION_RESERVE_COUNTS: Option<u32> = None;
@@ -30,21 +29,13 @@ const INTEGRAL_POSITION_RESERVE_COUNTS: Option<u32> = None;
 /// Host-provided motor-local motion budget for outer commissioning.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) struct OuterMotionBudget {
-    /// Requested mechanical velocity amplitude.
     pub(crate) requested_velocity_mrev_s: u32,
-    /// Kinematics-derived absolute machine ceiling.
     pub(crate) machine_velocity_ceiling_mrev_s: u32,
-    /// Explicit-versus-defaulted request provenance.
     pub(crate) requested_velocity_source: RequestedVelocitySource,
-    /// Full local displacement window spanning moving and settle.
     pub(crate) max_stroke_travel_mrev: u32,
-    /// Host planning reserve inside the full displacement window.
     pub(crate) settle_travel_reserve_mrev: u32,
-    /// Negative absolute-position headroom from installed-tuning entry.
     pub(crate) negative_position_headroom_mrev: u32,
-    /// Positive absolute-position headroom from installed-tuning entry.
     pub(crate) positive_position_headroom_mrev: u32,
-    /// Maximum primitive duration in milliseconds.
     pub(crate) max_duration_ms: u16,
     /// Axis homing speed, mrev/s; the homing bound's speed.
     pub(crate) homing_speed_mrev_s: u32,
@@ -53,7 +44,6 @@ pub(crate) struct OuterMotionBudget {
 }
 
 impl OuterMotionBudget {
-    /// Current firmware hard caps, used by tests that don't exercise host budget tightening.
     #[cfg(test)]
     pub(crate) const fn firmware_caps() -> Self {
         const FIRMWARE_MAX_TRAVEL_MREV: u32 = 2_000;
@@ -113,7 +103,6 @@ struct OuterVelocityObservation {
     elapsed_us: u64,
 }
 
-/// Optional monotonic timestamp using an unreachable campaign-time sentinel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct OuterSafetyTimestamp(u64);
 
@@ -162,62 +151,26 @@ impl PartialEq<Option<u64>> for OuterSafetyTimestamp {
 /// Outer safety limits, computed once at the start of outer commissioning.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) struct OuterSafetyLimits {
-    /// Maximum absolute velocity while a commanded amplitude is active, in
-    /// milli-counts per second.
-    ///
-    /// Held at 1000x counts per second so the runtime comparison never rounds
-    /// the cap, matching the cross-multiplication that already keeps it from
-    /// rounding the observation intervals. Flooring the envelope to whole
-    /// counts per millisecond cost 6% of it at the commissioning amplitude.
+    /// Velocity cap while a commanded amplitude is active, in milli-counts per second.
     velocity_cap_milli_counts_per_s: u64,
-    /// Frozen `M_effective` bounding velocity once the active primitive's
-    /// target has been zeroed, in mechanical millirevolutions per second.
-    ///
-    /// Braking through a zero target has no commanded amplitude to be sized
-    /// against, so the applicable bound is the effective ceiling the plan is
-    /// already validated under. Held in `mrev/s` rather than as a second
-    /// milli-counts cap so the retained state costs four bytes instead of
-    /// eight; the encoder-domain product is formed at comparison time. Zero
-    /// means no separate settle allowance, which is what the classic sweeps and
-    /// mechanical identification want.
+    /// Velocity bound after the target is zeroed, mrev/s; zero means no separate settle allowance.
     settle_ceiling_mrev_s: u32,
-    /// Whether the active primitive has passed its zero-target boundary.
     in_settle_phase: bool,
-    /// Maximum distance from start position in encoder counts.
     pub(crate) position_window: u32,
-    /// Maximum negative displacement from the installed-tuning entry position.
     pub(crate) negative_position_window: u32,
-    /// Maximum positive displacement from the installed-tuning entry position.
     pub(crate) positive_position_window: u32,
-    /// Inclusive single-observation quarter-turn fault threshold.
     pub(crate) quarter_turn_fault_counts: u32,
-    /// Unwrapped signed position accumulated from wrap-aware deltas.
     pub(crate) unwrapped_position: i32,
-    /// Torque cap: the configured run_current limit.
     pub(crate) torque_cap: u16,
-    /// Previous normalized encoder count for delta computation.
     pub(crate) prev_encoder_count: Option<EncoderCount>,
-    /// Validated encoder modulo domain.
     pub(crate) encoder_domain: Option<EncoderDomain>,
-    /// Timestamp (microseconds) of the previous safety sample.
     pub(crate) last_sample_us: OuterSafetyTimestamp,
-    /// Timestamp (microseconds) when the active motion primitive began.
     pub(crate) primitive_start_us: Option<u64>,
-    /// Unwrapped position when the active motion primitive began.
     pub(crate) primitive_start_position: Option<i32>,
-    /// Absolute deadline for the next independent safety observation.
     pub(crate) next_safety_sample_us: OuterSafetyTimestamp,
-    /// Previous ordinary velocity observation for the sliding two-interval gate.
     previous_velocity_observation: Option<OuterVelocityObservation>,
-    /// Peak `|local_position|` observed since the active primitive began,
-    /// updated on every sample regardless of pass/fail. Reset in
-    /// [`Self::begin_primitive`] rather than [`Self::end_primitive`] so the
-    /// value from the primitive that just ended survives long enough to be
-    /// logged there.
     max_local_position_excursion: u32,
-    /// Whether the latest accepted observation met the scoring cadence.
     last_observation_scoring_eligible: bool,
-    /// Host-provided motion budget used to clamp firmware safety caps.
     pub(crate) budget: OuterMotionBudget,
 }
 
@@ -267,8 +220,6 @@ impl OuterSafetyLimits {
         self.prev_encoder_count = None;
         self.previous_velocity_observation = None;
         self.quarter_turn_fault_counts = counts_per_rev.div_ceil(4);
-        // Mechanical identification has no zero-target settle of its own, so its
-        // settle bound stays equal to its moving bound.
         self.velocity_cap_milli_counts_per_s = counts_per_ms_to_milli_counts_per_s(
             mechanical_id_velocity_cap_counts_per_ms(counts_per_rev)
                 .min(self.budget.velocity_counts_per_ms(counts_per_rev)),
@@ -287,11 +238,7 @@ impl OuterSafetyLimits {
         Ok(())
     }
 
-    /// Configure encoder-domain safety using the complete host-declared sweep windows.
-    ///
-    /// Mechanical identification retains its legacy two-revolution backstop until the
-    /// cutover. The velocity sweep instead plans motion from the richer
-    /// request contract, so its runtime enforcement must use those same declared windows.
+    /// Configure encoder-domain safety using the host-declared sweep windows.
     pub(crate) fn configure_velocity_sweep_encoder_resolution(
         &mut self,
         counts_per_rev: u32,
@@ -307,15 +254,8 @@ impl OuterSafetyLimits {
 
     /// Configure encoder-domain safety for the reversal-standstill robustness phase.
     ///
-    /// Identical to [`Self::configure_velocity_sweep_encoder_resolution`] except the
-    /// local per-stroke `position_window` is opened to
-    /// `min(negative_position_window, positive_position_window)` instead of the
-    /// travel-sized sweep window. The local window never exceeds the absolute
-    /// machine-headroom clamp, and until a reserve is characterized on hardware it
-    /// equals it -- the reversal transient's true overshoot peak is otherwise
-    /// right-censored by a finite local window that aborts probing before the
-    /// carriage reaches turnaround. The absolute signed windows, velocity cap, and
-    /// torque cap are untouched and remain the active protection.
+    /// Like the velocity-sweep configuration, but the local per-stroke window is
+    /// `min(negative_position_window, positive_position_window)`.
     pub(crate) fn configure_robustness_encoder_resolution(
         &mut self,
         counts_per_rev: u32,
@@ -326,15 +266,6 @@ impl OuterSafetyLimits {
         Ok(())
     }
 
-    /// Pad the absolute negative/positive windows by the host-declared
-    /// settle travel reserve, in counts.
-    ///
-    /// The absolute headroom otherwise has no allowance for a phase's own
-    /// transient, unlike the local window: the host already folds
-    /// `settle_travel_reserve_mrev` into `max_stroke_travel_mrev`, so the
-    /// local budget assumes that much room is available. Giving the
-    /// absolute windows the same reserve keeps them at least as permissive
-    /// as what the local budget already promised the primitive.
     fn reserve_absolute_window_settle_travel(&mut self, counts_per_rev: u32) {
         let reserve_counts = mrev_to_counts(self.budget.settle_travel_reserve_mrev, counts_per_rev);
         self.negative_position_window =
@@ -343,16 +274,10 @@ impl OuterSafetyLimits {
             self.positive_position_window.saturating_add(reserve_counts);
     }
 
-    /// Configure encoder-domain safety for the Integral `VelocityIntegral`
-    /// phase (both first acquisition and resume/reproduce -- they share the
-    /// same `Setup` entry point, so there is no narrower seam to hook).
+    /// Configure encoder-domain safety for the Integral `VelocityIntegral` phase.
     ///
-    /// Identical to [`Self::configure_velocity_sweep_encoder_resolution`]
-    /// except the local `position_local` window is tightened by
-    /// [`Self::tighten_position_window`] instead of staying at the
-    /// travel-sized sweep window. The absolute signed windows, velocity cap,
-    /// and torque cap are untouched and remain the active protection
-    /// regardless of the reserve's size.
+    /// Like the velocity-sweep configuration, but the local window is tightened by
+    /// [`Self::tighten_position_window`].
     pub(crate) fn configure_integral_encoder_resolution(
         &mut self,
         counts_per_rev: u32,
@@ -372,9 +297,6 @@ impl OuterSafetyLimits {
         };
     }
 
-    /// Open the local `position_window` to the absolute machine-headroom
-    /// clamp shared by every phase that seeds its transient reserve open
-    /// rather than sizing a bounded margin from uncharacterized data.
     fn open_position_window_to_headroom(&mut self) {
         self.position_window = self.headroom_clamp();
     }
@@ -384,8 +306,6 @@ impl OuterSafetyLimits {
             .min(self.positive_position_window)
     }
 
-    /// The amplitude-relative runaway envelope
-    /// `E(planned) = max(ceil(3 * planned / 2), planned + 2000)`.
     fn envelope_mrev_s(planned_velocity_mrev_s: u32) -> Result<u32, CommissionError> {
         if planned_velocity_mrev_s == 0 {
             return Err(CommissionError::InvalidSchedule);
@@ -395,12 +315,6 @@ impl OuterSafetyLimits {
             .and_then(|value| value.checked_add(ENVELOPE_PROPORTIONAL_DEN - 1))
             .map(|value| value / ENVELOPE_PROPORTIONAL_DEN)
             .ok_or(CommissionError::TargetRateInvalid)?;
-        // Unreachable: with ENVELOPE_PROPORTIONAL_NUM=3, the checked_mul
-        // above already fails and returns early for any
-        // planned_velocity_mrev_s > u32::MAX / 3 (~1.43e9). This checked_add
-        // can only overflow for planned_velocity_mrev_s > u32::MAX - 2_000
-        // (~4.29e9, ENVELOPE_ABSOLUTE_MARGIN_MREV_S=2_000), which always
-        // fails the proportional check first.
         let absolute = planned_velocity_mrev_s
             .checked_add(ENVELOPE_ABSOLUTE_MARGIN_MREV_S)
             .ok_or(CommissionError::InvalidSchedule)?;
@@ -415,10 +329,6 @@ impl OuterSafetyLimits {
     }
 
     /// Configure the runtime envelope around the frozen sweep amplitude.
-    ///
-    /// The zero-target settle is bounded identically to the moving stroke. Only
-    /// callers that carry a frozen `M_effective` widen it, through
-    /// [`Self::configure_velocity_envelope_with_settle_ceiling`].
     ///
     /// # Errors
     ///
@@ -436,27 +346,8 @@ impl OuterSafetyLimits {
 
     /// Configure the runtime envelope from the plan's effective ceiling.
     ///
-    /// Both the commanded stroke and its zero-target settle are bounded by
-    /// `effective_ceiling_mrev_s` -- `min(host machine ceiling,
-    /// encoder-observable)` -- so the trip sits at what the machine is declared
-    /// capable of, inside the range the encoder resolves unambiguously.
-    ///
-    /// The amplitude-relative envelope `E(planned)` is deliberately **not** the
-    /// runtime bound. It scales from the commissioning amplitude, which is a
-    /// travel-over-stroke-time geometry constant: at the default travel it is
-    /// 58 mm/s on a machine whose configured maximum is 400 mm/s, so the same
-    /// physical motion would be legal or fatal depending on the bed allowance.
-    /// A runaway bound cannot depend on that. `E(planned)` keeps its planning
-    /// role in `sweep_plan::envelope_cap`, which picks the amplitude so that
-    /// `E(planned) <= M_effective`; a pair violating that is a planning fault
-    /// and is rejected here.
-    ///
-    /// This leaves each guard owning one axis: the two-interval debounce owns
-    /// measurement validity, the quarter-turn fault owns per-sample
-    /// aliasing, this envelope owns instantaneous magnitude, and the position
-    /// window owns integrated excursion. Bounding a commanded stroke's opening
-    /// transient by its own amplitude made this guard duplicate the position
-    /// window's job, less directly.
+    /// Both the stroke and its zero-target settle are bounded by `effective_ceiling_mrev_s`,
+    /// i.e. `min(host machine ceiling, encoder-observable)`.
     ///
     /// # Errors
     ///
@@ -484,22 +375,11 @@ impl OuterSafetyLimits {
     }
 
     /// Mark the active primitive as past its zero-target boundary.
-    ///
-    /// Called where the phase writes `PID_VELOCITY_TARGET = 0`, so the wider
-    /// braking bound covers exactly the interval where the axis is decelerating
-    /// under no commanded amplitude. Cleared by [`Self::begin_primitive`] and
-    /// [`Self::end_primitive`], so it can never outlive its primitive.
     pub(crate) const fn enter_settle_phase(&mut self) {
         self.in_settle_phase = true;
     }
 
     /// The velocity bound in force for the active primitive phase.
-    ///
-    /// The settle allowance can never be tighter than the moving envelope: the
-    /// `max` re-asserts at the point of use what
-    /// [`Self::configure_velocity_envelope_with_settle_ceiling`] validates at
-    /// configuration time. Without a configured encoder domain or settle
-    /// ceiling the moving bound stands.
     pub(crate) fn active_velocity_cap_milli_counts_per_s(&self) -> u64 {
         let moving = self.velocity_cap_milli_counts_per_s;
         if !self.in_settle_phase || self.settle_ceiling_mrev_s == 0 {
@@ -524,7 +404,6 @@ impl OuterSafetyLimits {
         Ok(())
     }
 
-    /// Arm the independent safety-observation grid from a known baseline.
     pub(crate) fn arm_safety_observation(&mut self, now_us: u64) -> Result<(), CommissionError> {
         let next_safety_sample_us = now_us
             .checked_add(OUTER_SAFETY_SAMPLE_PERIOD_US)
@@ -536,7 +415,6 @@ impl OuterSafetyLimits {
         Ok(())
     }
 
-    /// Begin a bounded motion primitive after its nonzero target is applied.
     pub(crate) fn begin_primitive(&mut self, now_us: u64) -> Result<(), CommissionError> {
         if self.primitive_start_us.is_some() {
             return Err(CommissionError::PrimitiveAlreadyOpen);
@@ -549,7 +427,6 @@ impl OuterSafetyLimits {
         Ok(())
     }
 
-    /// End the active motion primitive after its safe target is applied.
     pub(crate) fn end_primitive(&mut self) {
         if self.primitive_start_us.is_some() {
             defmt::info!(
@@ -564,17 +441,11 @@ impl OuterSafetyLimits {
         self.in_settle_phase = false;
     }
 
-    /// Peak `|local_position|` observed since the active primitive began.
-    ///
-    /// Uncensored, unlike a trip fault's `position_counts`: it is updated on
-    /// every sample regardless of pass/fail, so it survives a passing run
-    /// where the local-window check never fires.
     #[cfg(test)]
     pub(crate) fn max_local_position_excursion(&self) -> u32 {
         self.max_local_position_excursion
     }
 
-    /// Whether the latest accepted observation met the 1 kHz scoring cadence.
     #[cfg(test)]
     pub(crate) fn last_observation_scoring_eligible(&self) -> bool {
         self.last_observation_scoring_eligible
@@ -585,12 +456,6 @@ impl OuterSafetyLimits {
             .map(|observation| (observation.signed_delta_counts, observation.elapsed_us))
     }
 
-    /// Force the accepted-observation delta and elapsed time directly.
-    ///
-    /// `check_outer_safety` never stores an `elapsed_us` above
-    /// `MAX_SAFETY_OBSERVATION_GAP_US`, so a caller cannot otherwise construct
-    /// the oversized value `CaptureSettle`'s `u16` narrowing conversion
-    /// guards against. Test-only.
     #[cfg(test)]
     pub(crate) fn force_accepted_observation_for_test(
         &mut self,
@@ -604,7 +469,6 @@ impl OuterSafetyLimits {
         });
     }
 
-    /// Return the next observation deadline while the safety envelope is armed.
     pub(crate) fn next_safety_deadline(&self) -> Option<u64> {
         if self.torque_cap == 0 {
             None
@@ -661,7 +525,6 @@ impl OuterSafetyLimits {
         }
     }
 
-    /// Construct the dedicated fail-closed fault for recovery motion away from origin.
     pub(crate) fn recovery_wrong_way_fault(
         &self,
         start_offset_counts: i32,
@@ -683,13 +546,8 @@ fn mrev_to_counts(mrev: u32, counts_per_rev: u32) -> u32 {
     clamp_positive_u32(scaled / 1_000)
 }
 
-/// Milli-counts per second per whole count per millisecond.
 const MILLI_COUNTS_PER_S_PER_COUNT_PER_MS: u64 = 1_000_000;
 
-/// Convert a mechanical velocity to milli-counts per second exactly.
-///
-/// `mrev/s * counts/rev` is already milli-counts per second, so this carries no
-/// division and therefore no truncation.
 fn velocity_mrev_s_to_milli_counts_per_s(velocity_mrev_s: u32, counts_per_rev: u32) -> u64 {
     u64::from(velocity_mrev_s).saturating_mul(u64::from(counts_per_rev))
 }
@@ -733,10 +591,6 @@ fn clamp_u128_to_u64(value: u128) -> u64 {
     value.min(u64::MAX as u128) as u64
 }
 
-/// Apply the observed direction's sign to a magnitude, clamped to the report domain.
-///
-/// Used for both the window's summed counts and its resulting velocity, so the
-/// two carry the same direction as the observation that closed the window.
 fn signed_report_value(delta_counts: i32, magnitude: u64) -> i32 {
     if delta_counts < 0 {
         let magnitude = magnitude.min(i32::MAX as u64 + 1);
@@ -747,23 +601,13 @@ fn signed_report_value(delta_counts: i32, magnitude: u64) -> i32 {
 }
 
 /// Map a safety-envelope violation to the dedicated error variant.
-///
-/// Always returns `SafetyEnvelopeViolation` so the OuterFailed handler
-/// can classify it as a safety fault requiring hard disable, distinct
-/// from normal phase failures that are eligible for soft restore.
 pub(crate) fn safety_error_for_phase(_phase: &OuterPhase) -> CommissionError {
     CommissionError::SafetyEnvelopeViolation
 }
 
 /// Per-tick safety envelope check for all outer phases.
 ///
-/// Reads the current encoder position, computes a wrap-aware delta,
-/// normalizes velocity by actual elapsed time, and accumulates an
-/// unwrapped signed position. Checks:
-/// - Time-normalized velocity within cap.
-/// - Unwrapped position within window from start.
-///
-/// Returns `Some(fault)` if a safety limit is violated.
+/// Returns `Some(fault)` if the velocity or position-window limit is violated.
 pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
     safety: &mut OuterSafetyLimits,
     backend: &mut B,
@@ -788,8 +632,6 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
     )>,
     backend: &mut B,
 ) -> Result<Option<OuterSafetyFault>, CommissionError> {
-    // Safety limits are initialized by the entering phase's setup step after
-    // it reads the real encoder baseline. Skip the pre-setup placeholder values.
     if safety.torque_cap == 0 {
         return Ok(None);
     }
@@ -920,9 +762,6 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
         .checked_div(dt_us)
         .unwrap_or(0);
 
-    // The accumulator intentionally preserves signed multi-revolution travel.
-    // Saturation keeps a corrupt or unexpectedly long sequence from wrapping
-    // back inside the allowed safety window.
     safety.prev_encoder_count = Some(encoder_count);
     safety.last_sample_us = OuterSafetyTimestamp::some(now_us)?;
     safety.next_safety_sample_us = OuterSafetyTimestamp::some(next_grid_deadline(
@@ -933,10 +772,6 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
     safety.unwrapped_position = safety.unwrapped_position.saturating_add(delta_counts);
     safety.last_observation_scoring_eligible = dt_us <= OUTER_SAFETY_SAMPLE_PERIOD_US;
 
-    // Track the peak local excursion before any of the fault checks below can
-    // return early, so a sample that also trips the velocity or position
-    // guard is still counted -- this must observe every sample, not just the
-    // ones that pass.
     if let Some(start) = safety.primitive_start_position {
         let position = safety.unwrapped_position.saturating_sub(start);
         safety.max_local_position_excursion = safety
@@ -953,14 +788,7 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
         .previous_velocity_observation
         .replace(velocity_observation);
 
-    // Check velocity using a sliding two-interval window. Cross multiplication
-    // preserves actual elapsed time without rounding either interval first, and
-    // the cap is carried in milli-counts per second so it is not rounded either.
     let active_cap_milli_counts_per_s = safety.active_velocity_cap_milli_counts_per_s();
-    // The window the check evaluates is also the window the fault reports. A
-    // violating two-interval window routinely contains a latest interval that
-    // is itself under the cap, so reporting that interval alone presents the
-    // fault as arithmetically impossible.
     let violating_window = previous_velocity_observation
         .map(|previous| {
             let window_counts = u128::from(previous.absolute_delta_counts)
@@ -1002,8 +830,6 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
         )));
     }
 
-    // The primitive-local window begins at the moving target and remains active
-    // through the zero-target settle so braking can consume the declared reserve.
     let local_position = safety
         .primitive_start_position
         .map(|start| safety.unwrapped_position.saturating_sub(start));
@@ -1021,12 +847,6 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
             safety.positive_position_window,
         );
         let velocity_cpms = signed_report_value(delta_counts, velocity_magnitude_cpms);
-        // Tie-break: when both branches fire, report the absolute
-        // (machine-headroom) branch -- it is the more safety-relevant claim, and
-        // the local excursion is recoverable from its own numbers anyway. Each
-        // branch reports the excursion it actually compared against the signed
-        // window it exceeded, so the reason code names the guard and
-        // `|position_counts| > |position_window_counts|` holds for both.
         let (reason, excursion, signed_window) = if absolute_position_exceeds_window {
             let signed_window =
                 if safety.unwrapped_position > clamp_u32_to_i32(safety.positive_position_window) {
@@ -1045,8 +865,6 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
             let signed_window = if excursion < 0 { -magnitude } else { magnitude };
             (OUTER_SAFETY_FAULT_POSITION_LOCAL, excursion, signed_window)
         };
-        // Override the base fault's absolute-position/local-window pair with the
-        // branch's own compared pair, so the reason code and the numbers agree.
         let mut fault = safety.fault(reason, delta_counts, dt_us, velocity_cpms, elapsed_us);
         fault.position_counts = excursion;
         fault.position_window_counts = signed_window;
@@ -1058,8 +876,7 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
 
 /// Get a mutable reference to the safety limits for the current phase.
 ///
-/// Returns `None` for terminal phases (Failed/FailedWithSafety) that don't
-/// need per-tick safety checks.
+/// Returns `None` for terminal phases.
 pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafetyLimits> {
     match phase {
         OuterPhase::VelocityIntegral { safety, .. } => Some(safety),
@@ -1080,7 +897,6 @@ mod tests {
         check_outer_safety,
     };
 
-    /// Maximum register operations performed by one due safety observation.
     const OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS: usize = 1;
     use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
     use crate::commission_dispatch::test_support::MockBackend;
@@ -1113,10 +929,6 @@ mod tests {
         safety
     }
 
-    /// A frozen accepted point for a `RobustnessReversal` fixture. The
-    /// robustness phase never touches this test's dispatch paths (the
-    /// test reaches only `ZeroCapture`'s not-yet-due return, before any of
-    /// these fields are read), so the values just need to be well-typed.
     fn robustness_test_point() -> AcceptancePoint {
         AcceptancePoint {
             identity: IntegralPlanIdentity {
@@ -1243,8 +1055,6 @@ mod tests {
     #[test]
     fn max_local_position_excursion_updates_even_on_a_faulting_sample() {
         pollster::block_on(async {
-            // 70 counts over 5 ms is 14.0 counts/ms, above the 13.8 envelope,
-            // mirroring `outer_safety_velocity_envelope_rejects_one_count_above_the_exact_cap`.
             let mut safety = envelope_armed_safety(1_450, 3_450);
             safety.begin_primitive(100_000).unwrap();
 
@@ -1418,10 +1228,6 @@ mod tests {
         assert_eq!(sweep_safety.negative_position_window, 16_000);
         assert_eq!(sweep_safety.positive_position_window, 20_000);
 
-        // The absolute windows carry the same settle_travel_reserve_mrev the
-        // local budget already assumes it may spend, so a phase's own
-        // transient has the same allowance on both branches (400 counts at
-        // 100 mrev reserve / 4_000 counts-per-rev): 16_000+400 and 20_000+400.
         let mut robustness_safety = OuterSafetyLimits::new(100, budget);
         robustness_safety
             .configure_robustness_encoder_resolution(4_000)
@@ -1431,9 +1237,6 @@ mod tests {
         assert_eq!(robustness_safety.positive_position_window, 20_400);
     }
 
-    /// A transient landing just past raw headroom must now pass; a transient
-    /// beyond the reserve must still fault -- the reserve bounds the
-    /// allowance, it does not remove the check.
     #[test]
     fn robustness_absolute_window_tolerates_a_transient_within_the_reserve() {
         pollster::block_on(async {
@@ -1447,9 +1250,6 @@ mod tests {
             safety.set_encoder_baseline(0).unwrap();
             safety.last_sample_us = OuterSafetyTimestamp::some(0).unwrap();
             safety.next_safety_sample_us = OuterSafetyTimestamp::some(1_000).unwrap();
-            // Raw positive headroom is 800 counts; the identical setup through
-            // the plain (non-robustness) path faults here today
-            // (see outer_safety_asymmetric_window_catches_cumulative_drift).
             safety.unwrapped_position = 799;
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 1_000;
@@ -1476,8 +1276,6 @@ mod tests {
             safety.set_encoder_baseline(0).unwrap();
             safety.last_sample_us = OuterSafetyTimestamp::some(0).unwrap();
             safety.next_safety_sample_us = OuterSafetyTimestamp::some(1_000).unwrap();
-            // Reserved positive window is 800 + 400 = 1_200 counts; 1_199 + 2
-            // crosses it.
             safety.unwrapped_position = 1_199;
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 1_000;
@@ -1492,16 +1290,6 @@ mod tests {
         });
     }
 
-    /// The Integral `VelocityIntegral` phase's `position_local` window
-    /// currently equals `travel_counts` exactly (via
-    /// `configure_velocity_sweep_encoder_resolution`), giving it zero
-    /// transient reserve -- a resume/reproduce that is otherwise passing can
-    /// intermittently trip on a sub-0.1% overshoot. Mirrors
-    /// `robustness_window_opens_to_the_absolute_clamp`: Integral's window
-    /// should open to the same absolute machine-headroom clamp the
-    /// robustness phase already uses, not a bespoke bounded margin --
-    /// the observed overshoot is itself right-censored at the trip point, so
-    /// there is no sound data yet to size a tighter margin from.
     #[test]
     fn integral_window_opens_to_the_absolute_clamp() {
         let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000, 4_375, 200_000);
@@ -1563,7 +1351,6 @@ mod tests {
         assert_eq!(integral_safety.position_window, 16_000);
     }
 
-    /// Arm a safety envelope around a frozen amplitude and machine ceiling.
     fn envelope_armed_safety(
         planned_velocity_mrev_s: u32,
         effective_ceiling_mrev_s: u32,
@@ -1581,9 +1368,6 @@ mod tests {
     #[test]
     fn outer_safety_velocity_envelope_is_not_truncated_to_whole_counts_per_ms() {
         pollster::block_on(async {
-            // E(1450) = max(ceil(3 * 1450 / 2), 1450 + 2000) = 3450 mrev/s, which is
-            // 13.8 counts/ms at 4000 counts/rev. Flooring that to 13 rejected
-            // two-interval windows the envelope was sized to admit.
             let mut safety = envelope_armed_safety(1_450, 3_450);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101_000;
@@ -1613,7 +1397,6 @@ mod tests {
     #[test]
     fn outer_safety_velocity_envelope_admits_the_exact_cap() {
         pollster::block_on(async {
-            // 69 counts over 5 ms is exactly 13.8 counts/ms.
             let mut safety = envelope_armed_safety(1_450, 3_450);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 102_500;
@@ -1640,7 +1423,6 @@ mod tests {
     #[test]
     fn outer_safety_velocity_envelope_rejects_one_count_above_the_exact_cap() {
         pollster::block_on(async {
-            // 70 counts over 5 ms is 14.0 counts/ms, above the 13.8 envelope.
             let mut safety = envelope_armed_safety(1_450, 3_450);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 102_500;
@@ -1668,9 +1450,6 @@ mod tests {
     #[test]
     fn outer_safety_settle_phase_admits_braking_up_to_the_effective_ceiling() {
         pollster::block_on(async {
-            // Moving envelope 13.8 counts/ms; the 10_000 mrev/s machine ceiling is
-            // 40 counts/ms. Braking through zero target is bounded by the ceiling,
-            // not by the amplitude the stroke was commanded at.
             let mut safety = envelope_armed_safety(1_450, 10_000);
             safety.begin_primitive(100_000).unwrap();
             safety.enter_settle_phase();
@@ -1702,11 +1481,6 @@ mod tests {
     #[test]
     fn outer_safety_moving_phase_admits_machine_scale_velocity() {
         pollster::block_on(async {
-            // A commanded stroke's transient is bounded by what the machine can
-            // do, not by the amplitude the stroke was commanded at. `E(planned)`
-            // scales from bed geometry (travel over stroke time), which is not a
-            // safety quantity; `M_effective` is the host-declared kinematic
-            // ceiling. Same motion as the settle test, without entering settle.
             let mut safety = envelope_armed_safety(1_450, 10_000);
             safety.begin_primitive(100_000).unwrap();
             let mut backend = MockBackend::new();
@@ -1737,8 +1511,6 @@ mod tests {
     #[test]
     fn outer_safety_settle_phase_still_faults_above_the_effective_ceiling() {
         pollster::block_on(async {
-            // Runaway remains runaway: the settle allowance is a wider bound, not
-            // an absent one.
             let mut safety = envelope_armed_safety(1_450, 10_000);
             safety.begin_primitive(100_000).unwrap();
             safety.enter_settle_phase();
@@ -1767,9 +1539,6 @@ mod tests {
 
     #[test]
     fn outer_safety_both_phases_share_the_effective_ceiling_bound() {
-        // The commanded stroke and its settle are bounded identically, by what
-        // the machine is declared capable of. The phase marker is retained as a
-        // seam, not because the two bounds currently differ.
         let mut safety = envelope_armed_safety(1_450, 10_000);
         safety.begin_primitive(100_000).unwrap();
         assert_eq!(safety.active_velocity_cap_milli_counts_per_s(), 40_000_000);
@@ -1785,9 +1554,6 @@ mod tests {
     fn outer_safety_settle_ceiling_is_never_below_the_moving_envelope() {
         let mut safety = armed_safety(Some(100_000), 101_000);
 
-        // envelope_cap() picks the planned amplitude so E(planned) <= M_effective.
-        // A ceiling that violates that pairing is a planning fault, not a wider
-        // runtime allowance.
         assert_eq!(
             safety.configure_velocity_envelope_with_settle_ceiling(1_450, 3_000),
             Err(CommissionError::VelocityEnvelopeExceedsCeiling)
@@ -1806,15 +1572,12 @@ mod tests {
     #[test]
     fn configure_velocity_envelope_with_settle_ceiling_rejects_envelope_above_ceiling() {
         let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
-        // A planned velocity whose derived envelope exceeds a small ceiling.
         let error = safety
             .configure_velocity_envelope_with_settle_ceiling(1_000_000, 1)
             .unwrap_err();
         assert_eq!(error, CommissionError::VelocityEnvelopeExceedsCeiling);
     }
 
-    /// A planned velocity whose proportional-margin computation overflows
-    /// u32 is an arithmetic fault, not the generic schedule fault.
     #[test]
     fn envelope_mrev_s_rejects_overflowing_proportional_margin() {
         let error = OuterSafetyLimits::envelope_mrev_s(u32::MAX).unwrap_err();
@@ -2011,9 +1774,6 @@ mod tests {
                 .expect("the settle observation should succeed")
                 .expect("settle drift beyond the full primitive window must fault");
 
-            // Local (per-stroke) branch: named distinctly, and the payload
-            // carries the actually-compared local excursion against a window
-            // signed to match its direction, so |excursion| > |window|.
             assert_eq!(fault.reason, OUTER_SAFETY_FAULT_POSITION_LOCAL);
             assert_eq!(fault.position_counts, 2_001);
             assert!(fault.position_window_counts > 0);
@@ -2070,8 +1830,6 @@ mod tests {
                 .expect("the observation should succeed")
                 .expect("positive cumulative drift beyond headroom must fault");
 
-            // Absolute (machine-headroom) branch: keeps POSITION, and reports
-            // the absolute position against the signed positive window it crossed.
             assert_eq!(fault.reason, OUTER_SAFETY_FAULT_POSITION);
             assert_eq!(fault.position_counts, 801);
             assert!(fault.position_window_counts > 0);
@@ -2091,8 +1849,6 @@ mod tests {
             safety.set_encoder_baseline(0).unwrap();
             safety.last_sample_us = OuterSafetyTimestamp::some(0).unwrap();
             safety.next_safety_sample_us = OuterSafetyTimestamp::some(1_000).unwrap();
-            // primitive_start captured at 0, so the local excursion equals the
-            // absolute position; driving past both windows fires both branches.
             safety.begin_primitive(0).unwrap();
             safety.unwrapped_position = 2_499;
             let mut backend = MockBackend::new();
@@ -2104,7 +1860,6 @@ mod tests {
                 .expect("the observation should succeed")
                 .expect("position beyond both windows must fault");
 
-            // Tie-break: the absolute branch wins and its code is reported.
             assert_eq!(fault.reason, OUTER_SAFETY_FAULT_POSITION);
             assert_eq!(fault.position_counts, 2_501);
             assert!(fault.position_window_counts > 0);
@@ -2259,10 +2014,6 @@ mod tests {
     #[test]
     fn outer_safety_velocity_fault_reports_the_window_that_tripped() {
         pollster::block_on(async {
-            // The check sums two intervals, so the latest one alone can sit
-            // below the cap while the window that fired is above it. Reporting
-            // the latest interval invites the reader to conclude the firmware
-            // faulted spuriously.
             let mut safety = armed_safety(Some(100_000), 101_000);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101_000;
@@ -2284,7 +2035,6 @@ mod tests {
                 .expect("50 counts over 2 ms is 25 counts/ms against the 24 counts/ms cap");
 
             assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
-            // The latest interval alone is 20 counts/ms, under the cap.
             assert_eq!(fault.delta_counts, 50, "summed counts across the window");
             assert_eq!(fault.dt_us, 2_000, "summed elapsed across the window");
             assert_eq!(fault.velocity_counts_per_ms, 25);
@@ -2464,8 +2214,6 @@ mod tests {
             assert_eq!(fault.max_velocity_mrev_s, 6000);
             assert_eq!(fault.max_duration_ms, 3000);
             assert_eq!(fault.direction_mask, 3);
-            // The window that tripped, not the latest interval: two 25-count
-            // intervals of 1 ms each.
             assert_eq!(fault.delta_counts, 50);
             assert_eq!(fault.dt_us, 2_000);
             assert_eq!(fault.velocity_counts_per_ms, 25);
@@ -2505,7 +2253,6 @@ mod tests {
                 .expect("velocity should violate the safety envelope");
 
             assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
-            // Window: both intervals summed, over 1 us + 1000 us.
             assert_eq!(fault.delta_counts, (LARGE_DELTA * 2) as i32);
             assert_eq!(fault.dt_us, 1_001);
             assert_eq!(fault.velocity_counts_per_ms, 1_072_669_150);
@@ -2563,9 +2310,6 @@ mod tests {
         });
     }
 
-    /// A now_us close enough to u64::MAX that adding the sample period
-    /// overflows is a deadline-overflow fault, not the generic schedule
-    /// fault.
     #[test]
     fn arm_safety_observation_rejects_overflowing_deadline() {
         let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());

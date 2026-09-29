@@ -1,42 +1,27 @@
-//! Pure physical-excursion accumulation and classification for the breakaway probe.
-
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::commissioning::encoder_domain::EncoderDomain;
 
-/// Physical-motion classification for one completed probe stroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum ProbeMotionClass {
-    /// Commanded and opposite excursions both remain below the threshold.
     NoMotion,
-    /// Commanded-direction excursion reaches the threshold.
     Moved,
-    /// Only opposite-direction excursion reaches the threshold.
     WrongDirection,
 }
 
-/// Failure to form trustworthy probe-excursion evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum ProbeExcursionError {
-    /// No interval was measured or a capture interval is outside the declared bound.
     CaptureInterval,
-    /// Encoder-domain, accumulator, counter, or representation arithmetic failed.
     Arithmetic,
 }
 
-/// Narrowed evidence and motion verdict for one completed probe stroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct ProbeExcursionEvidence {
-    /// Minimum start-relative displacement observed during the stroke.
     pub(crate) minimum_counts: i32,
-    /// Maximum start-relative displacement observed during the stroke.
     pub(crate) maximum_counts: i32,
-    /// Maximum baseline-to-sample or sample-to-sample interval.
     pub(crate) maximum_interval_us: u32,
-    /// Direction-aware physical-motion classification.
     pub(crate) motion: ProbeMotionClass,
 }
 
-/// Wrap-aware start-relative excursion accumulator for one probe stroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct ProbeExcursionCapture {
     previous_encoder_raw: u32,
@@ -49,7 +34,6 @@ pub(crate) struct ProbeExcursionCapture {
 }
 
 impl ProbeExcursionCapture {
-    /// Initialize a stroke at its zero baseline immediately before target application.
     pub(crate) const fn new(baseline_encoder_raw: u32, baseline_read_us: u64) -> Self {
         Self {
             previous_encoder_raw: baseline_encoder_raw,
@@ -62,7 +46,6 @@ impl ProbeExcursionCapture {
         }
     }
 
-    /// Fold one scheduled post-baseline encoder sample into the retained extrema.
     pub(crate) fn observe(
         &mut self,
         domain: EncoderDomain,
@@ -99,7 +82,6 @@ impl ProbeExcursionCapture {
         Ok(())
     }
 
-    /// Return structurally representable trace fields without applying the interval gate.
     pub(crate) fn wire_fields(&self) -> Result<(i32, i32, u32), ProbeExcursionError> {
         let minimum_counts =
             i32::try_from(self.minimum_counts).map_err(|_| ProbeExcursionError::Arithmetic)?;
@@ -108,7 +90,6 @@ impl ProbeExcursionCapture {
         Ok((minimum_counts, maximum_counts, self.maximum_interval_us))
     }
 
-    /// Validate capture timing and classify the completed stroke's excursion.
     pub(crate) fn finish(
         self,
         direction: VelocityDirection,

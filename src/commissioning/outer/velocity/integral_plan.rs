@@ -40,10 +40,7 @@ const RETIRED_COMBINED_RESPONSE_PRESENCE: u8 = 0;
 pub struct IntegralAcquisitionAuthority {
     /// Physical firmware channel.
     pub channel: u8,
-    /// The unforgeable token of the accepted breakaway confirmation that
-    /// authorized this Integral plan. There is no Proportional sweep plan behind
-    /// it: the breakaway campaign has no Proportional phase, so nothing
-    /// recomputes from the request.
+    /// Token of the accepted breakaway confirmation that authorized this Integral plan.
     pub acquisition: ConfirmedAcquisitionDigest,
     /// Cross-run forward and reverse model-or-fragment intersections.
     pub directional_memberships: [u32; 2],
@@ -79,22 +76,6 @@ impl IntegralAcquisitionAuthority {
         )
     }
 
-    /// Construct breakaway-campaign Integral authority bound to a confirmed
-    /// acquisition digest.
-    ///
-    /// The breakaway campaign has no reproduced Proportional directional evidence,
-    /// so every membership/validity field is the same empty/zero value a
-    /// nonretained, same-command authority uses.
-    /// `directional_pooled_intervals` is
-    /// the one exception: it carries `held_out_response_intervals_q`, the
-    /// held-out confirmation block's own pooled response interval, already in
-    /// the same signed settled-rate-Q domain this field carries on the other
-    /// paths (see [`super::band_confirmation::BandConfirmationAcceptance`]'s
-    /// field doc), not a reproduced Proportional value.
-    /// The only way to obtain a [`ConfirmedAcquisitionDigest`] is a successful
-    /// call to [`bind_breakaway_integral_authority`], so this constructor makes
-    /// "Integral authorized by anything other than an accepted confirmation"
-    /// unrepresentable for every breakaway authority built this way.
     pub(crate) const fn new_breakaway(
         channel: u8,
         confirmed_digest: ConfirmedAcquisitionDigest,
@@ -183,7 +164,6 @@ pub struct VelocityIntegralPlan {
     pub hard_torque_limit: u16,
     /// Inclusive usable torque-target boundary.
     pub usable_torque_limit: u16,
-    /// Available authority for proving absence of transient clamp contact.
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
     /// One opposite-sign meter quantum can contact the probe clamp during recovery.
     pub recovery_quantization_exposed: bool,
@@ -229,18 +209,6 @@ impl VelocityIntegralPlan {
             hash_value!(interval[0]);
             hash_value!(interval[1]);
         }
-        // Preserves the wire/offline plan digest across the
-        // removal of `combined_selected_response`. Every surviving plan
-        // (breakaway, amplitude, resume) always had that field `None` -- only
-        // the deleted live combined P-then-I workflow ever set it `Some` --
-        // so `u8::from(combined_selected_response.is_some())` was always the
-        // constant byte 0 here. Hashing that same constant keeps `digest()`
-        // byte-identical to pre-removal for every plan that ever existed in
-        // production, which foci-trace's independent offline recomputation
-        // (`velocity_integral.py::integral_plan_digest`) mirrors by hashing
-        // the same constant zero. Do not turn this back into a real
-        // `combined_selected_response` read -- the field is gone; this is a
-        // frozen digest-compatibility constant.
         hash_value!(RETIRED_COMBINED_RESPONSE_PRESENCE);
         hash_value!(self.planned_velocity_mrev_s);
         hash_value!(self.target_velocity_rpm);
@@ -275,9 +243,6 @@ impl VelocityIntegralPlan {
         hash_value!(self.motion_request.negative_position_headroom_mrev);
         hash_value!(self.motion_request.positive_position_headroom_mrev);
         hash_value!(self.motion_request.max_duration_ms);
-        // Hashed only when mirrored. Forward-first is the historical order, so
-        // omitting it keeps every archived plan digest and retained
-        // acceptance-point binding valid without an Integral schema bump.
         if !matches!(self.slot_order, IntegralSlotOrder::ForwardFirst) {
             hash_value!(self.slot_order.report_code());
         }
@@ -330,28 +295,12 @@ impl VelocityIntegralPlan {
     }
 }
 
-/// Order in which the fixed forward and reverse observation slots execute.
-///
-/// The eight slots of a rung alternate travel direction about a common start
-/// point, and origin recovery runs only between rungs. One direction therefore
-/// always begins its stroke at the low end of the span and the other at the high
-/// end, so every settled tail for a given direction is measured at the same end.
-/// Direction and tail position are confounded, and this type makes which way
-/// round explicit and recordable instead of implicit in slot parity.
+/// Order in which the fixed forward and reverse observation slots execute, recorded explicitly
+/// because travel direction and settled-tail position are confounded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum IntegralSlotOrder {
-    /// Even slots travel forward. The historical order.
-    ///
-    /// `ReverseFirst` and `PairedOutAndBack`, the two mirrored orders this type
-    /// once offered, were producible only by the live combined P-then-I
-    /// workflow and the mirrored-amplitude actions. Both were removed, and
-    /// with them every surviving live producer of this type
-    /// -- `AutotuneAction::slot_order`, `AutotuneAction::amplitude_slot_order`,
-    /// and the sole `VelocityIntegralPlan` constructor -- became unconditional
-    /// `ForwardFirst`. The variants were removed in T9. The type stays an enum
-    /// rather than collapsing to a unit so the wire contract (`report_code`)
-    /// and foci-trace's independent decode copies keep the same shape.
+    /// Even slots travel forward.
     ForwardFirst = 0,
 }
 
@@ -360,9 +309,6 @@ impl IntegralSlotOrder {
     #[cfg(test)]
     pub const ALL: [Self; 1] = [Self::ForwardFirst];
 
-    /// Parity offset applied to one same-direction observation ordinal.
-    ///
-    /// Forward-first is the only surviving order and applies no offset.
     const fn parity_twist(self, ordinal: usize) -> usize {
         let _ = ordinal;
         match self {
@@ -385,19 +331,13 @@ impl IntegralSlotOrder {
     }
 
     /// Zero-based same-direction observation ordinal for one slot.
-    ///
-    /// Independent of the order: mirroring changes a slot's direction, not which
-    /// repeat within that direction it is.
     #[cfg(test)]
     pub const fn observation_index(self, slot: u8) -> usize {
         (slot / 2) as usize
     }
 
-    /// Slot carrying one same-direction observation ordinal.
-    ///
-    /// Inverse of [`Self::direction_index`] and `Self::observation_index`. The
-    /// two are pinned together by test, because evidence is written by raw slot
-    /// and read back by observation and direction.
+    /// Slot carrying one same-direction observation ordinal; inverse of [`Self::direction_index`]
+    /// and `Self::observation_index`.
     pub const fn slot_for(self, observation: usize, direction: usize) -> u8 {
         (observation * 2 + (direction ^ self.parity_twist(observation))) as u8
     }
@@ -420,20 +360,11 @@ pub enum VelocityIntegralAcquisitionKind {
     FixedGainAmplitudeDescending = 2,
 }
 
-/// Which acquisition authorized one Integral execution plan.
-///
-/// `acquisition_kind == ResponseLadder` alone cannot distinguish these: an
-/// accepted breakaway confirmation and a fixed-I fixed-gain-amplitude plan can
-/// both report that same acquisition kind. This discriminator isolates
-/// breakaway so [`VelocityIntegralExecutionPlan::records_target_terminus`]
-/// can admit it without over-admitting a plan that carries no target evidence
-/// at all.
+/// Which acquisition authorized one Integral execution plan; drives
+/// [`VelocityIntegralExecutionPlan::records_target_terminus`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum AcceptanceSource {
-    // Discriminant 0 belonged to a since-retired live combined P-then-I
-    // workflow; it is left unassigned rather than renumbering the variants
-    // below it.
     /// Accepted breakaway-campaign confirmation.
     Breakaway = 1,
     /// Any acceptance source that is not a breakaway confirmation. Carries no
@@ -446,20 +377,11 @@ pub enum AcceptanceSource {
 pub struct VelocityIntegralExecutionPlan {
     /// Exact complete-plan digest.
     pub plan_digest: u64,
-    /// Retained acceptance-plan identity digest for an amplitude-sourced plan,
-    /// matched against dispatches that resume it; `0` off the amplitude path
-    /// (`acceptance_source != AcceptanceSource::NonBreakaway` implies this
-    /// acquisition never carries one). Copied verbatim from
-    /// `FixedGainAmplitudePlan.acceptance_identity.plan_digest`, never
-    /// recomputed.
+    /// Acceptance-plan identity digest for an amplitude-sourced plan; `0` off the amplitude path.
     pub acceptance_plan_digest: u64,
-    /// Packed operating-point, model-validity, and evidence-quality
-    /// qualifiers for an amplitude-sourced plan, frozen at the original
-    /// breakaway-acceptance install; `0` off the amplitude path. Copied
-    /// verbatim from `FixedGainAmplitudePlan.qualifier_bits` — this is a
-    /// distinct, earlier snapshot from this struct's own
-    /// `recovery_quantization_exposed`/`probe_constrained_test_point`
-    /// fields below, which reflect the *current* run instead.
+    /// Packed operating-point, model-validity, and evidence-quality qualifiers for an
+    /// amplitude-sourced plan, frozen at the original breakaway-acceptance install; `0` off the
+    /// amplitude path.
     pub qualifier_bits: u16,
     /// Fixed proportional gain.
     pub fixed_p: u16,
@@ -501,20 +423,14 @@ pub struct VelocityIntegralExecutionPlan {
     pub hard_torque_limit: u16,
     /// Inclusive usable torque-target boundary.
     pub usable_torque_limit: u16,
-    /// Available authority for proving absence of transient clamp contact.
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
     /// Response-ladder or fixed-I fixed-gain amplitude acquisition.
     pub acquisition_kind: VelocityIntegralAcquisitionKind,
-    /// Which acquisition category authorized this plan.
-    ///
-    /// Isolates breakaway from reproduced Proportional within `acquisition_kind ==
-    /// ResponseLadder`; see [`Self::records_target_terminus`].
+    /// Which acquisition category authorized this plan; see [`Self::records_target_terminus`].
     pub acceptance_source: AcceptanceSource,
     /// Exact fixed targets for an amplitude acquisition; zero for response ladders.
     pub amplitude_targets_rpm: [i16; 5],
-    /// Selected Proportional response intervals; zero for an amplitude acquisition,
-    /// which carries its identity and qualifiers in `acceptance_plan_digest`
-    /// and `qualifier_bits` instead.
+    /// Selected Proportional response intervals; zero for an amplitude acquisition.
     pub selected_response_intervals_q: [[i32; 2]; 2],
     /// Conservative top-point settled-rate bounds used only for amplitude recovery deadlines.
     pub recovery_lower_rate_q: [u64; 2],
@@ -530,11 +446,8 @@ const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 1
 const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 128);
 
 impl VelocityIntegralExecutionPlan {
-    /// Whether a target-reaching run on this plan records a target terminus.
-    ///
-    /// True only for an accepted breakaway confirmation. A reproduced Proportional
-    /// response ladder must not record a terminus even though it shares
-    /// `acquisition_kind == VelocityIntegralAcquisitionKind::ResponseLadder`.
+    /// Whether a target-reaching run on this plan records a target terminus; true only for an
+    /// accepted breakaway confirmation.
     pub const fn records_target_terminus(&self) -> bool {
         matches!(self.acceptance_source, AcceptanceSource::Breakaway)
     }
@@ -565,36 +478,23 @@ pub enum VelocityIntegralPlanError {
     Arithmetic,
     /// The reproduced Proportional component contains no transition-capable Integral rung.
     NoTransitionCapableOperatingPoint(IntegralFailedAdmission),
-    /// A breakaway confirmation plan's recomputed digest, or its fixed family
-    /// size, capture profile, or acceptance rule, did not match what
-    /// `plan_breakaway_velocity_integral_response` requires before it may
-    /// authorize Integral.
+    /// A breakaway confirmation plan's recomputed digest, fixed family size, capture profile, or
+    /// acceptance rule did not match.
     InvalidConfirmationPlan,
-    /// The breakaway campaign's confirmed proportional gain -- the exact
-    /// candidate a held-out confirmation accepted, with no reselection --
-    /// failed `transition_capable_integral_gain`. Carries the digest of the
-    /// rejected [`BandConfirmationPlan`].
+    /// The confirmed proportional gain failed `transition_capable_integral_gain`; carries the digest
+    /// of the rejected [`BandConfirmationPlan`].
     ConfirmedGainNotTransitionCapable(u64),
-    /// The plan-time physical acquisition context frozen into the confirmation
-    /// evidence (PWM carrier frequency or encoder counts per revolution) does
-    /// not match the live values presented at Integral construction. Confirmation
-    /// evidence gathered under one physical timebase cannot seed an Integral plan
-    /// admitted under another; the gate refuses without motion.
+    /// The confirmation evidence's PWM carrier frequency or encoder counts per revolution does not
+    /// match the live values presented at Integral construction.
     PhysicalContextMismatch,
 }
 
-/// Rejected attempt to bind Integral authority to a breakaway confirmation.
+/// Rejected attempt to bind Integral authority to a breakaway confirmation; fail-closed.
 ///
-/// Returned only by `bind_breakaway_integral_authority`, the single gate
-/// that may produce the digest a breakaway-schema [`IntegralAcquisitionAuthority::
-/// proportional_plan_digest`] carries. Every rejection is fail-closed: no digest,
-/// discovery or otherwise, ever authorizes Integral unless it is exactly the
-/// digest of a [`BandConfirmationPlan`] whose held-out block accepted.
+/// Returned only by `bind_breakaway_integral_authority`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum BreakawayAuthorityBindingError {
-    /// The held-out confirmation block did not accept; no digest may authorize
-    /// Integral for this campaign, even though the confirmation plan itself is
-    /// otherwise well-formed.
+    /// The held-out confirmation block did not accept.
     ConfirmationNotAccepted,
     /// The accepted candidate gain does not match the confirmation plan's
     /// declared candidate: the acceptance does not belong to this plan.
@@ -606,22 +506,7 @@ pub enum BreakawayAuthorityBindingError {
 
 /// Digest of an accepted breakaway-campaign confirmation.
 ///
-/// The inner field is private, and this module exposes no way to construct
-/// one from a raw `u64`: the only path to a value of this type is a
-/// successful call to `bind_breakaway_integral_authority`, which requires an
-/// `Ok` [`BandConfirmationAcceptance`] whose candidate matches the bound
-/// [`BandConfirmationPlan`] and whose digest matches the candidate digest
-/// under review. A sibling module -- including this module's own test
-/// module, which lives in a separate file and is therefore not a descendant
-/// of this one -- cannot write `ConfirmedAcquisitionDigest(raw_digest)`; only
-/// code inside `integral_plan.rs` can. This makes "Integral authorized by
-/// anything other than an accepted confirmation" a compile-time
-/// impossibility for every breakaway authority built through
-/// `IntegralAcquisitionAuthority::new_breakaway`, not merely an untested code path.
-///
-/// The type is `pub` only so [`IntegralAcquisitionAuthority::acquisition`] can name it.
-/// Its field is private and no public constructor exists, so the
-/// unforgeability above holds outside the crate as well.
+/// The inner field is private; the only way to obtain one is `bind_breakaway_integral_authority`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ConfirmedAcquisitionDigest(u64);
 
@@ -650,7 +535,6 @@ pub const fn velocity_i_tau_us(i_raw: u16, pwm_hz: u32) -> Option<u64> {
     Some(numerator.div_ceil(denominator))
 }
 
-/// Return one positive rung from the fixed native-Q4.12 schedule.
 pub(crate) const fn native_velocity_i_at(index: u8) -> Option<u16> {
     match index {
         0 => Some(1),
@@ -660,7 +544,6 @@ pub(crate) const fn native_velocity_i_at(index: u8) -> Option<u16> {
     }
 }
 
-/// Count of [`native_velocity_i_at`] entries at or below `i_top_cap`.
 pub(crate) fn native_rung_count(i_top_cap: u16) -> u8 {
     let mut index = 0_u8;
     while let Some(candidate) = native_velocity_i_at(index) {
@@ -675,14 +558,6 @@ pub(crate) fn native_rung_count(i_top_cap: u16) -> u8 {
     index
 }
 
-/// The one possible half-octave rung for the gap immediately below
-/// `i_top_cap`, or `None` if no insertion applies.
-///
-/// Applies only when the gap between the last two native octave rungs
-/// (`upper_octave`, `lower_octave = upper_octave / 2`) is entirely within
-/// the pure-octave region (`lower_octave >= 4`), never inside the fixed
-/// `1, 2, 3` prefix. `i_top_cap = 0` (the not-applicable sentinel used by
-/// amplitude-sourced plans) always yields `None`.
 pub(crate) fn integral_top_gap_candidate(i_top_cap: u16) -> Option<u16> {
     let count = native_rung_count(i_top_cap);
     if count == 0 {
@@ -704,18 +579,6 @@ pub(crate) fn integral_top_gap_candidate(i_top_cap: u16) -> Option<u16> {
     }
 }
 
-/// Regenerate one positive-I response-ladder rung by index, matching the
-/// exact array [`plan_velocity_integral_response_from_source`] plans:
-/// the native fixed-prefix/octave sequence, with the half-octave candidate
-/// (if any) inserted immediately before the final native rung.
-///
-/// `i_top_cap == 0` is the not-applicable sentinel (amplitude-sourced plans,
-/// per `VelocityIntegralPlan`/`VelocityIntegralExecutionPlan` doc comments)
-/// and always delegates straight to [`native_velocity_i_at`] with no
-/// augmentation and no bound -- this is the exact pre-existing behavior
-/// those plans had before this function existed. It must be checked before
-/// `native_rung_count`, which treats `i_top_cap` as a real ceiling and
-/// would otherwise compute zero native rungs at cap zero.
 pub(crate) fn integral_gain_at(i_top_cap: u16, positive_index: u8) -> Option<u16> {
     if i_top_cap == 0 {
         return native_velocity_i_at(positive_index);
@@ -800,7 +663,6 @@ pub fn confidence_family_size(positive_rungs: usize) -> Result<u16, VelocityInte
     u16::try_from(family).map_err(|_| VelocityIntegralPlanError::Arithmetic)
 }
 
-/// Report whether one opposite-sign meter quantum can contact the probe clamp.
 pub(crate) fn recovery_quantization_exposed(
     p_raw: u16,
     target_rpm: i32,
@@ -824,7 +686,6 @@ pub(crate) fn recovery_quantization_exposed(
     Ok(demand > clamp)
 }
 
-/// Whether one proportional gain can exercise the required Q4.12 I prefix unclipped.
 pub(crate) fn transition_capable_integral_gain(
     p_raw: u16,
     target_rpm: i32,
@@ -870,15 +731,6 @@ pub(crate) fn transition_capable_integral_gain(
     Ok(lhs < rhs)
 }
 
-/// Largest proportional gain that still satisfies [`transition_capable_integral_gain`]
-/// for one physical acquisition context, or `0` when not even `p = 1` is capable.
-///
-/// [`transition_capable_integral_gain`] is strictly monotone increasing in
-/// `p_raw` (the gain appears only on the left of a `lhs < rhs` comparison whose
-/// right side is P-independent), so a single ceiling is exactly equivalent to
-/// testing every candidate individually: `p <= max_transition_capable_p(..)`
-/// iff the gate admits `p`. Nomination uses this to refuse a gain the Integral
-/// admission would later reject, before any stroke is planned.
 pub(crate) fn max_transition_capable_p(
     target_rpm: i32,
     counts_per_rev: u32,
@@ -918,37 +770,26 @@ pub(crate) fn max_transition_capable_p(
         })
         .and_then(|value| value.checked_mul(u128::from(probe_limit)))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
-    // Largest integer P with `P * denominator < rhs`, mirroring the strict
-    // `lhs < rhs` in `transition_capable_integral_gain`. `rhs >= 1` and
-    // `denominator >= 1` always hold, so `(rhs - 1) / denominator` is exact.
     let max_p = (rhs - 1) / denominator;
     Ok(u16::try_from(max_p.min(u128::from(u16::MAX))).unwrap_or(u16::MAX))
 }
 
-/// Fixed per-observation primitive cost shared by every probe, discovery, and
-/// confirmation stroke: moving capture, zero-target settle, and the
-/// cooperative analysis allowance. `512_000 + 500_000 + 236_000 = 1_248_000`.
 const BREAKAWAY_PRIMITIVE_US: u32 = MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US;
 const BREAKAWAY_DISCOVERY_PRIMITIVE_US: u32 =
     BREAKAWAY_PRIMITIVE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US;
 
-/// Worst-case upward-probe observation count reserved before motion:
-/// [`PROBE_MAX_OBSERVATIONS`] primitives, 159.744 s.
+/// Worst-case upward-probe duration reserved before motion: [`PROBE_MAX_OBSERVATIONS`] primitives.
 pub fn breakaway_probe_slots_us() -> Result<u64, VelocityIntegralPlanError> {
     u64::from(PROBE_MAX_OBSERVATIONS)
         .checked_mul(u64::from(BREAKAWAY_PRIMITIVE_US))
         .ok_or(VelocityIntegralPlanError::Arithmetic)
 }
 
-/// Exact discovery-phase duration for one resolved rung count, including one
-/// fresh zero-target rest window after an initial rest rejection.
+/// Exact discovery-phase duration for one resolved rung count, including one fresh zero-target
+/// rest window after an initial rest rejection.
 ///
-/// Every realizable additive ladder holds between
-/// [`super::sweep_plan::MIN_STRUCTURAL_RUNGS`] and [`MAX_SWEEP_RUNGS`] rungs;
-/// the worst case, [`MAX_SWEEP_RUNGS`] (`32 * 8 = 256` slots), is the one
-/// reserved by [`breakaway_workflow_envelope_us`]. Every smaller resolved
-/// rung count reports a strictly smaller duration here, so its plan always
-/// fits inside the pre-motion envelope.
+/// Increases with rung count; the worst case, [`MAX_SWEEP_RUNGS`], is reserved by
+/// [`breakaway_workflow_envelope_us`].
 pub fn breakaway_discovery_slots_us(rung_count: u8) -> Result<u64, VelocityIntegralPlanError> {
     u64::from(rung_count)
         .checked_mul(u64::from(INTEGRAL_OBSERVATIONS_PER_RUNG))
@@ -956,26 +797,18 @@ pub fn breakaway_discovery_slots_us(rung_count: u8) -> Result<u64, VelocityInteg
         .ok_or(VelocityIntegralPlanError::Arithmetic)
 }
 
-/// Fixed family-8 confirmation-phase primitive duration: 8 strokes, ~9.984 s.
+/// Fixed family-8 confirmation-phase primitive duration: 8 strokes.
 pub fn breakaway_confirmation_slots_us() -> Result<u64, VelocityIntegralPlanError> {
     u64::from(CONFIRMATION_FAMILY_SIZE)
         .checked_mul(u64::from(BREAKAWAY_PRIMITIVE_US))
         .ok_or(VelocityIntegralPlanError::Arithmetic)
 }
 
-/// Reserve the complete pre-motion breakaway-campaign workflow envelope, in
-/// microseconds.
+/// Reserve the complete pre-motion breakaway-campaign workflow envelope, in microseconds.
 ///
-/// Sums the worst-case joint probe, the worst-case [`MAX_SWEEP_RUNGS`]-rung
-/// discovery ladder, the fixed family-8 confirmation block, the caller's
-/// worst-case recovery reservation (`recovery_slot_count *
-/// recovery_maximum_slot_us`), and the caller's maximum possible Integral
-/// continuation duration. Every term is added in microseconds; callers round
-/// to milliseconds exactly once, in [`breakaway_workflow_envelope_ms`], never
-/// before. Every later phase's exact plan duration must fit inside the
-/// returned reservation; a phase plan whose exact duration would exceed it is
-/// a zero-motion planning failure -- see, for example,
-/// [`super::breakaway_plan::AdditiveLadderPlanError::WorkflowEnvelopeExceeded`].
+/// Sums the worst-case probe, [`MAX_SWEEP_RUNGS`]-rung discovery, family-8 confirmation, the
+/// caller's recovery reservation (`recovery_slot_count * recovery_maximum_slot_us`), and the
+/// caller's maximum Integral continuation. Every later phase's exact duration must fit inside it.
 pub fn breakaway_workflow_envelope_us(
     recovery_slot_count: u32,
     recovery_maximum_slot_us: u32,
@@ -995,14 +828,8 @@ pub fn breakaway_workflow_envelope_us(
         .ok_or(VelocityIntegralPlanError::Arithmetic)
 }
 
-/// Round the breakaway-campaign workflow envelope outward to milliseconds.
-///
-/// Every microsecond term in [`breakaway_workflow_envelope_us`] is summed
-/// first; this is the single point where the sum is rounded, via
-/// `div_ceil(1_000)`, matching every other workflow-duration reservation in
-/// this module. The result feeds
-/// [`super::workflow_plan::CommissioningWorkflowPlan::new_breakaway`]
-/// directly.
+/// Round the breakaway-campaign workflow envelope outward to milliseconds, once, after summing
+/// every microsecond term of [`breakaway_workflow_envelope_us`].
 pub fn breakaway_workflow_envelope_ms(
     recovery_slot_count: u32,
     recovery_maximum_slot_us: u32,
@@ -1016,33 +843,6 @@ pub fn breakaway_workflow_envelope_ms(
     u32::try_from(total_us.div_ceil(1_000)).map_err(|_| VelocityIntegralPlanError::Arithmetic)
 }
 
-/// Validate and return the one token that may authorize Integral for a
-/// breakaway campaign: proof that `confirmation_plan`'s held-out block
-/// accepted, bound to its digest.
-///
-/// The breakaway campaign has no Proportional sweep plan, so a breakaway-schema
-/// [`IntegralAcquisitionAuthority::proportional_plan_digest`] instead carries the accepted
-/// [`BandConfirmationPlan`]'s digest, obtained only through this function and
-/// only via [`IntegralAcquisitionAuthority::new_breakaway`]. The returned
-/// [`ConfirmedAcquisitionDigest`] cannot be constructed any other way: this
-/// is the single gate, and it is fail-closed in both directions the safety
-/// invariant forbids:
-///
-/// - `candidate_acquisition_digest` must be exactly `confirmation_plan.
-///   plan_digest`. A discovery or probe digest offered in its place --
-///   whether by a call-site copy-paste error or a corrupted evidence record
-///   -- is rejected with [`BreakawayAuthorityBindingError::
-///   AcquisitionDigestMismatch`].
-/// - `confirmation_outcome` must be `Ok`. A confirmation plan whose held-out
-///   block did not accept is rejected with [`BreakawayAuthorityBindingError::
-///   ConfirmationNotAccepted`] even when its `plan_digest` is otherwise
-///   well-formed and matches `candidate_acquisition_digest` exactly: a
-///   syntactically valid digest is never enough on its own.
-///
-/// Callers must supply the actual `Result` returned by
-/// [`super::band_confirmation::evaluate_band_confirmation`] as
-/// `confirmation_outcome`; there is no way to synthesize acceptance from a
-/// bare digest.
 pub(crate) fn bind_breakaway_integral_authority(
     candidate_acquisition_digest: u64,
     confirmation_plan: BandConfirmationPlan,
@@ -1059,60 +859,19 @@ pub(crate) fn bind_breakaway_integral_authority(
     Ok(ConfirmedAcquisitionDigest(confirmation_plan.plan_digest))
 }
 
-/// Explicit physical acquisition inputs the shared Integral tail needs.
-///
-/// The breakaway campaign ([`plan_breakaway_velocity_integral_response`]) has
-/// no Proportional sweep plan at all and builds one directly from its own campaign
-/// parameters instead of fabricating a `VelocitySweepExecutionPlan`. The
-/// fixed-gain-amplitude preflight (`commission_dispatch::fixed_gain_amplitude`) still
-/// reconstructs a Proportional sweep plan to source these physical fields, via
-/// [`From`], then overwrites the breakaway-only fields below directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct AcquisitionContext {
-    /// Frozen encoder-domain velocity amplitude.
     pub(crate) planned_velocity_mrev_s: u32,
-    /// Frozen signed-target magnitude in mechanical RPM register units.
     pub(crate) target_velocity_rpm: i32,
-    /// Configured hard torque-target limit.
     pub(crate) hard_torque_limit: u16,
-    /// Inclusive usable torque-target boundary.
     pub(crate) usable_torque_limit: u16,
-    /// Available authority for proving absence of transient clamp contact.
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
-    /// Physical firmware channel the breakaway Integral authority is minted for.
-    ///
-    /// Consumed only by [`plan_breakaway_velocity_integral_response`], which
-    /// builds its [`IntegralAcquisitionAuthority`] internally from the confirmation token so
-    /// no forged authority can be passed in. [`From`] leaves this zero; the
-    /// fixed-gain-amplitude preflight overwrites it with the real channel
-    /// immediately after constructing from it.
     pub(crate) channel: u8,
-    /// Plan-time PWM carrier frequency the confirmation evidence was gathered
-    /// under, in Hz.
-    ///
-    /// The breakaway gate refuses if this does not match the live PWM frequency
-    /// handed to it at Integral construction, so confirmation evidence measured
-    /// under one physical timebase can never seed an Integral plan admitted under
-    /// another. [`From`] leaves this zero (fail-closed: zero never matches a
-    /// live frequency); the fixed-gain-amplitude preflight overwrites it with the
-    /// live value immediately after constructing from it.
     pub(crate) plan_time_pwm_hz: u32,
-    /// Plan-time encoder counts per mechanical revolution the confirmation
-    /// evidence was gathered under.
-    ///
-    /// Cross-checked against the live encoder resolution by the breakaway gate,
-    /// exactly like [`Self::plan_time_pwm_hz`]. [`From`] leaves this zero; the
-    /// fixed-gain-amplitude preflight overwrites it the same way.
     pub(crate) plan_time_encoder_counts_per_rev: u32,
 }
 
 impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
-    /// Extract exactly the physical fields the shared Integral tail reads.
-    ///
-    /// The breakaway-only `channel` and `plan_time_*` fields are left zero:
-    /// every caller of this conversion overwrites them explicitly with its
-    /// own live values immediately afterward, rather than relying on this
-    /// impl to know them.
     fn from(plan: VelocitySweepExecutionPlan) -> Self {
         Self {
             planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
@@ -1127,58 +886,6 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
     }
 }
 
-/// Construct one exact breakaway-campaign Integral plan from a confirmed
-/// candidate proportional gain, with no reselection.
-///
-/// The normative decision (spec section 7):
-/// confirmation selects the exact Integral proportional gain but does not
-/// waive Integral safety admission. `fixed_p = confirmation_plan.nominated_p`
-/// unconditionally -- there is no joint-membership test-point selection, no
-/// lower-middle or highest-in-band reselection, and no fallback to another
-/// discovery candidate. Every existing plan-time safety check still gates
-/// Integral, and any failure refuses without motion.
-///
-/// The only authority input is `token`, a [`ConfirmedAcquisitionDigest`]. That
-/// token can be minted solely by [`bind_breakaway_integral_authority`] from a
-/// genuine `Ok(`[`BandConfirmationAcceptance`]`)` -- itself unforgeable (its
-/// `nominated_p` field is private) -- so this gate cannot be reached for an
-/// arbitrary gain without a real all-eight held-out pass. The gate builds the
-/// [`IntegralAcquisitionAuthority`] INTERNALLY via [`IntegralAcquisitionAuthority::new_breakaway`]; it
-/// never accepts a pre-built `IntegralAcquisitionAuthority`, closing the bypass where a
-/// caller forged one by struct literal (its fields are `pub`) and paired it
-/// with a self-consistent but fabricated `BandConfirmationPlan`.
-/// `held_out_response_intervals_q` is not an authority input -- it gates
-/// nothing here and carries only the same accepted block's pooled response
-/// interval through to `IntegralAcquisitionAuthority::directional_pooled_intervals`, for
-/// the acceptance-point recovery authority downstream planning reads from the
-/// resulting plan.
-///
-/// It additionally: (a) re-validates the fixed confirmation contract through
-/// the single canonical [`super::band_confirmation::validate_fixed_contract`]
-/// -- every frozen field (family size, observations per direction, capture
-/// profile, all three timing fields, both band edges, the acceptance rule, the
-/// fixed slot order, and digest self-consistency) -- the same function the
-/// confirmation phase runs before its first stroke, so the contract cannot
-/// drift between the two sites; (b) ties `confirmation_plan.plan_digest` to
-/// `token.get()`, so a forged plan whose candidate (or any hashed field)
-/// differs is refused; and (c) refuses if the plan-time PWM/encoder frozen in
-/// `context` does not match the live `pwm_hz`/`encoder_counts_per_rev`, so
-/// confirmation evidence gathered under one physical timebase cannot seed a
-/// plan admitted under another. `context` carries the breakaway campaign's own
-/// physical acquisition parameters -- there is no reproduced Proportional sweep plan
-/// to read them from.
-///
-/// Order of checks, all before any plan is constructed: confirmation-plan
-/// contract validation; plan-to-token digest binding; plan-time-vs-live
-/// physical-context match; authority built from the token;
-/// [`transition_capable_integral_gain`] for the exact confirmed gain; then the
-/// shared tail's own recovery-geometry and duration admission. Emits schema
-/// [`super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION`], using the
-/// existing non-combined integral ladder unchanged.
-///
-/// `confidence_q`/`band_position_q` are carried-through diagnostics only:
-/// unlike `held_out_response_intervals_q`, they are excluded from
-/// `plan.digest()` and so never affect resume matching.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_breakaway_velocity_integral_response(
     token: ConfirmedAcquisitionDigest,
@@ -1193,25 +900,14 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
 ) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
     validate_fixed_contract(&confirmation_plan)
         .map_err(|_| VelocityIntegralPlanError::InvalidConfirmationPlan)?;
-    // The token is the confirmed plan's digest and can be minted only by
-    // `bind_breakaway_integral_authority` from a genuine, unforgeable
-    // `Ok(BandConfirmationAcceptance)`. Tie the supplied plan to it: a plan
-    // whose candidate (or any hashed field) differs has a different digest and
-    // is refused, so no forged `BandConfirmationPlan` can be admitted here.
     if confirmation_plan.plan_digest != token.get() {
         return Err(VelocityIntegralPlanError::MismatchedAuthority);
     }
-    // Fail-closed physical-context guard: confirmation evidence frozen under one
-    // PWM timebase / encoder resolution must not seed an Integral plan admitted
-    // under different live values.
     if context.plan_time_pwm_hz != pwm_hz
         || context.plan_time_encoder_counts_per_rev != encoder_counts_per_rev
     {
         return Err(VelocityIntegralPlanError::PhysicalContextMismatch);
     }
-    // Build the authority INTERNALLY from the token. The gate never accepts a
-    // pre-built `IntegralAcquisitionAuthority`, so a caller cannot forge one (its fields are
-    // `pub`) and pass it in to bypass confirmation.
     let authority = IntegralAcquisitionAuthority::new_breakaway(
         context.channel,
         token,
@@ -1248,40 +944,6 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
     )
 }
 
-/// Rebuild one breakaway Integral plan from authority firmware already retained.
-///
-/// The resume counterpart to [`plan_breakaway_velocity_integral_response`]. It
-/// takes the same unforgeable [`ConfirmedAcquisitionDigest`], so a gain still
-/// cannot reach Integral without a genuine accepted confirmation; the token here
-/// comes from the retention slot, which only a plan that already passed that
-/// gate can write.
-///
-/// It omits the confirmation-plan contract validation and the plan-to-token
-/// digest binding, because both admitted this gain when the campaign ran and
-/// neither has an input at resume time -- the confirmation plan is not retained.
-/// Everything that bounds *this* run is re-checked live: the physical-context
-/// guard, the transition-capable test for the confirmed gain, and the shared
-/// tail's recovery-geometry and duration admission.
-///
-/// The caller must still compare the resulting plan digest against the retained
-/// identity. That comparison is what proves the request reproduces the retained
-/// plan, and it replaces the Proportional digest check the reproduced-Proportional path
-/// uses, which has no meaning here.
-///
-/// `held_out_response_intervals_q` must be the exact value
-/// [`IntegralAcquisitionAuthority::directional_pooled_intervals`] carried on the plan being
-/// resumed -- callers read it back from the retained
-/// [`super::integral_reproduction::IntegralAuthoritySummary`], which
-/// `IntegralAuthoritySummary::from_plan` captured from the original accepted
-/// plan. `plan.digest()` folds this field in, so any other value -- including
-/// the unavailable-value zero this parameter's predecessor hardcoded --
-/// rebuilds a plan whose digest can never match the retained identity, and
-/// the resume is refused as a mismatch even though nothing about the request
-/// actually changed.
-///
-/// `confidence_q`/`band_position_q` are carried-through diagnostics only:
-/// unlike `held_out_response_intervals_q` above, they are excluded from
-/// `plan.digest()` and so never affect resume matching.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_retained_breakaway_velocity_integral_response(
     token: ConfirmedAcquisitionDigest,

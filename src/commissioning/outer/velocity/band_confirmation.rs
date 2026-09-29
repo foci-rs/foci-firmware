@@ -1,27 +1,7 @@
 //! Nomination screen and held-out family-eight confirmation for Phase 4.
 //!
-//! Discovery is an adaptive search: selecting a candidate proportional gain on
-//! the same data that then accepts it contaminates the interval. This module
-//! implements a two-part remedy:
-//!
-//! - [`nominate_confirmation_candidate`]: a pointwise screen, computed purely
-//!   from discovery data, that predicts which rung is most likely to survive a
-//!   fresh family-eight confirmation and how much margin it has. It never
-//!   authorizes Integral by itself.
-//! - [`nominate_confirmation_candidate_from_bounds`]: the same screen, run from
-//!   the compact [`DiscoveryRungNominationBounds`] discovery retains per rung
-//!   after collection ([`rung_nomination_bounds`]) instead of the raw
-//!   observation atoms. Shares its margin math and selection with the
-//!   raw-atom screen so the two cannot silently diverge.
-//! - [`evaluate_band_confirmation`]: the held-out block. Four fresh
-//!   observations per direction, eight strokes, predeclared before motion.
-//!   Only this function's `Ok` result may authorize Integral.
-//!
-//! The two use different half-width formulas on purpose. The screen inflates
-//! its predicted half-width by [`NOMINATION_SCREEN_C_SIGMA`] because it is
-//! extrapolating a fresh family-eight standard error from one discovery
-//! observation's own `df = 15` estimate. The held-out block measures its own
-//! family-eight standard error directly, so `c_sigma` never appears there.
+//! Only the `Ok` result of [`evaluate_band_confirmation`] may authorize Integral; the nomination
+//! screens never do.
 
 use foci_tmc4671::pid::PidPGain;
 
@@ -36,10 +16,7 @@ use super::sweep_plan::{MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE
 
 /// Confirmation family size: four fresh observations per direction, eight total.
 ///
-/// Declared directly per spec section 7, never derived from
-/// `rung_count * observations_per_direction` (`sweep_analysis.rs:134`), which
-/// would give family 4 for a single-rung confirmation plan and silently narrow
-/// every interval.
+/// Declared directly, never derived from rung count times observations per direction.
 pub const CONFIRMATION_FAMILY_SIZE: u16 = 8;
 /// Fresh observations collected per direction during confirmation.
 pub const CONFIRMATION_OBSERVATIONS_PER_DIRECTION: u16 = 4;
@@ -48,20 +25,9 @@ pub const CONFIRMATION_BAND_LOWER_PERCENT: u8 = 70;
 /// Inclusive upper edge of the confirmable proportional-response band, in percent.
 pub const CONFIRMATION_BAND_UPPER_PERCENT: u8 = 80;
 /// Stable wire code for the only admitted confirmation capture profile.
-///
-/// Spec section 7, "Noise levers": "The initial implementation permits only
-/// the existing capture profile." A longer profile requires its own
-/// profile-specific SE prediction rule and effective-df constants before it
-/// can be admitted, so this code has exactly one valid value today.
 pub const CONFIRMATION_CAPTURE_PROFILE_EXISTING: u8 = 0;
-/// Stable wire code for the only admitted held-out acceptance rule: both
-/// directions at complete `collected == eligible == 0b1111` masks and all eight
-/// fresh intervals wholly inside the band.
-///
-/// The code is unchanged at 0. This rule has always been "all eight
-/// contained"; briefly also demanding a full depth-three `included_mask` was a
-/// defect in implementing it, not a different rule, so captures carrying
-/// `acceptance_rule = 0` remain replayable.
+/// Stable wire code for the only admitted held-out acceptance rule: both directions at complete
+/// `collected == eligible == 0b1111` masks and all eight fresh intervals wholly inside the band.
 pub const CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED: u8 = 0;
 
 /// Fixed execution order of the eight held-out confirmation strokes: four
@@ -77,52 +43,22 @@ pub const CONFIRMATION_SLOT_ORDER: [VelocityDirection; 8] = [
     VelocityDirection::Reverse,
 ];
 
-/// Pointwise 95% scale-inflation heuristic the nomination screen applies on
-/// top of the family-eight multiplier: `c_sigma = sqrt(15 / chi2_0.05,15)`.
+/// Pointwise 95% scale-inflation heuristic the nomination screen applies on top of the
+/// family-eight multiplier: `c_sigma = sqrt(15 / chi2_0.05,15)`.
 ///
-/// This is **not** a coverage guarantee for confirmation, and it is **not**
-/// 95% after nomination selects `max_i M_i` across every discovery rung:
-/// taking that maximum is exactly the adaptive step that inflates apparent
-/// margin, because the rung that looks most confirmable is disproportionately
-/// the one whose discovery standard error happened low. No multiplicity
-/// correction is applied on top of it, and none is claimed. It only bounds
-/// `sigma / S_d` for one observation's standard error considered in
-/// isolation.
-///
-/// It is **not tunable**: it is derived from `df = 15` (the same degrees of
-/// freedom baked into `CONFIDENCE_MULTIPLIERS_95_DF15`) and the existing
-/// 95% level, nothing else. The acceptance guarantee comes entirely from the
-/// held-out confirmation block in [`evaluate_band_confirmation`], whose
-/// family and rule are fixed before its first stroke and are unaffected by
-/// how the candidate was chosen.
+/// Not a coverage guarantee and not tunable; acceptance comes only from
+/// [`evaluate_band_confirmation`].
 pub const NOMINATION_SCREEN_C_SIGMA: f32 = 1.4373055;
 
-/// Largest half-width fraction for which containment inside a 10-point band is
-/// even achievable by any response location: `1 / 15`.
-///
-/// Derived in spec section 7, "The confirmable window is narrower than the
-/// band": `r_min = 70 / (1 - h)`, `r_max = 80 / (1 + h)`, and `r_min <= r_max`
-/// only when `h <= 1/15`.
 const MAXIMUM_CONTAINABLE_HALF_WIDTH_FRACTION: f32 = 1.0 / 15.0;
 
-/// Fractional-percentage-point granularity at which interval endpoints are
-/// conservatively widened before containment is judged.
-///
-/// Defends the exact 70/80 boundary comparisons against floating-point
-/// rounding noise: the lower endpoint always rounds down and the upper
-/// endpoint always rounds up, so no interval can appear narrower, and no
-/// margin can appear larger, than its true value.
 const INTERVAL_ENDPOINT_ROUNDING_SCALE: f32 = 1.0e4;
 
 const FULL_DIRECTIONAL_OBSERVATION_MASK: u8 = FULL_OBSERVATION_MASK;
 
 /// One raw discovery or confirmation observation's response statistics.
 ///
-/// The denominator (`target_rate_q`) is kept explicit rather than folded into
-/// a precomputed ratio, so callers cannot accidentally divide out a previous
-/// family multiplier or lose the distinction between the measured mean and
-/// the commanded target. `variance_of_mean_q2` is stored family-free
-/// (`decision.rs:113-133`): no confidence multiplier has been applied to it.
+/// `variance_of_mean_q2` is family-free: no confidence multiplier has been applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct DiscoveryObservationAtom {
     /// Raw signed settled-rate mean in fixed-point rate units.
@@ -135,33 +71,19 @@ pub struct DiscoveryObservationAtom {
     pub direction: VelocityDirection,
 }
 
-/// Failure classifying one observation's percent response and relative SE.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(super) enum ObservationStatisticError {
-    /// `target_rate_q` was not a positive magnitude.
     InvalidTarget,
-    /// A zero or wrong-sign mean is not representable as a candidate response.
     NotRepresentable,
-    /// A computed quantity was not finite.
     Arithmetic,
 }
 
-/// One observation's percent response and relative standard error.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ObservationStatistic {
-    /// `r = 100 * commanded_side(mean_rate_q) / target_rate_q`, in percent.
     pub(super) response_percent: f32,
-    /// `SE = sqrt(variance_of_mean_q2) / abs(mean_rate_q)`, as a fraction.
     pub(super) relative_standard_error: f32,
 }
 
-/// Sign-normalize one raw mean rate onto its commanded-direction magnitude.
-///
-/// Mirrors the established `commanded_side` convention: `commanded_side_lower_rate_q`
-/// in `recovery.rs` and the match in `sweep_evidence.rs:847`. A forward
-/// observation must show a strictly positive mean rate and a reverse
-/// observation a strictly negative one. A zero or wrong-sign mean is not
-/// representable as a candidate response and returns `None`.
 const fn commanded_side_mean_rate_q(direction: VelocityDirection, mean_rate_q: i64) -> Option<u64> {
     match direction {
         VelocityDirection::Forward if mean_rate_q > 0 => Some(mean_rate_q as u64),
@@ -170,13 +92,6 @@ const fn commanded_side_mean_rate_q(direction: VelocityDirection, mean_rate_q: i
     }
 }
 
-/// Compute one observation's percent response and relative standard error.
-///
-/// `pub(super)` (rather than private) so the additive discovery driver's own
-/// stop-rule containment check (`breakaway_campaign.rs`) can share this exact
-/// computation instead of forking it. See
-/// [`rung_response_bounds_percent`]'s doc comment for how the two callers
-/// diverge afterward.
 pub(super) fn observation_statistic(
     atom: DiscoveryObservationAtom,
 ) -> Result<ObservationStatistic, ObservationStatisticError> {
@@ -202,27 +117,14 @@ pub(super) fn observation_statistic(
     })
 }
 
-/// Round one interval's lower endpoint outward (down), never inward.
 fn round_outward_lower(value: f32) -> f32 {
     libm::floorf(value * INTERVAL_ENDPOINT_ROUNDING_SCALE) / INTERVAL_ENDPOINT_ROUNDING_SCALE
 }
 
-/// Round one interval's upper endpoint outward (up), never inward.
 fn round_outward_upper(value: f32) -> f32 {
     libm::ceilf(value * INTERVAL_ENDPOINT_ROUNDING_SCALE) / INTERVAL_ENDPOINT_ROUNDING_SCALE
 }
 
-/// Build one observation's percent-response interval: `h = multiplier * SE *
-/// c_sigma`, then `[r * (1 - h), r * (1 + h)]`, optionally rounded outward.
-///
-/// `pub(super)` so both callers of [`rung_response_bounds_percent`] build the
-/// SAME per-observation interval, differing only in the two parameters that
-/// carry a real, documented statistical meaning: `c_sigma` (an inflation
-/// factor predicting a FUTURE held-out interval from this one discovery
-/// observation) and `round_outward` (whether the 70/80 boundary comparison
-/// defends against floating-point rounding noise). See
-/// [`rung_response_bounds_percent`]'s doc comment for how confirmation and
-/// discovery set these two parameters differently, and why.
 pub(super) fn observation_interval_percent(
     atom: DiscoveryObservationAtom,
     multiplier: f32,
@@ -266,20 +168,11 @@ pub struct DiscoveryRungNominationInput {
         [Option<DiscoveryObservationAtom>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
 }
 
-/// One in-band rung's nomination interval and eligibility, computed once at
-/// discovery collection time and retained in place of its raw observation
-/// atoms.
+/// One in-band rung's nomination interval and eligibility, retained in place of its raw
+/// observation atoms and computed by [`rung_nomination_bounds`].
 ///
-/// Nomination consumes only the candidate `p`, the enveloped nomination
-/// interval `(lower_percent, upper_percent)`, and whether the rung is
-/// nominatable at all -- nothing else about the raw atoms is needed once
-/// [`rung_nomination_bounds`] has folded them. `lower_percent`/`upper_percent`
-/// are computed with the NOMINATION parameters (the family-eight multiplier,
-/// [`NOMINATION_SCREEN_C_SIGMA`], outward rounding), the same parameters
-/// [`nominate_confirmation_candidate`]'s own `rung_confirmable_margin_percent`
-/// uses -- see [`rung_nomination_bounds`] for the equivalence this depends on.
-/// When `nominatable` is `false`, `lower_percent`/`upper_percent` carry no
-/// meaning and must not be read.
+/// When `nominatable` is `false`, `lower_percent`/`upper_percent` carry no meaning and must not
+/// be read.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 pub struct DiscoveryRungNominationBounds {
     /// Proportional gain used at this rung.
@@ -295,18 +188,10 @@ pub struct DiscoveryRungNominationBounds {
     pub nominatable: bool,
 }
 
-/// Fold one rung's raw discovery evidence into its compact nomination bounds,
-/// using the NOMINATION parameters: the family-eight multiplier,
-/// [`NOMINATION_SCREEN_C_SIGMA`], and outward rounding -- the same three
-/// parameters `rung_confirmable_margin_percent` uses internally. Intended to
-/// run once per rung at discovery collection time, so the raw atoms can be
-/// dropped afterward: see `breakaway_campaign.rs`'s `CollectedInBandRungs`.
+/// Fold one rung's raw discovery evidence into its compact nomination bounds.
 ///
-/// When the rung is not nominatable (either direction lacks
-/// `EligibleConsensus`, an included observation is missing, or an included
-/// observation's mean is zero or wrong-signed), `nominatable` is `false` and
-/// `lower_percent`/`upper_percent` are both `0.0` placeholders that must not
-/// be read.
+/// When the rung is not nominatable, `nominatable` is `false` and both percents are `0.0`
+/// placeholders that must not be read.
 pub fn rung_nomination_bounds(
     rung: &DiscoveryRungNominationInput,
 ) -> DiscoveryRungNominationBounds {
@@ -344,32 +229,6 @@ pub struct NominatedConfirmationCandidate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct TargetBandUnconfirmableFromDiscovery;
 
-/// Fold one rung's included discovery observations (both directions) into a
-/// single combined percent-response interval.
-///
-/// Returns `None` when the rung is not judgeable at all: either direction
-/// lacks `EligibleConsensus`, an included observation is missing, or an
-/// included observation's mean is zero or wrong-signed and therefore not
-/// representable as a candidate response.
-///
-/// `pub(super)`, parameterized by `c_sigma` and `round_outward`, so this one
-/// aggregation is shared rather than forked:
-///
-/// - Confirmation's own [`rung_confirmable_margin_percent`] calls this with
-///   `c_sigma = `[`NOMINATION_SCREEN_C_SIGMA`]` and `round_outward = true`: it
-///   is the conservative gate that actually authorizes Integral, so it inflates
-///   for a FUTURE held-out family-eight test and defends the exact 70/80
-///   boundary against floating-point rounding noise.
-/// - The additive discovery driver's own stop-rule containment check
-///   (`breakaway_campaign.rs::classify_rung_band`) calls this with `c_sigma =
-///   1.0` and `round_outward = false`: discovery only decides which rungs to
-///   collect and hand to nomination, it never authorizes Integral itself, and
-///   under-collecting a borderline-viable rung here is worse than collecting
-///   one that nomination's own (conservative) screen later rejects. The two
-///   callers' numeric results are therefore deliberately different at the band
-///   edge -- this parameterization is what keeps that difference intentional
-///   and in one place instead of silent, undocumented drift between two copies
-///   of the same math.
 pub(super) fn rung_response_bounds_percent(
     rung: &DiscoveryRungNominationInput,
     multiplier: f32,
@@ -404,19 +263,6 @@ pub(super) fn rung_response_bounds_percent(
     Some((lower?, upper?))
 }
 
-/// Fold one rung's included discovery observations into per-direction
-/// inverse-variance-pooled percent-response intervals.
-///
-/// Unlike [`rung_response_bounds_percent`] (a min/max union, kept unchanged
-/// for nomination and confirmation-margin math), this pools each direction's
-/// included observations by inverse variance, so more evidence narrows the
-/// interval instead of widening it. Used only by discovery's own collection
-/// stop-rule (`breakaway_campaign.rs::classify_rung_band`); must not be
-/// reused for nomination or confirmation.
-///
-/// Returns `None` under the same unjudgeable conditions as
-/// [`rung_response_bounds_percent`]: ineligible consensus, a missing included
-/// observation, or a zero/wrong-signed mean.
 pub(super) fn rung_directional_pooled_bounds_percent(
     rung: &DiscoveryRungNominationInput,
     multiplier: f32,
@@ -437,11 +283,6 @@ pub(super) fn rung_directional_pooled_bounds_percent(
     Some([forward, reverse])
 }
 
-/// Inverse-variance pool one direction's included observations into one
-/// percent-response interval.
-///
-/// A zero-variance observation is exact and dominates any nonzero-variance
-/// ones included alongside it. Conflicting exact observations return `None`.
 fn pooled_direction_interval_percent(
     consensus: DirectionalConsensus,
     observations: &[Option<DiscoveryObservationAtom>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
@@ -519,14 +360,6 @@ fn pooled_direction_interval_percent(
     Some((low, high))
 }
 
-/// Fold one rung's discovery evidence into its pointwise confirmable margin.
-///
-/// Returns `None` when the rung is not nominatable at all: either direction
-/// lacks `EligibleConsensus`, an included observation is missing, or an
-/// included observation's mean is zero or wrong-signed and therefore not
-/// representable as a candidate response. Unchanged in behavior from before
-/// [`rung_response_bounds_percent`] was extracted -- same `c_sigma`, same
-/// outward rounding, same math.
 fn rung_confirmable_margin_percent(
     rung: &DiscoveryRungNominationInput,
     multiplier: f32,
@@ -536,30 +369,12 @@ fn rung_confirmable_margin_percent(
     Some(margin_percent_from_bounds(lower, upper))
 }
 
-/// `M_i = min(L_i - 70, 80 - U_i)` for one rung's enveloped nomination
-/// interval, in percent.
-///
-/// Shared by [`rung_confirmable_margin_percent`] (raw-atom path) and
-/// [`nominate_confirmation_candidate_from_bounds`] (the reduced
-/// [`DiscoveryRungNominationBounds`] path) so the margin formula cannot drift
-/// between the two: both compute `(lower, upper)` from the same NOMINATION
-/// parameters -- see [`rung_nomination_bounds`] -- then fold them through this
-/// one function.
 fn margin_percent_from_bounds(lower_percent: f32, upper_percent: f32) -> f32 {
     let lower_margin = lower_percent - f32::from(CONFIRMATION_BAND_LOWER_PERCENT);
     let upper_margin = f32::from(CONFIRMATION_BAND_UPPER_PERCENT) - upper_percent;
     lower_margin.min(upper_margin)
 }
 
-/// Select the highest-P candidate from `(p, margin_percent)` pairs whose
-/// margin is band-admissible (`margin_percent >= 0`), excluding negative
-/// margins.
-///
-/// Shared by [`nominate_confirmation_candidate`] (raw-atom evidence) and
-/// [`nominate_confirmation_candidate_from_bounds`] (the reduced
-/// [`DiscoveryRungNominationBounds`] representation) so the two nomination
-/// paths cannot silently diverge: both feed this one selection loop, differing
-/// only in how their `(p, margin_percent)` pairs are produced.
 fn select_nominated_candidate<I>(
     candidates: I,
 ) -> Result<NominatedConfirmationCandidate, TargetBandUnconfirmableFromDiscovery>
@@ -578,9 +393,6 @@ where
         }
         let replace = match best {
             None => true,
-            // Highest band-admissible P is the most robust band candidate: recovery IAE
-            // is monotone-decreasing in P within the response band, so the top rung has
-            // the best IAE of any admissible candidate and dominates every lower one.
             Some(current) => p.raw() > current.p.raw(),
         };
         if replace {
@@ -590,14 +402,9 @@ where
     best.ok_or(TargetBandUnconfirmableFromDiscovery)
 }
 
-/// Screen every discovery rung and nominate the highest band-admissible rung
-/// (`M_i >= 0`); under monotone IAE this is the most robust candidate the
-/// band admits.
+/// Screen every discovery rung and nominate the highest band-admissible rung (`M_i >= 0`).
 ///
-/// See spec section 7, "Nomination screen, computed from discovery data only".
-/// A rung is confirmable from discovery when `M_i >= 0`. When no rung
-/// qualifies, this returns [`TargetBandUnconfirmableFromDiscovery`] and no
-/// confirmation strokes may be spent.
+/// Returns [`TargetBandUnconfirmableFromDiscovery`] when no rung qualifies.
 pub fn nominate_confirmation_candidate(
     rungs: &[DiscoveryRungNominationInput],
 ) -> Result<NominatedConfirmationCandidate, TargetBandUnconfirmableFromDiscovery> {
@@ -609,18 +416,10 @@ pub fn nominate_confirmation_candidate(
     }))
 }
 
-/// Screen every collected [`DiscoveryRungNominationBounds`] and nominate the
-/// highest band-admissible rung (`M_i >= 0`); under monotone IAE this is the
-/// most robust candidate the band admits.
+/// Screen every [`DiscoveryRungNominationBounds`] and nominate the highest band-admissible rung
+/// (`M_i >= 0`); non-nominatable rungs are excluded.
 ///
-/// Runs the SAME selection as [`nominate_confirmation_candidate`] --
-/// `select_nominated_candidate` -- but from the compact bounds discovery
-/// retains after collection instead of recomputing from raw observation
-/// atoms. A non-nominatable rung (`nominatable == false`) is excluded, exactly
-/// as a rung that fails `rung_response_bounds_percent` is excluded from the
-/// raw-atom path. When no rung qualifies, this returns
-/// [`TargetBandUnconfirmableFromDiscovery`] and no confirmation strokes may be
-/// spent.
+/// Returns [`TargetBandUnconfirmableFromDiscovery`] when no rung qualifies.
 pub fn nominate_confirmation_candidate_from_bounds(
     bounds: &[DiscoveryRungNominationBounds],
 ) -> Result<NominatedConfirmationCandidate, TargetBandUnconfirmableFromDiscovery> {
@@ -638,11 +437,6 @@ pub fn nominate_confirmation_candidate_from_bounds(
 }
 
 /// Why nomination spent zero confirmation strokes.
-///
-/// Distinguishes "the discovery band held no admissible rung at all" from "the
-/// band held admissible rungs, but every one exceeds the Integral
-/// transition-capability ceiling", so a refusal names its own reason instead of
-/// collapsing into one generic terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum NominationRejection {
     /// No discovery rung's response was band-admissible (`M_i >= 0`).
@@ -653,16 +447,9 @@ pub enum NominationRejection {
     NoTransitionCapableCandidate,
 }
 
-/// Nominate the highest band-admissible rung whose proportional gain is also
-/// transition-capable (`p <= transition_ceiling`), so nomination never selects a
-/// gain that Integral admission would later refuse without motion.
-///
-/// `transition_ceiling` is `super::integral_plan::max_transition_capable_p`
-/// for the campaign's live acquisition context -- the exact monotone inverse of
-/// `super::integral_plan::transition_capable_integral_gain`, so filtering by
-/// `p <= transition_ceiling` admits exactly the gains that gate would admit.
-/// Wraps the unconstrained [`nominate_confirmation_candidate_from_bounds`]
-/// primitive rather than reimplementing selection, so the two cannot diverge.
+/// Nominate the highest band-admissible rung whose proportional gain is transition-capable
+/// (`p <= transition_ceiling`), where `transition_ceiling` is
+/// `super::integral_plan::max_transition_capable_p` for the live acquisition context.
 pub fn nominate_transition_capable_candidate_from_bounds(
     bounds: &[DiscoveryRungNominationBounds],
     transition_ceiling: u16,
@@ -680,9 +467,6 @@ pub fn nominate_transition_capable_candidate_from_bounds(
     );
     match capable {
         Ok(candidate) => Ok(candidate),
-        // No transition-capable band rung. Distinguish "the band held an
-        // admissible rung, but all are above the ceiling" from "the band was
-        // empty", by asking the unconstrained primitive over the same bounds.
         Err(TargetBandUnconfirmableFromDiscovery) => {
             match nominate_confirmation_candidate_from_bounds(bounds) {
                 Ok(_) => Err(NominationRejection::NoTransitionCapableCandidate),
@@ -716,14 +500,8 @@ pub enum BandConfirmationFailureCause {
     /// A fresh interval's half-width fraction alone exceeds `1 / 15`, so no
     /// achievable response location could ever satisfy containment.
     ExcessiveUncertainty,
-    /// Either direction failed to report complete
-    /// `collected_mask == eligible_mask == 0b1111`, or an expected observation
-    /// atom was absent, for a reason other than current-headroom exclusion.
-    ///
-    /// The name predates the acceptance rule dropping `included_mask`; the
-    /// wire code (`super::breakaway_reporting::BreakawayTerminalCause::ConfirmationLossOfConsensus`,
-    /// 17) is stable, so it is retained. A split depth-three consensus alone no
-    /// longer reaches here.
+    /// Either direction failed to report complete `collected_mask == eligible_mask == 0b1111`, or an
+    /// expected observation atom was absent, for a reason other than current-headroom exclusion.
     LossOfConsensus,
     /// Either direction's incomplete mask traces to at least one observation
     /// classified [`VelocityObservationClass::CurrentHeadroom`].
@@ -740,97 +518,22 @@ pub struct TargetBandConfirmationInconclusive(pub BandConfirmationFailureCause);
 
 /// Held-out confirmation success: the only value that may authorize Integral.
 ///
-/// This is an unforgeable capability. Its `nominated_p` field is **private**
-/// and this module exposes no public constructor, no `Default`, and no
-/// `From`: the only code that may build a `BandConfirmationAcceptance` is
-/// [`evaluate_band_confirmation`] in this module, on the path where all eight
-/// fresh intervals passed. A module outside `band_confirmation` therefore
-/// cannot write `BandConfirmationAcceptance { nominated_p, .. }` or otherwise
-/// mint one, so an `Ok(acceptance)` handed to
-/// `super::integral_plan::bind_breakaway_integral_authority` can only have
-/// come from a genuine all-eight-contained held-out pass -- it can never be
-/// synthesized to bypass the confirmation gate. Read the confirmed gain with
+/// Only [`evaluate_band_confirmation`] can build one. Read the confirmed gain with
 /// `Self::nominated_p`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BandConfirmationAcceptance {
-    /// Confirmed proportional gain. Private so no sibling module can construct
-    /// an acceptance; see the type's own documentation.
     nominated_p: PidPGain,
-    /// Per-direction held-out response interval, forward then reverse, in
-    /// the SAME signed settled-rate-Q domain `directional_pooled_intervals`
-    /// carries on the Integral path: forward's `[low_q, high_q]` is a strictly
-    /// positive commanded-magnitude bound (`low_q > 0`); reverse's is
-    /// strictly negative (`high_q < 0`), formed as `[-high_magnitude_q,
-    /// -low_magnitude_q]` so `low_q <= high_q` still holds. This is what
-    /// [`super::recovery::commanded_side_lower_rate_q`] requires of both
-    /// directions, and what the fixed-gain-amplitude installer downstream
-    /// ultimately reads this value as.
-    ///
-    /// Derived from the same per-atom commanded-side magnitude and
-    /// `half_width_fraction` [`evaluate_band_confirmation`]'s containment
-    /// loop already computes for the percent gate -- applied to the atom's
-    /// signed `mean_rate_q` magnitude instead of its percent-of-target, then
-    /// pooled per direction (`low` = minimum accepted-atom magnitude bound,
-    /// `high` = maximum) exactly the way `rung_response_bounds_percent`
-    /// above pools a rung's included atoms into one interval. NOT a
-    /// percent-domain value: the 70-80% band gate stays in percent (that
-    /// math is unchanged), only the retained, returned interval is in the
-    /// rate domain.
-    ///
-    /// `pub(crate)`, not private: unlike `nominated_p`, this field carries no
-    /// unforgeability requirement of its own (the struct as a whole is still
-    /// unforgeable because `nominated_p` stays private), and both
-    /// [`super::integral_plan::IntegralAcquisitionAuthority::new_breakaway`]'s test and the
-    /// breakaway campaign need to read it directly from a sibling,
-    /// non-descendant module, so a `nominated_p`-style
-    /// private-field-plus-accessor pair would only add ceremony here.
     pub(crate) held_out_response_intervals_q: [[i32; 2]; 2],
-    /// Q0.16 confidence: `1 - worst_half_width_fraction / MAXIMUM_CONTAINABLE_HALF_WIDTH_FRACTION`,
-    /// clamped to `[0, 1]`. The worst (largest) half-width fraction across all
-    /// eight held-out observations, expressed as its margin below the
-    /// structural containment limit -- `0` at the limit, `65535` when the
-    /// worst observation carried no measurable uncertainty at all.
-    ///
-    /// Normalized against `MAXIMUM_CONTAINABLE_HALF_WIDTH_FRACTION`; comparable
-    /// only within a fixed containment threshold, unlike `band_position_q`
-    /// which is self-describing via the emitted `band_lower_percent`/
-    /// `band_upper_percent`.
     pub(crate) confidence_q: u16,
-    /// Q0.16 position of the mean held-out response percent within the fixed
-    /// `[CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT]`
-    /// band, clamped to `[0, 1]`: `0` at the lower edge, `65535` at the upper
-    /// edge.
-    ///
-    /// Pools forward and reverse into a single mean, so it can mask
-    /// directional asymmetry (e.g. 71% forward / 79% reverse both read as
-    /// "75%, dead centre"). This is intentional and safe: the containment
-    /// gate already independently bounds each individual observation to the
-    /// confirmation band, so the asymmetry is a diagnostic nuance, not
-    /// something that could hide a bad candidate.
     pub(crate) band_position_q: u16,
 }
 
 impl BandConfirmationAcceptance {
-    /// The confirmed proportional gain this held-out block accepted.
     pub(crate) fn nominated_p(&self) -> PidPGain {
         self.nominated_p
     }
 }
 
-/// Whether one direction contributed its complete four-observation schedule
-/// with every observation intrinsically eligible.
-///
-/// `included_mask` is deliberately **not** consulted. It is the depth-three
-/// consensus over this direction's `EquivalentTorqueTargetInterval`s -- the
-/// disturbance torque -- which is a different measured quantity than the
-/// proportional response the confirmation block is testing. Requiring it full
-/// would impose unanimous four-way disturbance agreement on top of the stated
-/// rule, rejecting blocks whose eight response intervals all satisfy the 70-80%
-/// claim. Both hazards spec section 7 names for demanding complete masks are
-/// covered without it: an ineligible observation by `eligible_mask`, and an
-/// out-of-band one by [`evaluate_band_confirmation`]'s containment loop, which
-/// judges all eight observations unconditionally rather than a mask-selected
-/// subset. Consensus stays on the wire as diagnostic evidence.
 fn directional_input_is_complete(input: &ConfirmationDirectionalInput) -> bool {
     input.consensus.collected_mask == FULL_DIRECTIONAL_OBSERVATION_MASK
         && input.consensus.eligible_mask == FULL_DIRECTIONAL_OBSERVATION_MASK
@@ -838,18 +541,9 @@ fn directional_input_is_complete(input: &ConfirmationDirectionalInput) -> bool {
 
 /// Judge the held-out family-eight confirmation block.
 ///
-/// Acceptance requires both directions to report complete
-/// `collected_mask == eligible_mask == 0b1111`, every observation atom to be
-/// present, and all eight fresh intervals to lie wholly inside 70-80%. The
-/// containment loop below judges all eight unconditionally, so no observation
-/// can be dropped from the accepted set: any exclusion — stationarity,
-/// eligibility, headroom, or otherwise — fails confirmation rather than
-/// shrinking it (spec section 7, "Confirmation block").
-///
-/// The depth-three `included_mask` is not part of the gate; see
-/// `directional_input_is_complete` for why. `c_sigma` does not appear here
-/// either: this is real held-out data, not a discovery-derived prediction, so
-/// the interval uses `h = m(8) * SE` directly.
+/// Acceptance requires both directions to report complete `collected_mask == eligible_mask ==
+/// 0b1111`, every observation atom present, and all eight fresh intervals wholly inside 70-80%.
+/// Any excluded observation fails confirmation rather than shrinking the set.
 pub fn evaluate_band_confirmation(
     nominated_p: PidPGain,
     forward: ConfirmationDirectionalInput,
@@ -874,28 +568,7 @@ pub fn evaluate_band_confirmation(
 
     let mut excessive_uncertainty = false;
     let mut response_location = false;
-    // Per-direction pooled `(low_magnitude_q, high_magnitude_q)`, forward at
-    // index 0 and reverse at index 1: the same `half_width_fraction` envelope
-    // the percent containment check below uses, applied to the atom's
-    // *commanded-side magnitude* (`|mean_rate_q|`) instead of its
-    // percent-of-target, then widened by `min`/`max` exactly the way
-    // `rung_response_bounds_percent` above pools a rung's included atoms into
-    // one interval. Always a positive magnitude regardless of direction --
-    // [`commanded_side_mean_rate_q`] already normalizes reverse's negative
-    // mean to its magnitude -- so the sign each direction actually needs
-    // (forward positive, reverse negative) is applied once, after pooling,
-    // below. `None` until this direction's first atom contributes; `Some` by
-    // the time the acceptance path reads it, for the same reason
-    // `BandConfirmationAcceptance::held_out_response_intervals_q`'s field doc
-    // gives: every atom in `[forward, reverse]` is visited, and any atom that
-    // fails to contribute a bound (missing, or a statistic error) sets
-    // `response_location` and this function returns `Err` before ever
-    // constructing `Ok`.
     let mut pooled_magnitude_q: [Option<(f32, f32)>; 2] = [None, None];
-    // Worst (largest) half-width fraction and the mean response percent
-    // across all eight held-out observations, retained for the acceptance's
-    // `confidence_q`/`band_position_q` below -- not used by the containment
-    // gate itself, which judges each atom independently.
     let mut worst_half_width_fraction = 0.0_f32;
     let mut response_percent_sum = 0.0_f32;
     let mut response_percent_count = 0_u32;
@@ -909,9 +582,6 @@ pub fn evaluate_band_confirmation(
             let statistic = match observation_statistic(*atom) {
                 Ok(statistic) => statistic,
                 Err(_) => {
-                    // A zero, wrong-sign, or otherwise malformed mean is not a
-                    // representable response: the response location is the
-                    // problem, not the uncertainty around it.
                     response_location = true;
                     continue;
                 }
@@ -931,9 +601,6 @@ pub fn evaluate_band_confirmation(
             {
                 response_location = true;
             }
-            // `observation_statistic` above already proved this atom's mean
-            // representable under the same direction/mean-rate rule, so this
-            // is guaranteed `Some`.
             let commanded_magnitude_q = commanded_side_mean_rate_q(atom.direction, atom.mean_rate_q)
                 .expect("observation_statistic already proved this atom's mean is representable")
                 as f32;
@@ -966,11 +633,8 @@ pub fn evaluate_band_confirmation(
         let low_magnitude_q = libm::roundf(magnitude_low) as i32;
         let high_magnitude_q = libm::roundf(magnitude_high) as i32;
         if direction_index == 0 {
-            // Forward: positive commanded magnitude, low_q > 0.
             [low_magnitude_q, high_magnitude_q]
         } else {
-            // Reverse: negate and swap so low_q <= high_q still holds, with
-            // high_q < 0 -- the sign `commanded_side_lower_rate_q` requires.
             [-high_magnitude_q, -low_magnitude_q]
         }
     });
@@ -978,11 +642,6 @@ pub fn evaluate_band_confirmation(
     let confidence =
         (1.0 - worst_half_width_fraction / MAXIMUM_CONTAINABLE_HALF_WIDTH_FRACTION).clamp(0.0, 1.0);
     let confidence_q = (confidence * 65535.0) as u16;
-    // Every atom in both directions contributed to `response_percent_count`
-    // on this accepted path (the same invariant `held_out_response_intervals_q`
-    // above proves via its own `.expect(...)`): a zero count here would be a
-    // silent invariant break, and `0` is itself a legitimate `band_position_q`
-    // value (the lower band edge), so it must not be used as a fallback.
     let response_percent_count = core::num::NonZeroU32::new(response_percent_count).expect(
         "every atom in both directions contributed a response_percent on the accepted path above",
     );
@@ -1001,11 +660,7 @@ pub fn evaluate_band_confirmation(
 
 /// Immutable, pre-motion plan for the held-out family-eight confirmation block.
 ///
-/// Freezes every input the acceptance rule depends on before its first
-/// stroke: the discovery plan that produced the nominated candidate, the
-/// candidate gain itself, the capture profile, the family size, the fixed
-/// eight-slot order, the response band, and the acceptance rule. See spec
-/// section 7, "Confirmation block".
+/// Freezes every input the acceptance rule depends on before the first stroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BandConfirmationPlan {
     /// Digest of the discovery plan whose nomination screen selected `nominated_p`.
@@ -1071,12 +726,8 @@ impl BandConfirmationPlan {
     }
 }
 
-/// Build the immutable held-out confirmation plan for one nominated candidate.
-///
-/// Binds `discovery_plan_digest`, the digest of the discovery plan whose
-/// nomination screen produced `nominated_p`, so a later Integral plan can trace
-/// authority back through confirmation to the discovery evidence that
-/// selected its candidate.
+/// Build the immutable held-out confirmation plan for one nominated candidate, binding the
+/// digest of the discovery plan whose nomination screen produced `nominated_p`.
 pub fn plan_band_confirmation(
     discovery_plan_digest: u64,
     nominated_p: PidPGain,
@@ -1102,45 +753,18 @@ pub fn plan_band_confirmation(
     Ok(plan)
 }
 
-/// The fixed contract field that failed [`validate_fixed_contract`].
-///
-/// Every variant names a value that is frozen for the only admitted
-/// confirmation profile; a plan carrying anything else never drove motion and
-/// never authorizes Integral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum BandConfirmationContractError {
-    /// `family_size` was not [`CONFIRMATION_FAMILY_SIZE`].
     FamilySize,
-    /// `observations_per_direction` was not
-    /// [`CONFIRMATION_OBSERVATIONS_PER_DIRECTION`].
     ObservationsPerDirection,
-    /// `capture_profile` was not [`CONFIRMATION_CAPTURE_PROFILE_EXISTING`].
     CaptureProfile,
-    /// A timing field (`moving_stroke_us`, `zero_settle_us`, or
-    /// `settle_analysis_budget_us`) did not equal the existing capture
-    /// profile's value.
     Timing,
-    /// `band_lower_percent` was not [`CONFIRMATION_BAND_LOWER_PERCENT`] or
-    /// `band_upper_percent` was not [`CONFIRMATION_BAND_UPPER_PERCENT`].
     BandEdge,
-    /// `acceptance_rule` was not
-    /// [`CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED`].
     AcceptanceRule,
-    /// The module's fixed [`CONFIRMATION_SLOT_ORDER`] was not the canonical
-    /// four-forward-then-four-reverse schedule the digest binds.
     SlotOrder,
-    /// The recomputed [`BandConfirmationPlan::digest`] did not match the stored
-    /// `plan_digest`. Because `digest()` folds every frozen field, the
-    /// candidate gain, the bound discovery digest, and the fixed slot order,
-    /// any tamper the field checks above do not name (a mutated `nominated_p`,
-    /// `discovery_plan_digest`, or slot-order contribution) is caught here.
     DigestMismatch,
 }
 
-/// The canonical eight-slot confirmation schedule the fixed contract binds:
-/// four forward strokes followed by four reverse strokes. Compared against the
-/// module's [`CONFIRMATION_SLOT_ORDER`] so an edit to that constant cannot
-/// silently redefine the contract the digest is taken over.
 const CANONICAL_CONFIRMATION_SLOT_ORDER: [VelocityDirection; 8] = [
     VelocityDirection::Forward,
     VelocityDirection::Forward,
@@ -1152,23 +776,6 @@ const CANONICAL_CONFIRMATION_SLOT_ORDER: [VelocityDirection; 8] = [
     VelocityDirection::Reverse,
 ];
 
-/// Validate every fixed field of a held-out confirmation plan.
-///
-/// This is the single canonical contract check, called at both sites that
-/// consume a [`BandConfirmationPlan`]: before the confirmation phase drives any
-/// motion (in `breakaway_campaign.rs`, at plan freeze) and at Integral
-/// construction in
-/// [`super::integral_plan::plan_breakaway_velocity_integral_response`]. Because
-/// there is exactly one implementation, the timing, band, family, slot-order,
-/// observations-per-direction, and acceptance-rule contract cannot drift
-/// between the two checks.
-///
-/// Every field frozen for the only admitted confirmation profile is verified:
-/// `family_size`, `observations_per_direction`, `capture_profile`, all three
-/// timing fields, both band edges, the acceptance rule, the fixed slot order,
-/// and -- last -- digest self-consistency, which binds `nominated_p`, the
-/// discovery digest, and the slot-order contribution the earlier scalar checks
-/// do not name individually.
 pub(crate) fn validate_fixed_contract(
     plan: &BandConfirmationPlan,
 ) -> Result<(), BandConfirmationContractError> {

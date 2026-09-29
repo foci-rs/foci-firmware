@@ -1,17 +1,10 @@
 //! Phase 3: Phase wiring validation.
-//!
-//! Reads the coil-check observations and confirms that the current on the
-//! expected ADC channel dominates the cross-talk on the other channel for
 //! both coils. A reversed dominance indicates swapped motor phases.
 
 use super::{CoilObservation, EncoderCheckState, InnerPhase};
 use crate::autotune::{CommissionError, CommissionPhase, InnerSequence};
 use crate::commissioning::types::StepResult;
 
-/// Validate phase wiring from coil test observations.
-///
-/// Current on the expected ADC channel must exceed current on
-/// the other channel. If reversed, the motor phases are swapped.
 pub(crate) fn step_phase_wiring(
     phase: &mut InnerPhase,
     sequence: InnerSequence,
@@ -19,7 +12,6 @@ pub(crate) fn step_phase_wiring(
     coil_a: CoilObservation,
     coil_b: CoilObservation,
 ) -> StepResult {
-    // Phase wiring check: expected channel must dominate.
     if coil_a.other.unsigned_abs() >= coil_a.expected.unsigned_abs() {
         if matches!(sequence, InnerSequence::Selftest) {
             selftest_results.set(
@@ -49,7 +41,6 @@ pub(crate) fn step_phase_wiring(
         );
     }
 
-    // Transition to encoder check.
     *phase = InnerPhase::EncoderCheck {
         state: EncoderCheckState::Setup,
     };

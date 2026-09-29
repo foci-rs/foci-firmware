@@ -1,32 +1,14 @@
-//! Canonical wire reporting for the breakaway-seeded campaign.
-//!
-//! Every function here is pure: it takes the same frozen plan and evidence
-//! types the probe, additive discovery, and held-out confirmation drivers in
-//! [`super::breakaway_campaign`] already produce, and assembles the
-//! `commissioning::types` records emitted by the live campaign. Nothing here
-//! drives motion or touches a backend. This module exists so the wire shape,
-//! digest, and
-//! terminal-cause bookkeeping are frozen and tested independently of that
-//! wiring.
-//!
-//! [`BreakawayPhase`] names which of the three committed drivers owns a
-//! record. [`BreakawayTerminalCause`] is the single wire taxonomy spanning
-//! every probe, discovery, and confirmation terminal variant, so a host
-//! decoder needs exactly one cause table instead of three.
-//!
 use foci_tmc4671::pid::PidPGain;
 
 use crate::autotune::velocity_measurement::{VelocityDirection, confidence_multiplier_95_df15};
+#[cfg(any(test, feature = "trace"))]
+use crate::commissioning::types::BandConfirmationObservation;
 use crate::commissioning::types::{
     AdditiveDiscoveryPlanned, AdditiveDiscoveryTerminal, BandConfirmationPlanned,
     BandConfirmationTerminal, BreakawayCampaignTerminal, BreakawayDiscoveryRungMargin,
     BreakawayProbeDecision, BreakawayProbePlanned, BreakawayProbeResolved, BreakawayProbeTerminal,
     BreakawayRawObservation, BreakawayRungZeroDiagnostic,
 };
-// Consumed only by the raw-emission `confirmation_observation_report`, which is
-// gated to the trace/test builds; keep its inputs on the same feature.
-#[cfg(any(test, feature = "trace"))]
-use crate::commissioning::types::BandConfirmationObservation;
 
 use super::combined_plan::BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION;
 
@@ -48,91 +30,38 @@ use super::sweep_evidence::direction_report_code;
 
 pub(crate) use crate::commissioning::vocabulary_generated::BreakawayPhase;
 
-/// Unified wire terminal-cause taxonomy spanning every probe, discovery, and
-/// confirmation terminal variant, plus the campaign-level accept outcome.
-///
-/// One shared table so a host decoder does not need three separate cause
-/// enums with overlapping wire codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub(crate) enum BreakawayTerminalCause {
-    /// No failure: the phase either succeeded or has not yet terminated.
     None = 0,
-    /// [`BreakawayProbeOutcome::NoRepeatableMotionAtAuthority`].
     ProbeNoRepeatableMotionAtAuthority = 1,
-    /// [`BreakawayProbeOutcome::AuthorityFailure`].
     ProbeAuthorityFailure = 5,
-    /// [`BreakawayProbeOutcome::SafetyFault`].
     ProbeSafetyFault = 6,
-    /// [`AdditiveDiscoveryOutcome::TargetBandSkipped`].
     DiscoveryTargetBandSkipped = 7,
-    /// [`AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand`].
     DiscoveryCurrentHeadroomBeforeBand = 8,
-    /// [`AdditiveDiscoveryOutcome::InsufficientAdditiveSpan`].
     DiscoveryInsufficientAdditiveSpan = 9,
-    /// [`AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded`].
     DiscoveryAdditiveLadderResolutionBudgetExceeded = 10,
-    /// [`AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded`].
     DiscoveryEvidenceExcluded = 11,
-    /// [`AdditiveDiscoveryOutcome::SafetyFault`].
     DiscoverySafetyFault = 12,
-    /// [`BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery`].
     ConfirmationTargetBandUnconfirmableFromDiscovery = 13,
-    /// [`BandConfirmationOutcome::TargetBandNotReachedAtAuthority`].
     ConfirmationTargetBandNotReachedAtAuthority = 14,
-    /// [`BandConfirmationFailureCause::ResponseLocation`].
     ConfirmationResponseLocation = 15,
-    /// [`BandConfirmationFailureCause::ExcessiveUncertainty`].
     ConfirmationExcessiveUncertainty = 16,
-    /// [`BandConfirmationFailureCause::LossOfConsensus`].
     ConfirmationLossOfConsensus = 17,
-    /// [`BandConfirmationFailureCause::CurrentAuthority`].
     ConfirmationCurrentAuthority = 18,
-    /// [`BandConfirmationOutcome::ConfirmationEvidenceExcluded`].
     ConfirmationEvidenceExcluded = 19,
-    /// [`BandConfirmationOutcome::SafetyFault`].
     ConfirmationSafetyFault = 20,
-    /// [`BandConfirmationOutcome::Accepted`], or the campaign-level Integral hand-off.
     Accepted = 21,
-    /// [`BreakawayProbeOutcome::ExcursionEvidenceInvalid`].
     ProbeExcursionEvidenceInvalid = 22,
-    /// A probe fault that carries no safety fault: an internal error, not a
-    /// safety event. Paired with `has_safety_fault = 0`.
     ProbeInternalFault = 23,
-    /// A discovery fault that carries no safety fault.
     DiscoveryInternalFault = 24,
-    /// A confirmation fault that carries no safety fault.
     ConfirmationInternalFault = 25,
-    /// A confirmation genuinely accepted the held-out block, but
-    /// `route_confirmed_accept` refused to build an Integral plan (transition
-    /// capability, physical-context match, or recovery-geometry/duration
-    /// admission). See the campaign terminal's `error_code` for the specific
-    /// `CommissionError`. Distinct from `Accepted`: this is a legitimate,
-    /// non-safety-fault divergence between confirmation acceptance and
-    /// Integral plan-buildability -- the two are deliberately separate,
-    /// stacked admission gates.
     ConfirmationIntegralPlanRefused = 26,
-    /// [`BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate`]:
-    /// discovery selected a band, but every band-admissible rung's gain exceeds
-    /// the Integral transition-capability ceiling, so nomination refused before
-    /// motion rather than seeding a plan Integral admission would reject.
     ConfirmationNoTransitionCapableCandidate = 27,
 }
 
-/// Relative standard error above which no achievable response location could
-/// satisfy 70-80% containment: `(80 - 70) / (80 + 70) = 1 / 15`.
-///
-/// Independently derived here from the public band-edge constants (spec
-/// section 7, "The confirmable window is narrower than the band") rather than
-/// imported, because [`super::band_confirmation`]'s own copy of this bound is
-/// a private constant. `breakaway_terminal_cause_constants_match_band_edges`
-/// below pins this literal against those same public constants so the two
-/// cannot silently drift.
 const REQUIRED_HALF_WIDTH_FRACTION: f32 = 1.0 / 15.0;
 
-/// Largest representable magnitude for a `_percent_milli` wire field: 1000%,
-/// far beyond any real response percentage but small enough that the cast to
-/// `i32` below is always exact.
 const PERCENT_MILLI_SATURATION_BOUND: f32 = 1_000_000.0;
 
 fn percent_to_milli(value: f32) -> i32 {
@@ -157,8 +86,6 @@ fn relative_se_to_permille(value: f32) -> u16 {
     }
 }
 
-/// Map a non-`BreakawayFound` probe outcome to its unified terminal cause and
-/// whether it carries retained safety-fault evidence.
 pub(crate) fn probe_terminal_cause(
     outcome: &BreakawayProbeOutcome,
 ) -> (BreakawayTerminalCause, u8) {
@@ -185,12 +112,6 @@ pub(crate) fn probe_terminal_cause(
     }
 }
 
-/// Map a discovery outcome to its unified terminal cause and whether it
-/// carries retained safety-fault evidence.
-///
-/// [`AdditiveDiscoveryOutcome::TargetBandSelected`] is the discovery success
-/// path into confirmation, not a failure, so it maps to
-/// [`BreakawayTerminalCause::None`].
 pub(crate) fn discovery_terminal_cause(
     outcome: &AdditiveDiscoveryOutcome,
 ) -> (BreakawayTerminalCause, u8) {
@@ -224,15 +145,6 @@ pub(crate) fn discovery_terminal_cause(
     }
 }
 
-/// Map a zero-stroke confirmation outcome to its unified terminal cause and
-/// whether it carries retained safety-fault evidence.
-///
-/// Only the confirmation outcomes reachable WITHOUT running
-/// [`super::band_confirmation::evaluate_band_confirmation`] apply here:
-/// [`BandConfirmationOutcome::Accepted`] and
-/// [`BandConfirmationOutcome::TargetBandConfirmationInconclusive`] carry their
-/// own evaluated masks and are reported by
-/// [`confirmation_evaluated_terminal_report`] instead.
 pub(crate) fn confirmation_zero_stroke_cause(
     outcome: &BandConfirmationOutcome,
 ) -> (BreakawayTerminalCause, u8) {
@@ -284,7 +196,6 @@ const fn confirmation_failure_cause(cause: BandConfirmationFailureCause) -> Brea
     }
 }
 
-/// Report the immutable probe plan before the first probe stroke.
 pub(crate) fn probe_plan_report(
     plan: &UpwardBreakawayProbePlan,
     p_start: PidPGain,
@@ -311,7 +222,6 @@ pub(crate) fn probe_plan_report(
     }
 }
 
-/// Report the first rung with repeatable physical motion in both directions.
 pub(crate) fn probe_resolved_report(
     plan: &UpwardBreakawayProbePlan,
     rung_index: u8,
@@ -334,7 +244,6 @@ pub(crate) fn probe_resolved_report(
     }
 }
 
-/// Report a probe campaign terminal that did not resolve a breakaway.
 pub(crate) fn probe_terminal_report(
     plan: &UpwardBreakawayProbePlan,
     outcome: &BreakawayProbeOutcome,
@@ -360,9 +269,6 @@ pub(crate) fn probe_terminal_report(
     }
 }
 
-/// Fixed additive step from the resolved breakaway to the first ladder rung
-/// strictly above it, reconstructed from the resolved ladder's own adjacent
-/// gains rather than a retained planner intermediate.
 fn first_additive_step_raw(plan: &AdditiveDiscoveryPlan, breakaway_raw: u16) -> u32 {
     let gains = &plan.gains[..usize::from(plan.rung_count)];
     let Some(position) = gains.iter().position(|gain| gain.raw() == breakaway_raw) else {
@@ -374,8 +280,6 @@ fn first_additive_step_raw(plan: &AdditiveDiscoveryPlan, breakaway_raw: u16) -> 
     }
 }
 
-/// Report the immutable additive discovery plan before the first discovery
-/// stroke: chosen floor, breakaway, ceiling, and additive step.
 pub(crate) fn discovery_plan_report(
     request: &AdditiveDiscoveryRequest,
     floor_origin_clamped: bool,
@@ -401,17 +305,6 @@ pub(crate) fn discovery_plan_report(
     }
 }
 
-/// Assemble one collected observation's raw settled-rate evidence record.
-///
-/// This is the independent-audit primitive streamed on the collection tick (see
-/// [`BreakawayRawObservation`]). It carries the family-free `mean_rate_q`,
-/// `variance_of_mean_q2`, and `target_rate_q` exactly as stored, plus the
-/// direction and grouping coordinates, so an offline decoder can recompute the
-/// nomination `r/SE/L/U/M_i` for a discovery rung and each confirmation
-/// interval's [70, 80] containment itself -- rather than trusting the firmware's
-/// reduced bounds. The multiplier, `c_sigma`, and rounding are fixed constants
-/// the decoder already knows; the atom fields here are the only per-observation
-/// inputs it needs.
 pub(crate) fn raw_observation_report(
     plan_digest: u64,
     phase: BreakawayPhase,
@@ -452,45 +345,25 @@ pub(crate) fn raw_observation_report(
     }
 }
 
-/// Driver-local coordinates and disposition for one committed probe decision.
 pub(crate) struct ProbeDecisionReportInput {
     pub(crate) direction: VelocityDirection,
     pub(crate) rung_index: u8,
     pub(crate) disposition: u8,
 }
 
-/// Driver-local identity for one rejected recovery-rest scoring window.
-///
-/// The phase driver names the stroke and hands over the selector's verdict and
-/// the settle bounds it scored; the campaign layer attaches the wire identity
-/// (owning phase, plan digest, run sequence, evidence sequence).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct RecoveryRestRejectedInput {
-    /// The scored-rest selector's complete decision.
     pub(crate) decision: crate::autotune::velocity_measurement::RestSelectionDecision,
-    /// Recovery stage that scored the window.
     pub(crate) stage: u8,
-    /// Zero-based probe or discovery rung; `0` for confirmation.
     pub(crate) rung_index: u8,
-    /// Phase-local slot of the stroke whose recovery was scored.
     pub(crate) slot_index: u8,
-    /// Direction of the stroke whose recovery was scored.
     pub(crate) direction: VelocityDirection,
-    /// Raw velocity P gain in force for the stroke.
     pub(crate) p_raw: u16,
-    /// Net settle displacement over the scored window.
     pub(crate) scored_net_displacement_counts: i8,
-    /// Minimum settle displacement over the scored window.
     pub(crate) scored_min_displacement_counts: i8,
-    /// Maximum settle displacement over the scored window.
     pub(crate) scored_max_displacement_counts: i8,
 }
 
-/// Report one rejected recovery-rest scoring window.
-///
-/// Only rejections reach this function; accepted rest windows are never
-/// reported, so the record's `disposition` is always `Rejected`. It is carried
-/// on the wire regardless, so a decoder validates rather than assumes it.
 pub(crate) fn recovery_rest_rejected_report(
     plan_digest: u64,
     phase: BreakawayPhase,
@@ -527,11 +400,6 @@ pub(crate) fn recovery_rest_rejected_report(
     }
 }
 
-/// Report one recovery refused because its origin moved.
-///
-/// The worker supplies the measured discrepancy; the stroke's slot and
-/// direction come from the phase driver, and the campaign layer attaches the
-/// wire identity.
 pub(crate) fn recovery_origin_mismatch_report(
     plan_digest: u64,
     phase: BreakawayPhase,
@@ -560,7 +428,6 @@ pub(crate) fn recovery_origin_mismatch_report(
     }
 }
 
-/// Report one recovered probe observation immediately before cursor mutation.
 pub(crate) fn probe_decision_report(
     plan_digest: u64,
     input: ProbeDecisionReportInput,
@@ -577,14 +444,6 @@ pub(crate) fn probe_decision_report(
     }
 }
 
-/// Report one in-band discovery rung's nomination bounds and pointwise margin
-/// `M_i`, plus its achieved rate step from the previous collected in-band
-/// rung's own midpoint response.
-///
-/// `bounds` is the collected in-band set in collection (ascending rung) order
-/// -- see [`CollectedInBandRungs::as_slice`]. Returns `None` for an
-/// out-of-range index or a non-nominatable entry (which carries no meaningful
-/// bounds, see [`DiscoveryRungNominationBounds::nominatable`]).
 pub(crate) fn discovery_rung_margin_report(
     bounds: &[DiscoveryRungNominationBounds],
     collected_index: u8,
@@ -631,18 +490,6 @@ pub(crate) fn discovery_rung_margin_report(
     })
 }
 
-/// Report whether the additive ladder's rung zero (the diagnostic floor)
-/// itself showed motion (spec section 6: reported purely as evidence, never a
-/// failure).
-///
-/// `forward`/`reverse` are the rung-zero observations' own motion
-/// classifications. The current additive discovery driver
-/// ([`super::breakaway_campaign::step_additive_discovery`]) does not retain
-/// rung zero's classification once the ladder walk advances past it unless
-/// rung zero happens to be collected as in-band; live emission of this record
-/// needs that classification threaded out of the driver as an explicit
-/// caller-visible value, which is a wiring change outside this reporting
-/// module's scope.
 pub(crate) fn rung_zero_diagnostic_report(
     plan: &AdditiveDiscoveryPlan,
     forward: BreakawayMotionClass,
@@ -659,8 +506,6 @@ pub(crate) fn rung_zero_diagnostic_report(
     }
 }
 
-/// Already-classified discovery-terminal evidence, gathered by the caller
-/// before [`discovery_terminal_fields`] shapes it into the wire record.
 pub(crate) struct DiscoveryTerminalEvidence {
     pub(crate) cause: BreakawayTerminalCause,
     pub(crate) has_safety_fault: u8,
@@ -669,12 +514,6 @@ pub(crate) struct DiscoveryTerminalEvidence {
     pub(crate) error_code: u8,
 }
 
-/// Assemble a discovery terminal record from its already-classified fields.
-///
-/// Split out from [`discovery_terminal_report`] so the record-shaping logic
-/// is directly testable with an explicit `collected_count`, independent of
-/// constructing a live [`CollectedInBandRungs`] (whose constructor is private
-/// to [`super::breakaway_campaign`]).
 pub(crate) fn discovery_terminal_fields(
     plan: &AdditiveDiscoveryPlan,
     evidence: DiscoveryTerminalEvidence,
@@ -695,11 +534,6 @@ pub(crate) fn discovery_terminal_fields(
     }
 }
 
-/// Report a discovery campaign terminal.
-///
-/// `outcome` may be [`AdditiveDiscoveryOutcome::TargetBandSelected`] (the
-/// success path into confirmation, `terminal_cause == None`) or any
-/// discovery-owned failure terminal.
 pub(crate) fn discovery_terminal_report(
     plan: &AdditiveDiscoveryPlan,
     outcome: &AdditiveDiscoveryOutcome,
@@ -709,8 +543,6 @@ pub(crate) fn discovery_terminal_report(
     evidence_sequence: u16,
 ) -> AdditiveDiscoveryTerminal {
     let (cause, has_safety_fault) = discovery_terminal_cause(outcome);
-    // The outcome already carries the error; dropping it here is what left a
-    // `*_internal_fault` terminal unattributable.
     let error_code = match outcome {
         AdditiveDiscoveryOutcome::SafetyFault { error, .. }
         | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { error } => error.status_code(),
@@ -720,26 +552,15 @@ pub(crate) fn discovery_terminal_report(
         | AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
         | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded => 0,
     };
-    // In-band rungs are measured evidence held in the discovery session, not a
-    // property of the outcome. Reporting zero for every non-selecting outcome
-    // made a fault that discarded a qualifying candidate indistinguishable
-    // from one that had collected nothing, which is what left the corpus
-    // unable to say how much evidence each fault destroyed.
-    //
-    // `TargetBandSelected` carries a copy of `session.in_band`, so both arms
-    // resolve to the same count on the success path.
     let collected_count = match outcome {
         AdditiveDiscoveryOutcome::TargetBandSelected(rungs) => rungs.count(),
         AdditiveDiscoveryOutcome::TargetBandSkipped
         | AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand
         | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { .. }
         | AdditiveDiscoveryOutcome::SafetyFault { .. } => session_collected_count,
-        // Plan-time refusals: no ladder ran, so no session evidence exists.
         AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
         | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded => 0,
     };
-    // Same split as `collected_count` above: a plan-time refusal never started
-    // a walk, so it has no stop rung to report.
     let stop_rung_index = match outcome {
         AdditiveDiscoveryOutcome::TargetBandSelected(_)
         | AdditiveDiscoveryOutcome::TargetBandSkipped
@@ -763,9 +584,6 @@ pub(crate) fn discovery_terminal_report(
     )
 }
 
-/// Report the immutable held-out confirmation plan before the first
-/// confirmation stroke, including the nomination screen's margin for the
-/// nominated candidate.
 pub(crate) fn confirmation_plan_report(
     plan: &BandConfirmationPlan,
     nomination: &NominatedConfirmationCandidate,
@@ -788,19 +606,6 @@ pub(crate) fn confirmation_plan_report(
     }
 }
 
-/// Report one fresh held-out confirmation stroke's response interval.
-///
-/// Reuses [`observation_interval_percent`] with `c_sigma = 1.0` and
-/// `round_outward = true` -- exactly the parameters
-/// [`super::band_confirmation::evaluate_band_confirmation`]'s own inline
-/// computation uses for real held-out data (no nomination-style inflation),
-/// so this record's interval is provably identical to the one acceptance
-/// judged. Returns `None` when the observation's mean is zero, wrong-signed,
-/// or otherwise not representable as a candidate response (the same
-/// condition that fails acceptance with `ResponseLocation`).
-///
-/// Raw-emission only: its sole non-test caller is the `trace`-gated
-/// `emit_breakaway_campaign_trace`, so it is kept on the raw-emission feature.
 #[cfg(any(test, feature = "trace"))]
 pub(crate) fn confirmation_observation_report(
     plan_digest: u64,
@@ -827,13 +632,6 @@ pub(crate) fn confirmation_observation_report(
     })
 }
 
-/// Report a confirmation terminal for the case where all eight strokes ran --
-/// [`super::band_confirmation::evaluate_band_confirmation`]'s own input
-/// shape -- whether accepted or judged
-/// [`super::band_confirmation::TargetBandConfirmationInconclusive`].
-///
-/// For the zero-stroke confirmation terminals (no evaluation ever ran), use
-/// [`confirmation_zero_stroke_terminal_report`] instead.
 pub(crate) fn confirmation_evaluated_terminal_report(
     plan: &BandConfirmationPlan,
     forward: &ConfirmationDirectionalInput,
@@ -863,24 +661,6 @@ pub(crate) fn confirmation_evaluated_terminal_report(
     )
 }
 
-/// Report a confirmation terminal reached mid-block: earlier strokes already
-/// folded evidence into `forward`/`reverse` before the outcome under
-/// `terminal_cause` cut the block short (for example
-/// [`BandConfirmationOutcome::ConfirmationEvidenceExcluded`] after one or more
-/// prior strokes succeeded, or a mid-block
-/// [`BandConfirmationOutcome::SafetyFault`]).
-///
-/// Unlike [`confirmation_zero_stroke_terminal_report`], this reports the
-/// masks and observations actually collected rather than all-zero fields, so
-/// the terminal does not falsely claim no confirmation work happened. Shares
-/// the same mask/uncertainty assembly as
-/// [`confirmation_evaluated_terminal_report`] because both report whatever
-/// evidence `forward`/`reverse` actually hold; only the not-yet-evaluated
-/// `terminal_cause`/`has_safety_fault` and the always-unaccepted outcome
-/// differ. `has_safety_fault` is caller-supplied (typically
-/// [`confirmation_zero_stroke_cause`]'s own second tuple element) rather than
-/// derived here, so a mid-block `SafetyFault`'s retained-evidence flag
-/// survives exactly like it does on the zero-stroke path.
 pub(crate) fn confirmation_partial_evidence_terminal_report(
     plan: &BandConfirmationPlan,
     forward: &ConfirmationDirectionalInput,
@@ -905,10 +685,6 @@ pub(crate) fn confirmation_partial_evidence_terminal_report(
     )
 }
 
-/// Resolved outcome fields for a confirmation terminal that reports evidence
-/// actually collected in `forward`/`reverse`, bundled so
-/// [`confirmation_terminal_from_collected_evidence`] stays within the
-/// project's five-parameter guideline.
 struct ConfirmationTerminalOutcome {
     terminal_cause: BreakawayTerminalCause,
     accepted: u8,
@@ -918,11 +694,6 @@ struct ConfirmationTerminalOutcome {
     has_safety_fault: u8,
 }
 
-/// Shared mask/uncertainty assembly for a confirmation terminal that reports
-/// whatever evidence `forward`/`reverse` actually collected, whether the
-/// block ran to completion ([`confirmation_evaluated_terminal_report`]) or
-/// was cut short after some strokes ran
-/// ([`confirmation_partial_evidence_terminal_report`]).
 fn confirmation_terminal_from_collected_evidence(
     plan: &BandConfirmationPlan,
     forward: &ConfirmationDirectionalInput,
@@ -973,9 +744,6 @@ fn confirmation_terminal_from_collected_evidence(
     }
 }
 
-/// Report a confirmation terminal reached before any confirmation stroke, or
-/// through the safety short-circuit: zero strokes were spent, so every mask
-/// is honestly zero.
 pub(crate) fn confirmation_zero_stroke_terminal_report(
     plan_digest: u64,
     prior_plan_digest: u64,
@@ -1006,7 +774,6 @@ pub(crate) fn confirmation_zero_stroke_terminal_report(
     }
 }
 
-/// Report the canonical closure record for one complete breakaway campaign.
 pub(crate) fn campaign_terminal_report(
     phase: BreakawayPhase,
     terminal_cause: BreakawayTerminalCause,

@@ -1,7 +1,4 @@
 //! Phase 1: ADC offset calibration.
-//!
-//! Configures TMC4671 for zero-current ADC sampling (PWM_CHOP=0), collects
-//! 128 samples one per `step()` call, validates the resulting offsets, and
 //! programs them back into `ADC_I0/I1_SCALE_OFFSET`.
 
 use super::{
@@ -17,16 +14,12 @@ use crate::tmc_register_values::{
     adc_i0_scale_offset, adc_i1_scale_offset,
 };
 
-/// Number of ADC samples for offset calibration.
 const ADC_CALIBRATION_SAMPLES: u16 = 128;
 
-/// Settling time after enabling ADC outputs (microseconds).
 const ADC_CALIBRATION_SETTLE_US: u64 = 250_000;
 
-/// Fixed cadence for ADC offset and residual samples (microseconds).
 const ADC_CALIBRATION_SAMPLE_PERIOD_US: u64 = 1_000;
 
-/// Valid ADC offset range (centered around ~33000).
 const ADC_OFFSET_MIN: u16 = 30_000;
 const ADC_OFFSET_MAX: u16 = 36_000;
 
@@ -84,11 +77,6 @@ fn residual_evidence(
     }
 }
 
-/// Advance ADC calibration sub-state.
-///
-/// Configures TMC4671 for zero-current ADC sampling (PWM_CHOP=0),
-/// collects 128 samples one per `step()` call, validates the resulting
-/// offsets, and programs them back.
 pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,
@@ -105,7 +93,6 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
 
     match cal_state {
         AdcCalState::Setup => {
-            // Stop motor, disable outputs, set voltage limit.
             backend.set_enable_pin(false);
             if backend
                 .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
@@ -119,7 +106,6 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            // Verify voltage limit write.
             match backend.read_register(PIDOUT_UQ_UD_LIMITS).await {
                 Ok(1024) => {}
                 _ => return super::fail_inner(phase, CommissionError::Spi),
@@ -134,7 +120,6 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            // PWM config: chopping disabled for calibration.
             if backend
                 .write_register_verified(PWM_POLARITIES, 0)
                 .await
@@ -158,7 +143,6 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            // Verify MODE=0 and PWM_SV_CHOP=0.
             if backend
                 .read_register_verified(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
                 .await
@@ -171,7 +155,6 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            // ADC configuration.
             if backend
                 .write_register_verified(DSADC_MDEC_B_MDEC_A, backend.dsadc_mdec_register())
                 .await
@@ -184,12 +167,6 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            // Motor type: 2-phase stepper, 50 pole pairs. The MOTOR_TYPE write
-            // must be verified before storing the sentinel — silently continuing
-            // past a failed write here would let arm_motor_electrical see a
-            // sentinel that doesn't match what's actually on the chip and trip
-            // the safety check, but worse, MOTOR_TYPE=0 plus stepper PWM
-            // excitation is the AGENTS.md "destroys steppers" case.
             if backend
                 .write_register_verified(MOTOR_TYPE_N_POLE_PAIRS, STEPPER_MOTOR_TYPE_N_POLE_PAIRS)
                 .await
@@ -199,7 +176,6 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             }
             backend.store_motor_sentinel(STEPPER_MOTOR_TYPE_N_POLE_PAIRS);
 
-            // Clear offsets, enable outputs.
             if backend
                 .write_register_verified(ADC_I0_SCALE_OFFSET, adc_i0_scale_offset(0))
                 .await
@@ -288,7 +264,6 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             let offset_i0 = (*sum_i0 / n) as i16 as u16;
             let offset_i1 = (*sum_i1 / n) as i16 as u16;
 
-            // Validate offsets in expected range.
             if !(ADC_OFFSET_MIN..=ADC_OFFSET_MAX).contains(&offset_i0)
                 || !(ADC_OFFSET_MIN..=ADC_OFFSET_MAX).contains(&offset_i1)
             {
@@ -308,7 +283,6 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 );
             }
 
-            // Program calibrated offsets.
             let adc_i0_word = adc_i0_scale_offset(offset_i0);
             let adc_i1_word = adc_i1_scale_offset(offset_i1);
             if backend
@@ -323,9 +297,6 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            // Keep the controller in open-loop zero-voltage state so the
-            // residual reads measure ADC/bridge bias instead of a PI loop
-            // nulling the error at a zero-current target.
             if backend
                 .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
                 .await
@@ -535,11 +506,6 @@ mod tests {
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::types::StepResult;
 
-    /// Maximum backend register operations issued by one ADC state arm.
-    ///
-    /// 26, not 17: nine pre-enable writes in `AdcCalState::Setup` now go
-    /// through `write_register_verified` (write + readback) instead of a
-    /// bare write, so each of those nine costs two ops instead of one.
     const ADC_CALIBRATION_MAX_REGISTER_OPS_PER_ARM: usize = 26;
 
     fn offset_sum(offset: u16) -> i32 {

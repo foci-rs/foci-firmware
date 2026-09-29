@@ -1,33 +1,15 @@
-//! Per-slot capture primitive for the commissioning fallback gain-floor
-//! measurement: two register reads per 60us slot (PID_TORQUE_FLUX_ACTUAL,
-//! PID_POSITION_ACTUAL), with actual-current containment and motion-abort
-//! safety checks evaluated on every slot. A slot whose reads overrun its
-//! budget is dropped from the sample set; the capture fails only when more
-//! slots overrun than the coverage bound allows.
-
 use foci_tmc4671::registers::{PID_POSITION_ACTUAL, PID_TORQUE_FLUX_ACTUAL, PidTorqueFluxActual};
 
 use crate::autotune::CommissionError;
 use crate::commissioning::backend::CommissioningBackend;
 
-/// Two TMC4671 register reads per slot take about 44 us on the real SPI
-/// path (SPI2 already runs at the chip's 8 MHz maximum; the rest is
-/// DMA/async dispatch), so the design's 30 us budget tripped the slot
-/// deadline on every slot. 60 us leaves about 35% margin.
 const SAMPLE_PERIOD_US: u32 = 60;
-/// Fixed capture window per torque step; the current-loop bandwidth floor
-/// for running the measurement at all is derived from it.
 pub(crate) const CAPTURE_DURATION_US: u32 = 5_000;
 const MAX_SAMPLES: usize = 200;
 const MOTION_ABORT_THRESHOLD: u32 = 32_760;
-/// Slots allowed to overrun their budget before the capture fails. A stray
-/// interrupt landing inside a slot costs that slot's sample, not the
-/// commission; a tenth of the grid overrunning means the dispatch path
-/// itself is over budget.
 const MAX_OVERRUN_SLOTS: u32 = 8;
 const STEP_OVERSHOOT_MAX_PERMILLE: i32 = 1150;
 
-/// One capture slot's timestamp and register readings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct CaptureSample {
     pub t_us: u32,
@@ -38,23 +20,6 @@ pub(crate) struct CaptureSample {
 
 pub(crate) type CaptureBuffer = heapless::Vec<CaptureSample, MAX_SAMPLES>;
 
-/// Run the fixed-grid capture window into `buffer`, de-energizing on every
-/// exit path.
-///
-/// Reads `PID_TORQUE_FLUX_ACTUAL` and `PID_POSITION_ACTUAL` once per 60us
-/// slot anchored to the capture start, containing actual current on both
-/// axes against `resistance_current_ceiling_count`, failing a torque read
-/// that overshoots `i_target` by more than `STEP_OVERSHOOT_MAX_PERMILLE`,
-/// and aborting on displacement beyond `MOTION_ABORT_THRESHOLD` counts from
-/// the first sample. The two current checks run on the torque read before
-/// the position read is issued; all three trip before the slot is judged
-/// for overrun. A slot whose reads do not finish inside its budget records no
-/// sample, so timestamps stay on the grid; more than `MAX_OVERRUN_SLOTS`
-/// such slots fail the capture as insufficient coverage.
-///
-/// `buffer` is cleared first. It belongs to the phase state rather than to
-/// this future so the samples are neither carried across every slot's await
-/// nor copied on the way back to the fits.
 pub(crate) async fn run_capture<B>(
     backend: &mut B,
     buffer: &mut CaptureBuffer,
@@ -65,34 +30,17 @@ where
     B: CommissioningBackend,
 {
     buffer.clear();
-    // Fixed grid anchored at capture start: slot n's deadline is
-    // capture_start + n * 30 us, not "30 us after the previous pair of reads
-    // finished" -- that formulation lets the loop drift and derives t_us
-    // from a sample count instead of real elapsed time.
     let capture_start = backend.elapsed_us();
     let capture_deadline = capture_start + u64::from(CAPTURE_DURATION_US);
     let mut position_0: Option<i32> = None;
     let mut overrun_slots: u32 = 0;
 
     let result = loop {
-        // Dropped slots still advance the grid, so the slot index counts
-        // them alongside the recorded samples.
         let slot_index = buffer.len() as u64 + u64::from(overrun_slots);
         let slot_start = capture_start + slot_index * u64::from(SAMPLE_PERIOD_US);
         if slot_start >= capture_deadline || buffer.len() >= MAX_SAMPLES {
             break Ok(());
         }
-        // Wait until this slot's scheduled start -- the same cooperative
-        // delay primitive `current_loop.rs`'s
-        // `read_axis_directional_evidence_for_gate` already awaits between
-        // settled-flux samples, not a busy loop. Without this call, both
-        // register reads below would issue immediately after the previous
-        // slot's reads complete, off the fixed grid. `saturating_sub`
-        // handles arriving at or after `slot_start` (unavoidable for slot 0,
-        // whose start equals `capture_start` exactly, and possible for any
-        // later slot under scheduling contention): arrival lateness by
-        // itself is not a safety violation, only failing to complete this
-        // slot's reads within its budget is (checked below).
         let now = backend.elapsed_us();
         let wait_us = slot_start.saturating_sub(now).min(u64::from(u32::MAX)) as u32;
         if wait_us > 0 {
@@ -140,8 +88,6 @@ where
             continue;
         }
 
-        // Timestamp from the slot's scheduled time, not from the sample
-        // count, which falls behind the grid by every dropped slot.
         let t_us = (slot_start - capture_start) as u32;
         let _ = buffer.push(CaptureSample {
             t_us,
@@ -200,14 +146,9 @@ mod tests {
     #[test]
     fn capture_completes_and_produces_expected_slot_count() {
         let mut backend = MockBackend::new();
-        // Defaults (zero torque/flux/position) satisfy every safety bound
-        // for the whole window, so the happy path needs no per-slot
-        // scripting.
         let mut buffer = CaptureBuffer::new();
         pollster::block_on(run_capture(&mut backend, &mut buffer, 2000, 4000))
             .expect("capture should complete cleanly");
-        // CAPTURE_DURATION_US=5000 / SAMPLE_PERIOD_US=60: slots 0..83 (83*60=4980
-        // < 5000; 84*60=5040 does not), so 84 samples.
         assert_eq!(buffer.len(), 84);
     }
 
@@ -304,15 +245,6 @@ mod tests {
     #[test]
     fn samples_are_timestamped_from_the_fixed_grid_not_a_sample_counter() {
         let mut backend = MockBackend::new();
-        // `elapsed_us()` only advances via `delay_us` (matching real
-        // hardware -- time does not pass just because a register read was
-        // issued); `spi_elapsed_step_us` stays at its default of 0, so each
-        // register read reports zero additional elapsed time on its own.
-        // This makes the test fail if the implementation fabricates t_us
-        // from a sample counter without actually calling delay_us: with no
-        // delay awaited, elapsed_us() would never reach each slot's real
-        // deadline, and the immediate-trip re-checks would falsely accept
-        // every slot while `delay_us_log` stayed empty.
         backend.advance_elapsed_on_delay = true;
         let mut buffer = CaptureBuffer::new();
         pollster::block_on(run_capture(&mut backend, &mut buffer, 2000, 4000))
@@ -320,13 +252,6 @@ mod tests {
         for (i, sample) in buffer.iter().enumerate() {
             assert_eq!(sample.t_us, i as u32 * 60);
         }
-        // `MockBackend::delay_us_log` caps at 32 entries; the capture window
-        // issues one delay per slot after the first (83 here), so the log
-        // fills to capacity rather than recording every delay. What matters
-        // is that delay_us was genuinely called, every logged wait is
-        // exactly one slot period, and the log is not empty -- an
-        // implementation that fabricated t_us without awaiting would leave
-        // it empty.
         assert!(!backend.delay_us_log.is_empty());
         assert_eq!(backend.delay_us_log.len(), backend.delay_us_log.capacity());
         assert!(backend.delay_us_log.iter().all(|&delay| delay == 60));
@@ -335,14 +260,6 @@ mod tests {
     #[test]
     fn late_arrival_that_still_completes_within_budget_does_not_trip() {
         let mut backend = MockBackend::new();
-        // First `elapsed_us()` call establishes capture_start = 0; the
-        // second call (slot 0's `now`, used to compute the wait) reports the
-        // clock already past slot 0's scheduled start -- unavoidable
-        // measurement/scheduling overhead, not a safety violation by itself.
-        // The third call (post-read) shows both reads still completed well
-        // within the 30us slot budget. Arrival lateness alone must not
-        // trip: only failing to complete the reads in time does (see the
-        // post-read deadline check below).
         backend.set_elapsed_us_sequence(&[0, 25, 28]);
         let result = pollster::block_on(run_capture(
             &mut backend,
@@ -360,10 +277,6 @@ mod tests {
     fn slot_overrun_drops_that_sample_and_keeps_the_grid() {
         let mut backend = MockBackend::new();
         backend.advance_elapsed_on_delay = true;
-        // capture_start = 0, slot 0 arrives on time, but its post-read check
-        // reports 70us: the two reads did not finish inside slot 0's 60us
-        // budget. That slot's sample is dropped and the capture continues on
-        // the fixed grid, so slot 1 still lands at t_us = 60.
         backend.set_elapsed_us_sequence(&[0, 0, 70]);
         let mut buffer = CaptureBuffer::new();
         pollster::block_on(run_capture(&mut backend, &mut buffer, 2000, 4000))
@@ -377,10 +290,6 @@ mod tests {
     fn overruns_beyond_the_coverage_bound_fail_the_capture() {
         let mut backend = MockBackend::new();
         backend.advance_elapsed_on_delay = true;
-        // Every register read costs 35us, so each slot's pair of reads takes
-        // 70us against a 60us budget: every slot overruns. This is a
-        // systematic dispatch overrun, not a stray interrupt, and must still
-        // fail as insufficient coverage.
         backend.spi_elapsed_step_us = 35;
         let result = pollster::block_on(run_capture(
             &mut backend,

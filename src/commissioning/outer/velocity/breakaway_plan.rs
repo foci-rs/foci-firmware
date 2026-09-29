@@ -7,12 +7,6 @@
 //! - [`AdditiveDiscoveryPlan`]: the fixed-step ladder that spends the discovery
 //!   sweep's rung budget around the measured breakaway instead of across the whole
 //!   current-representable span.
-//!
-//! The additive ladder is deliberately **not** built by re-anchoring
-//! `super::sweep_plan::build_gain_ladder` at the breakaway gain. That generator
-//! anchors its geometric rounding to its supplied start, so re-anchoring at a
-//! breakaway gain that is itself a half-octave grid value silently produces a
-//! different set of rungs and loses the measured value.
 
 use foci_tmc4671::pid::PidPGain;
 
@@ -22,16 +16,8 @@ use super::sweep_plan::{
 };
 
 /// Numerator of the provisional maximum additive first-gap ratio guard.
-///
-/// **Provisional hardware-characterization bound.** The initial half-octave
-/// placeholder rejected the first measured upward-probe result (`543 -> 774`,
-/// ratio `1.4254`). `3/2` admits that result with a small margin while retaining
-/// a simple hard bound on additive coarseness. Representative-machine evidence
-/// is still required before this becomes a production value.
 pub const MAX_ADDITIVE_GAIN_RATIO_NUM: u32 = 3;
 /// Denominator of the provisional maximum additive first-gap ratio guard.
-///
-/// See [`MAX_ADDITIVE_GAIN_RATIO_NUM`] for the provisional-value rationale.
 pub const MAX_ADDITIVE_GAIN_RATIO_DEN: u32 = 2;
 
 /// Mechanical-revolution divisor used by the physical-excursion probe.
@@ -41,16 +27,10 @@ pub const PROBE_MAX_CAPTURE_INTERVAL_US: u32 = 2_000;
 /// Maximum observations consumed by a 32-rung pair-and-repeat upward walk.
 pub const PROBE_MAX_OBSERVATIONS: u8 = 128;
 
-/// Command-level workflow envelope and physical acquisition context a breakaway
-/// probe is planned under.
+/// Command-level workflow envelope and physical acquisition context a breakaway probe is planned
+/// under.
 ///
-/// Threaded from the orchestrator into [`plan_upward_breakaway_probe`] and hashed
-/// into [`UpwardBreakawayProbePlan::digest`], so the whole downstream digest chain --
-/// probe -> discovery (binds the probe digest) -> confirmation (binds the
-/// discovery digest) -> Integral (binds the confirmation digest) -- is pinned to
-/// the exact command-level envelope and the physical parameters it was planned
-/// against, not merely to the search geometry. These are the same
-/// `AcquisitionContext`-shaped values the Integral tail consumes.
+/// Hashed into [`UpwardBreakawayProbePlan::digest`], pinning the downstream digest chain to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayProbeContext {
     /// Digest of the command-level [`super::workflow_plan::CommissioningWorkflowPlan`]
@@ -119,7 +99,6 @@ impl UpwardBreakawayProbePlan {
     }
 }
 
-/// Compute the probe threshold as an exact checked ceiling division.
 pub(crate) fn motion_threshold_counts(counts_per_rev: u32) -> Result<u32, VelocityPlanError> {
     if counts_per_rev == 0 {
         return Err(VelocityPlanError::InvalidRequest);
@@ -274,29 +253,14 @@ pub enum AdditiveLadderPlanError {
     AdditiveLadderResolutionBudgetExceeded,
 }
 
-/// One realized additive ladder for a specific candidate rung-count target.
-///
-/// Exposed at `pub(crate)` visibility so tests can enumerate every candidate `n`
-/// the planner considers without re-deriving the generator arithmetic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CandidateAdditiveLadder {
-    /// Fixed additive step for this candidate: `ceil((ceiling - breakaway) / (n - 2))`.
     pub(crate) step: u32,
-    /// Realized post-dedupe gains, in ascending order; unused entries are zero.
     pub(crate) gains: [u32; MAX_SWEEP_RUNGS],
-    /// Number of valid entries in `gains`. May be less than the requested `n` when
-    /// the final step overshoots the ceiling and dedupe collapses the tail.
     pub(crate) rung_count: u8,
-    /// First rung strictly above breakaway: `min(breakaway + step, ceiling)`.
     pub(crate) first_additive_gain: u32,
 }
 
-/// Realize one candidate additive ladder for a requested structural rung count.
-///
-/// Reserves two rungs for `floor` and the appended exact `ceiling`, spends the rest on a fixed
-/// additive step, and anchors the final rung exactly on `ceiling`. `floor` is deduped
-/// against `breakaway` when the grid floor was clamped
-/// ([`GridFloorOrigin::ClampedAtBreakaway`]).
 pub(crate) fn realize_candidate_additive_ladder(
     rung_count_target: u8,
     floor_raw: u32,
@@ -359,11 +323,6 @@ pub(crate) fn realize_candidate_additive_ladder(
     })
 }
 
-/// Whether a candidate's first additive gap satisfies the provisional resolution
-/// guard, checked as exact integer cross-multiplication with no rounding of its own.
-///
-/// The grid `floor -> breakaway` bracket is exempt: this only ever compares the
-/// first rung strictly above breakaway against breakaway itself.
 fn satisfies_additive_ratio_guard(first_additive_gain: u32, breakaway_raw: u32) -> bool {
     let left = u64::from(first_additive_gain) * u64::from(MAX_ADDITIVE_GAIN_RATIO_DEN);
     let right = u64::from(breakaway_raw) * u64::from(MAX_ADDITIVE_GAIN_RATIO_NUM);
@@ -441,15 +400,6 @@ pub fn plan_additive_discovery_ladder(
         }
         saw_structural_survivor = true;
 
-        // Per-direction family of individual observation intervals: each of
-        // the `observations_per_direction` strokes at every rung is its own
-        // corrected claim, consumed by the lag-one stationarity gate and the
-        // depth-three consensus. The discovery stop-rule pools a rung's
-        // included observations into one interval per direction and reuses
-        // this multiplier for it; that is a conservative bound, since the
-        // stop-rule makes only `rung_count` claims per direction. The table
-        // ceiling therefore binds on the observation family, not the
-        // stop-rule, so a K-sized stop-rule family would not relax it.
         let confidence_family_size = u16::from(ladder.rung_count)
             .checked_mul(request.observations_per_direction)
             .ok_or(AdditiveLadderPlanError::Arithmetic)?;

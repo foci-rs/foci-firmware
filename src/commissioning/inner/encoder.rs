@@ -1,8 +1,4 @@
 //! Phase 4: Encoder presence/direction check and D-axis alignment.
-//!
-//! Drives the rotor with current-regulated open-loop excitation, sweeps
-//! through electrical angles to confirm encoder counts move, then locks
-//! `PHI_E_SELECTION` to the ABN decoder before any closed-loop operation.
 
 use super::{
     ElectricalIdentificationData, ElectricalIdentificationState, EncoderAlignState,
@@ -15,56 +11,32 @@ use crate::commissioning::types::{AdcCalResult, CommissioningBackend, StepResult
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics};
 use crate::tmc_register_values::{MOTION_STOPPED, MOTION_TORQUE_ADVANCED_PI};
 
-/// Number of PHI_E steps for encoder direction sweep.
 const ENCODER_DIRECTION_STEPS: u16 = 50;
 
-/// Final PHI_E_EXT value for encoder direction sweep.
-///
-/// Keep this away from 0/65536 so the sweep has a non-zero final rotor
-/// displacement. A full electrical revolution can end at the same stable
-/// angle it started from, producing a false ENCODER_FAULT.
 const ENCODER_DIRECTION_TARGET_PHI_E: u32 = 32768;
 
-/// Per-step dwell time for encoder direction sweep (microseconds).
 const ENCODER_DIRECTION_STEP_US: u64 = 10_000;
 
-/// Settling time after applying encoder alignment voltage.
 const ENCODER_ALIGNMENT_SETTLE_US: u64 = 500_000;
 
-/// Stability double-read delay after encoder alignment settle.
 const ENCODER_ALIGNMENT_STABILITY_US: u64 = 10_000;
 
-/// Allowed encoder jitter during the alignment double-read.
 const ENCODER_ALIGNMENT_STABILITY_COUNTS: u32 = 2;
 
-/// Voltage limit used only while applying encoder movement current.
 const ENCODER_ALIGNMENT_VOLTAGE_LIMIT: u32 = 2000;
 
-/// Minimum D-axis current target used while forcing encoder movement.
 const ENCODER_MOVEMENT_CURRENT_MIN: u32 = 100;
 
-/// Maximum D-axis current target used while forcing encoder movement.
 const ENCODER_MOVEMENT_CURRENT_MAX: u32 = 1000;
 
-/// Number of direction-sweep attempts allowed before surfacing a hard
-/// `EncoderFault` to the host. A sweep that measures no rotor movement is
-/// retried internally, escalating the movement current on each attempt,
-/// since marginal breakaway torque at a given rotor start angle can leave
-/// the first attempt short even on a healthy drive and encoder.
 const ENCODER_DIRECTION_MAX_ATTEMPTS: u8 = 3;
 
-/// Per-attempt (numerator, denominator, ceiling) applied to `current_limit`
-/// to compute the D-axis movement current target. The ceiling never lets an
-/// attempt exceed `current_limit` itself (enforced separately below); it
-/// only controls how far below the original 1000-count default an attempt
-/// may be raised.
 const ENCODER_MOVEMENT_CURRENT_SCALE: [(u32, u32, u32); ENCODER_DIRECTION_MAX_ATTEMPTS as usize] = [
     (1, 2, ENCODER_MOVEMENT_CURRENT_MAX),
     (3, 4, 2_000),
     (1, 1, u32::MAX),
 ];
 
-/// OpenFFBoard bringup motors use 50 pole pairs.
 const ENCODER_ALIGNMENT_POLE_PAIRS: u32 = 50;
 
 const ENCODER_READ_SAMPLES: usize = 3;
@@ -74,22 +46,14 @@ const ENCODER_READ_ATTEMPTS: usize = 3;
 const DIAG_ENCODER_READ_UNSTABLE: u8 = 1;
 const DIAG_ENCODER_DIRECTION_RESULT: u8 = 2;
 const DIAG_ENCODER_ALIGN_RESULT: u8 = 1;
-// The host's diagnostic formatter dispatches some codes without regard to
-// phase, so a new code must be unique across all phases, not just this one.
 const DIAG_ENCODER_DIRECTION_EXPECTED: u8 = 40;
 const DIAG_ENCODER_DIRECTION_BOUNDS: u8 = 41;
 
-/// PHI_E_EXT units per electrical revolution.
 const PHI_E_UNITS_PER_ELECTRICAL_REV: u32 = 65_536;
 
-/// Tolerance half-width as a fraction of the expected direction-sweep
-/// displacement. Wide enough to absorb encoder read jitter
-/// (`ENCODER_READ_MAX_JITTER`) and normal breakaway/settling variance, tight
-/// enough to reject a halved/doubled PPR or pole-pair count.
 const ENCODER_DIRECTION_TOLERANCE_NUMERATOR: u32 = 1;
 const ENCODER_DIRECTION_TOLERANCE_DENOMINATOR: u32 = 4;
 
-/// Accepted signed-count window for the `PHI_E_EXT` direction sweep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EncoderDirectionWindow {
     expected_signed_counts: i32,
@@ -103,21 +67,6 @@ impl EncoderDirectionWindow {
     }
 }
 
-/// Derive the accepted encoder-count window for the `PHI_E_EXT` direction
-/// sweep.
-///
-/// The sweep commands `ENCODER_DIRECTION_TARGET_PHI_E` out of a full
-/// `PHI_E_UNITS_PER_ELECTRICAL_REV`-unit electrical revolution -- exactly
-/// half an electrical revolution. `ABN_DECODER_MODE`'s direction-invert bit
-/// normalizes the sign of `ABN_DECODER_COUNT` at the register level, so a
-/// correctly wired, correctly configured encoder always reports positive
-/// movement here; a negative or grossly mismatched magnitude indicates
-/// swapped channels, a wrong invert setting, or an incorrect PPR/pole-pair
-/// count.
-///
-/// Returns `None` when `pole_pairs` is zero (motor configuration not yet
-/// established); the caller must treat that as a hard failure rather than
-/// falling back to a default pole-pair count.
 fn encoder_direction_window(
     counts_per_rev: u32,
     pole_pairs: u16,
@@ -143,10 +92,6 @@ fn encoder_alignment_min_movement(encoder_counts_per_rev: u32) -> u32 {
     ((numerator + denominator / 2) / denominator).max(2) as u32
 }
 
-/// D-axis current target for encoder movement drive at a given attempt.
-///
-/// Escalates from the original 50%-of-limit default toward the full
-/// configured `current_limit` on later attempts, never exceeding it.
 fn encoder_movement_current_target(current_limit: u32, attempt: u8) -> i16 {
     let index = usize::from(attempt.min(ENCODER_DIRECTION_MAX_ATTEMPTS - 1));
     let (numerator, denominator, ceiling) = ENCODER_MOVEMENT_CURRENT_SCALE[index];
@@ -250,15 +195,6 @@ fn push_encoder_align_result(
     });
 }
 
-/// Read `ABN_DECODER_COUNT` multiple times and return a stable value.
-///
-/// Reads `ENCODER_READ_SAMPLES` samples per attempt and accepts when the
-/// pairwise wrap-aware spread is <= `ENCODER_READ_MAX_JITTER`. Retries up
-/// to `ENCODER_READ_ATTEMPTS` times. Ambiguous half-turn evidence makes the
-/// current attempt unstable instead of selecting an arbitrary direction.
-///
-/// Returns `CommissionError::EncoderFault` when attempts are exhausted.
-/// Propagates `CommissionError::Spi` if the underlying register read fails.
 async fn read_mechanical_encoder_position_counts_stable<B: CommissioningBackend>(
     backend: &mut B,
     diagnostics: Option<&mut CommissionDiagnostics>,
@@ -299,13 +235,6 @@ async fn read_mechanical_encoder_position_counts_stable<B: CommissioningBackend>
     Err(CommissionError::EncoderFault)
 }
 
-/// Start current-regulated open-loop encoder movement.
-///
-/// Direct voltage mode (`MODE=8` + `UQ_UD_EXT`) is useful for coil
-/// current measurements, but it can fail to move a loaded rotor far
-/// enough for encoder validation. The dev open-loop path uses this
-/// current-regulated pattern: external PHI_E, a D-axis flux target,
-/// current-loop gains, and torque/flux current limits.
 pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
     backend: &mut B,
     phi_e: u32,
@@ -378,11 +307,6 @@ pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
     Ok(())
 }
 
-/// Stop current-regulated open-loop encoder movement.
-///
-/// Lowers the enable GPIO first so a stalled or failed register write
-/// cannot retain current-regulated drive, then attempts every cleanup
-/// write regardless of earlier failures and reports whether any failed.
 pub(crate) async fn stop_encoder_current_drive<B: CommissioningBackend>(
     backend: &mut B,
 ) -> Result<(), CommissionError> {
@@ -402,10 +326,6 @@ pub(crate) async fn stop_encoder_current_drive<B: CommissioningBackend>(
         .map_err(|_| CommissionError::Spi)
 }
 
-/// Advance encoder check sub-state.
-///
-/// Sweeps to a displaced electrical angle via PHI_E_EXT in
-/// resumable sub-steps, then checks whether the encoder count changed.
 pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,
@@ -499,9 +419,6 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 return StepResult::ReadyNow;
             }
 
-            // Advance PHI_E_EXT toward a non-zero final angle. Ending
-            // at 65536/0 can return the rotor to the start angle and
-            // make a working encoder look stationary.
             let phi = (ENCODER_DIRECTION_TARGET_PHI_E as u64 * *step as u64
                 / ENCODER_DIRECTION_STEPS as u64) as u32;
             let _ = backend.write_register(PHI_E_EXT, phi).await;
@@ -597,12 +514,6 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                     pole_pairs
                 );
 
-                // Escalating-current retry is only physically valid for a
-                // below-window reading (static friction held the rotor back;
-                // more current can overcome that). A rotor that already
-                // moved too far cannot be fixed by more torque -- re-zeroing
-                // PHI_E_EXT and driving more current into it only corrupts
-                // the next reading. Fail immediately instead.
                 if above_window {
                     if matches!(sequence, InnerSequence::Selftest) {
                         selftest_results.set(
@@ -644,12 +555,7 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::EncoderFault);
             }
 
-            // All sequences that reach EncoderCheck proceed to
-            // EncoderAlign. Use the final sweep count as the alignment
-            // baseline because the rotor is still held at the displaced
-            // sweep angle; EncoderAlign::Setup will drive back to PHI=0.
             if matches!(sequence, InnerSequence::Selftest) {
-                // Raw encoder delta magnitude; the sign goes to EncoderDirection.
                 selftest_results.set(
                     crate::selftest::SelftestStage::Encoder,
                     crate::selftest::SelftestStageValue {
@@ -657,7 +563,6 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                         value: delta.absolute_counts(),
                     },
                 );
-                // Reversed when the encoder count decreases as PHI_E increases.
                 let reversed = delta.signed_counts() < 0;
                 selftest_results.set(
                     crate::selftest::SelftestStage::EncoderDirection,
@@ -668,11 +573,6 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 );
             }
 
-            // Direction detected. Transition to EncoderAlign, which
-            // locks PHI_E_SELECTION to ABN at a known D-axis zero before
-            // any later closed-loop or electrical-ID work.
-            // Direction value (0=forward, 1=reversed) is carried as
-            // commissioning-local data and is not persisted.
             *phase = InnerPhase::EncoderAlign {
                 state: EncoderAlignState::Setup {
                     count_before: count_end,
@@ -683,11 +583,6 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
     }
 }
 
-/// Advance encoder D-axis alignment sub-state.
-///
-/// Applies current-regulated open-loop drive, verifies the encoder
-/// moved and settled, zeros ABN count/offset while still driving, then
-/// locks PHI_E to ABN before stopping the drive.
 pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,
@@ -940,10 +835,6 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
 
             match sequence {
                 InnerSequence::Calibrate => {
-                    // Use the gain snapshot captured when calibration started.
-                    // An absent snapshot means the host never provided
-                    // verified gains for this re-enable, so fail closed
-                    // rather than arm with a fabricated substitute.
                     let Some(gains) = calibrate_entry_gains else {
                         return super::fail_inner(phase, CommissionError::CurrentValidationFailed);
                     };
@@ -990,7 +881,6 @@ mod tests {
         MockBackend, SHARED_STATE_MUTEX, SpiOp, current_limit,
     };
 
-    /// Maximum backend register operations issued by one encoder state arm.
     const ENCODER_MAX_REGISTER_OPS_PER_ARM: usize = 14;
 
     fn register_op_count(backend: &MockBackend) -> usize {
@@ -1162,10 +1052,6 @@ mod tests {
 
     #[test]
     fn encoder_direction_window_scales_with_configured_pole_pairs() {
-        // Half as many pole pairs doubles the electrical revolution's encoder
-        // span, and therefore the expected half-electrical-revolution
-        // displacement, proving the window is driven by the passed-in
-        // pole-pair count rather than a fixed constant.
         let window = encoder_direction_window(4_000, 25).expect("25 pole pairs is valid");
         assert_eq!(window.expected_signed_counts, 80);
         assert_eq!(window.min_signed_counts, 60);
@@ -1179,14 +1065,10 @@ mod tests {
 
     #[test]
     fn encoder_movement_current_target_escalates_within_current_limit() {
-        // Attempt 0 keeps the original 50%-of-limit, 1000-count ceiling.
         assert_eq!(encoder_movement_current_target(2_448, 0), 1_000);
-        // Later attempts raise the ceiling toward the full current limit.
         assert_eq!(encoder_movement_current_target(2_448, 1), 1_836);
         assert_eq!(encoder_movement_current_target(2_448, 2), 2_448);
-        // Out-of-range attempts saturate at the final (highest) tier.
         assert_eq!(encoder_movement_current_target(2_448, 9), 2_448);
-        // Never exceeds the configured current limit, even at small limits.
         assert_eq!(encoder_movement_current_target(50, 0), 50);
         assert_eq!(encoder_movement_current_target(50, 2), 50);
     }
@@ -1324,7 +1206,6 @@ mod tests {
                     state: EncoderCheckState::Settle { attempt: 1, .. }
                 }
             ));
-            // The failed attempt is still recorded even though it retried.
             let events: heapless::Vec<_, 4> = diagnostics.iter().collect();
             assert_eq!(events.len(), 1);
             assert_eq!(events[0].code, DIAG_ENCODER_DIRECTION_RESULT);
@@ -1386,8 +1267,6 @@ mod tests {
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
             let mut backend = MockBackend::new();
             backend.mechanical_encoder_quadrature_counts_per_rev_value = 4000;
-            // 500 pole pairs makes the expected half-electrical-revolution
-            // displacement land exactly on this test's pre-existing delta of 4.
             backend
                 .last_motor_sentinel_stored
                 .set(Some(pole_pairs_sentinel(500)));
@@ -1429,9 +1308,6 @@ mod tests {
             .into()
     }
 
-    /// Builds a `Finalize` backend at 50 pole pairs / 4000 counts-per-rev
-    /// (expected window [30, 50], centered on 40), and drives it from
-    /// `count_start` to a fixed encoder read of `count_end`.
     fn finalize_backend(count_end: u32, attempt: u8) -> (InnerPhase, MockBackend) {
         let phase = InnerPhase::EncoderCheck {
             state: EncoderCheckState::Finalize {
@@ -1488,8 +1364,6 @@ mod tests {
             backend
                 .last_motor_sentinel_stored
                 .set(Some(pole_pairs_sentinel(50)));
-            // 3980 -> 20 wraps across the origin; the shortest signed path is
-            // still exactly the expected +40 counts.
             backend.set_abn_decoder_count_sequence(&[20, 20, 20]);
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
@@ -1514,7 +1388,6 @@ mod tests {
     fn encoder_direction_check_rejects_reversed_sign_with_plausible_magnitude() {
         pollster::block_on(async {
             let _guard = SHARED_STATE_MUTEX.lock().await;
-            // -40 counts: the same magnitude the correct sign would accept.
             let (mut phase, mut backend) =
                 finalize_backend(3_960, ENCODER_DIRECTION_MAX_ATTEMPTS - 1);
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -1611,9 +1484,6 @@ mod tests {
     fn encoder_direction_check_overscale_fails_immediately_without_retry() {
         pollster::block_on(async {
             let _guard = SHARED_STATE_MUTEX.lock().await;
-            // attempt=0, so a retry would still be available if the code
-            // treated this like an underscale result; overscale must fail
-            // immediately instead.
             let (mut phase, mut backend) = finalize_backend(1_000, 0);
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
@@ -1673,9 +1543,6 @@ mod tests {
     fn encoder_direction_check_reversed_sign_still_retries_with_escalated_current() {
         pollster::block_on(async {
             let _guard = SHARED_STATE_MUTEX.lock().await;
-            // -40 counts is below the window's lower bound, same as an
-            // undershoot reading, so it takes the retry path rather than
-            // the overscale fast-fail.
             let (mut phase, mut backend) = finalize_backend(3_960, 0);
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
@@ -1802,11 +1669,6 @@ mod tests {
     fn encoder_direction_check_uses_configured_pole_pairs_not_a_hardcoded_constant() {
         pollster::block_on(async {
             let _guard = SHARED_STATE_MUTEX.lock().await;
-            // 25 pole pairs (not the 50-pole-pair default elsewhere in this
-            // module) doubles the expected displacement to 80. A delta of 80
-            // would fail against a hardcoded 50-pole-pair assumption
-            // (window [30, 50]), so this only passes if the sentinel-sourced
-            // pole-pair count is actually used.
             let mut phase = InnerPhase::EncoderCheck {
                 state: EncoderCheckState::Finalize {
                     count_start: encoder_count(0),
@@ -1842,9 +1704,6 @@ mod tests {
     fn encoder_direction_check_fails_closed_without_a_calibrated_pole_pair_count() {
         pollster::block_on(async {
             let _guard = SHARED_STATE_MUTEX.lock().await;
-            // A perfect 40-count delta, but no motor_sentinel has been
-            // established (pole_pairs() reads back 0): the check must not
-            // silently accept an unvalidated motor configuration.
             let (mut phase, mut backend) = finalize_backend(40, ENCODER_DIRECTION_MAX_ATTEMPTS - 1);
             backend.last_motor_sentinel_stored.set(None);
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -1864,8 +1723,6 @@ mod tests {
                 StepResult::InnerFailed(CommissionError::EncoderFault)
             ));
             assert!(!backend.enable_pin);
-            // No expectation window exists without a valid pole-pair count,
-            // so only the base direction-result diagnostic is recorded.
             let events: heapless::Vec<_, 4> = diagnostics.iter().collect();
             assert_eq!(events.len(), 1);
             assert_eq!(events[0].code, DIAG_ENCODER_DIRECTION_RESULT);

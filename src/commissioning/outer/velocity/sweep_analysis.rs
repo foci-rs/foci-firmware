@@ -54,8 +54,7 @@ pub(super) struct VelocityObservationInputRequest {
     pub(super) stationarity: StationarityResult,
     /// Post-fit evidence retained when excessive drift rejected the suffix.
     pub(super) rejected_post_fit: Option<SuffixDiagnostic>,
-    /// Drift ratio from the completion envelope, overwritten by the suffix's own
-    /// ratio when `stationarity` is [`StationarityResult::Usable`].
+    /// Drift ratio; replaced by the suffix ratio when `stationarity` is usable.
     pub(super) drift_ratio_ppm: u32,
     /// Largest sampled absolute velocity-PID output during the moving phase.
     pub(super) moving_pid_output_peak: u16,
@@ -75,9 +74,7 @@ pub(super) struct VelocityObservationInputRequest {
 
 /// Assemble one observation's classifier input from already-collected evidence.
 ///
-/// Used by the breakaway probe (`breakaway_campaign::build_probe_observation_input`)
-/// so the predicted-torque formula and the settled-rate/deficit/disturbance
-/// derivation are never duplicated: a future change reaches every caller.
+/// Shared by the sweep and the breakaway probe.
 pub(super) fn assemble_velocity_observation_input(
     request: VelocityObservationInputRequest,
 ) -> Result<VelocityObservationInput, CommissionError> {
@@ -108,9 +105,7 @@ pub(super) fn assemble_velocity_observation_input(
 
 /// Assemble probe diagnostics without allowing their derivation to bind probe control.
 ///
-/// Physical excursion decides whether the probe moved. If comparison-only interval
-/// derivation fails, the raw observation retains its stationarity code and frozen
-/// authority inputs while the unavailable derived fields remain zero.
+/// A failed comparison-only interval derivation leaves the derived fields zero.
 pub(super) fn assemble_probe_observation_input(
     request: VelocityObservationInputRequest,
 ) -> Result<VelocityObservationInput, CommissionError> {
@@ -177,10 +172,6 @@ fn populate_derived_observation_fields(
             .map_err(|error| match error {
                 VelocityUnitError::ArithmeticOverflow => CommissionError::TargetRateInvalid,
                 VelocityUnitError::ZeroTarget => CommissionError::InvalidSchedule,
-                // Unreachable: direction_sign(request.direction) only ever
-                // returns 1 or -1 for the two VelocityDirection variants, so
-                // InvalidDirection can never be constructed by this crate's
-                // own callers.
                 VelocityUnitError::InvalidDirection => CommissionError::InvalidSchedule,
             })?;
         (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
@@ -255,10 +246,6 @@ fn populate_derived_observation_fields(
             .map_err(|error| match error {
                 VelocityUnitError::ArithmeticOverflow => CommissionError::TargetRateInvalid,
                 VelocityUnitError::ZeroTarget => CommissionError::InvalidSchedule,
-                // Unreachable: direction_sign(request.direction) only ever
-                // returns 1 or -1 for the two VelocityDirection variants, so
-                // InvalidDirection can never be constructed by this crate's
-                // own callers.
                 VelocityUnitError::InvalidDirection => CommissionError::InvalidSchedule,
             })?;
         (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
@@ -277,13 +264,6 @@ pub(super) fn deficit_interval_q(
     settled_rate_low_q: i64,
     settled_rate_high_q: i64,
 ) -> Result<(i64, i64), CommissionError> {
-    // Unreachable: this function's only caller path feeds it
-    // `safety.counts_per_rev()`, which delegates to
-    // `EncoderDomain::counts_per_rev()` (commissioning/encoder_domain.rs).
-    // `EncoderDomain::new` rejects `counts_per_rev == 0` at construction and
-    // the field is private with no other setter, so a live
-    // `OuterSafetyLimits`/domain can never carry a zero value here.
-    // Defensive check retained.
     if counts_per_rev == 0 {
         return Err(CommissionError::InvalidSchedule);
     }
@@ -309,10 +289,6 @@ pub(super) fn floor_div_60(numerator: i128) -> Result<i128, CommissionError> {
     let quotient = numerator / 60;
     if numerator < 0 && numerator % 60 != 0 {
         quotient
-            // Unreachable: quotient = numerator / 60 for a valid i128
-            // numerator, so |quotient| <= |i128::MIN| / 60 -- roughly 60x
-            // closer to zero than i128::MIN itself. quotient can therefore
-            // never equal i128::MIN, so checked_sub(1) can never overflow.
             .checked_sub(1)
             .ok_or(CommissionError::InvalidSchedule)
     } else {
@@ -324,10 +300,6 @@ pub(super) fn ceil_div_60(numerator: i128) -> Result<i128, CommissionError> {
     let quotient = numerator / 60;
     if numerator > 0 && numerator % 60 != 0 {
         quotient
-            // Unreachable: the same bound as floor_div_60's comment,
-            // mirrored at the top of the range -- quotient can never reach
-            // i128::MAX for the same reason, so checked_add(1) can never
-            // overflow.
             .checked_add(1)
             .ok_or(CommissionError::InvalidSchedule)
     } else {
@@ -337,9 +309,7 @@ pub(super) fn ceil_div_60(numerator: i128) -> Result<i128, CommissionError> {
 
 /// Poll one moving-tail analysis, returning its result and any gate rejection.
 ///
-/// The rejection is transient: it is produced when a gate rejects the tail and
-/// consumed by the caller building the observation record, so it is never
-/// retained in the commissioning state.
+/// The rejection is transient and never retained in commissioning state.
 pub(super) fn poll_stationarity<const LEVELS: usize>(
     analysis: &mut StationarityWork,
     observations: &impl VelocityObservationSource,
@@ -397,9 +367,7 @@ pub(super) fn poll_scored_rest_confirmation<const LEVELS: usize>(
 
 /// Accept a zero-target settle that never leaves one encoder-count band.
 ///
-/// This covers the observed boundary-toggle dither while rejecting the
-/// multi-count rebound that the statistical stationarity gate is intended to
-/// catch. The bounds include the settle origin at zero.
+/// The bounds include the settle origin at zero.
 pub(super) fn bounded_rest_displacement(minimum: i8, maximum: i8) -> bool {
     maximum - minimum <= 1
 }
@@ -509,10 +477,6 @@ mod tests {
 
     #[test]
     fn signed_target_overflow_is_a_target_rate_fault_when_usable() {
-        // p = ZERO keeps `predicted_torque_target_abs` from overflowing first
-        // on this same i32::MIN magnitude, isolating with_direction's own
-        // ArithmeticOverflow (checked_abs on i32::MIN has no representable
-        // positive counterpart).
         let request = request_with_target_and_p_gain(
             StationarityResult::Usable(usable_suffix()),
             None,
@@ -587,9 +551,6 @@ mod tests {
             usable_plateau: true,
             slope_passed: true,
             lag_one_passed: false,
-            // At 16 selected blocks this misses the family-3 half-width but fits
-            // inside family 16: |-0.0625 - 0.75| = 0.8125, between 0.6734 and
-            // 0.8788. Copying the binding verdict would therefore fail this test.
             lag_one_q: 750_000,
             settled_rate_interval_q: [1, 2],
             slope_rejection_margin_q: 0,
@@ -725,9 +686,6 @@ mod tests {
 
     #[test]
     fn low_bound_narrowing_overflow_is_a_target_rate_fault() {
-        // target_numerator = i32::MAX * u32::MAX * 1_000 (~9.2e21); floor_div_60
-        // of that magnitude (~1.5e20) exceeds i64::MAX, so the final narrowing
-        // conversion of the low bound overflows before any i128 step does.
         assert_eq!(
             deficit_interval_q(i32::MAX, u32::MAX, 0, 0),
             Err(CommissionError::TargetRateInvalid)
@@ -736,10 +694,6 @@ mod tests {
 
     #[test]
     fn high_bound_narrowing_overflow_is_a_target_rate_fault() {
-        // Chosen so target_numerator (6e20) minus settled_rate_high_q * 60
-        // (~5.53e20, using i64::MAX) brings the low bound back under i64::MAX
-        // while the high bound (target_numerator / 60 = 1e19) still exceeds it,
-        // isolating the second narrowing conversion from the first.
         assert_eq!(
             deficit_interval_q(2_000_000_000, 300_000_000, 0, i64::MAX),
             Err(CommissionError::TargetRateInvalid)

@@ -1,21 +1,14 @@
 //! Pure derivation of reversal-robustness metrics from raw velocity observations.
 //!
-//! Every function here is a deterministic transform over `{delta_counts,
-//! elapsed_us}` samples pulled from a `VelocityObservationSource` (the
-//! commissioning outer-loop tail ring in production, `[RawVelocityObservation]`
-//! or a stub in tests). Nothing here touches hardware, state machines, or the
-//! stationarity suffix selector: band-entry timing and recovery IAE are
-//! computed directly on the derived per-tick rate, so their outcome is
-//! independent of which (if any) suffix the selector would have chosen.
+//! Deterministic transforms over per-tick `{delta_counts, elapsed_us}` samples; band-entry
+//! timing and recovery IAE are computed on the derived per-tick rate, independent of the
+//! stationarity suffix selector.
 
 use crate::autotune::velocity_measurement::VELOCITY_RATE_Q_SCALE;
 use crate::autotune::velocity_measurement::VelocityObservationSource;
 
 const MICROS_PER_SECOND: i128 = 1_000_000;
 
-/// Multiplying `target_rate_q * elapsed_us` for one tick yields
-/// `expected_delta_counts * OVERSHOOT_SCALE_Q`, by the same identity
-/// `per_tick_rate_q` divides out.
 const OVERSHOOT_SCALE_Q: i64 = 1_000_000 * VELOCITY_RATE_Q_SCALE;
 
 /// Reconvergence and recovery metrics for one reversal-robustness probe.
@@ -29,9 +22,8 @@ pub struct ReversalMetrics {
     /// Integral of absolute rate error over the recovery window, in
     /// rate-Q-microsecond units.
     pub recovery_iae_q: i64,
-    /// Demeaned first-difference RMS of settled per-tick rate error, in raw
-    /// rate-Q units (not IAE's rate-Q-seconds). Meaningful only when this
-    /// leg reached the settled tail; `0` otherwise.
+    /// Demeaned first-difference RMS of settled per-tick rate error, in raw rate-Q units;
+    /// `0` unless the leg reached the settled tail.
     pub dac_rms_q: i64,
     /// Elapsed time from the initial (forward) approach to its own settle.
     pub forward_settle_time_us: u32,
@@ -40,12 +32,9 @@ pub struct ReversalMetrics {
     pub reconvergence_ratio_ppm: u32,
 }
 
-/// Derive the per-tick rate, in the same rate-Q fixed-point convention as
-/// `sweep_analysis::deficit_interval_q`'s settled-rate arguments
-/// (`VELOCITY_RATE_Q_SCALE`, counts per second scaled by 1000).
+/// Derive the per-tick rate in rate-Q units (`VELOCITY_RATE_Q_SCALE`).
 ///
-/// Returns `0` for a degenerate zero-elapsed sample rather than dividing by
-/// zero; a valid `VelocityObservationSource` never yields one.
+/// Returns `0` for a zero-elapsed sample.
 pub(crate) fn per_tick_rate_q(delta_counts: i32, elapsed_us: u32) -> i64 {
     if elapsed_us == 0 {
         return 0;
@@ -61,19 +50,11 @@ pub(crate) fn per_tick_rate_q(delta_counts: i32, elapsed_us: u32) -> i64 {
     })
 }
 
-/// Return the elapsed time (from the start of `obs`) at which a sustained
-/// dwell inside `[target_rate_q - band_q, target_rate_q + band_q]` begins,
-/// where the dwell lasts at least `dwell_us`.
+/// Return the elapsed time (from the start of `obs`) at the first sample of a dwell of at
+/// least `dwell_us` inside `[target_rate_q - band_q, target_rate_q + band_q]`.
 ///
-/// Returns the elapsed-us at the *first sample of that dwell*, not the
-/// sample where the dwell requirement is finally satisfied, so the result
-/// reads as "how long after reversal onset did the rate settle". Returns
-/// `None` if no such dwell exists anywhere in `obs` (the inconclusive
-/// signal).
-///
-/// Reference scanner: production folds samples online via
-/// [`ReversalOnlineAccumulator`]; this batch form exists only to validate that
-/// accumulator against an intact sample stream, so it is `#[cfg(test)]`.
+/// Returns `None` if no such dwell exists (the inconclusive signal). Reference scanner for
+/// [`ReversalOnlineAccumulator`].
 #[cfg(test)]
 pub(crate) fn band_entry_time_us(
     obs: &impl VelocityObservationSource,
@@ -108,12 +89,10 @@ pub(crate) fn band_entry_time_us(
     None
 }
 
-/// Integral of absolute per-tick rate error against `target_rate_q` over
-/// `obs[0..end_index]`, weighted by each sample's elapsed time:
-/// `sum(|rate_i - target_rate_q| * elapsed_us_i)`.
+/// Integral of absolute per-tick rate error against `target_rate_q` over `obs[0..end_index]`,
+/// weighted by elapsed time: `sum(|rate_i - target_rate_q| * elapsed_us_i)`.
 ///
-/// Reference scanner (see [`band_entry_time_us`]): `#[cfg(test)]`, used only to
-/// validate [`ReversalOnlineAccumulator`] against an intact sample stream.
+/// Reference scanner for [`ReversalOnlineAccumulator`].
 #[cfg(test)]
 pub(crate) fn recovery_iae_q(
     obs: &impl VelocityObservationSource,
@@ -187,22 +166,13 @@ pub(crate) fn dac_rms_q<S: VelocityObservationSource + ?Sized>(
     libm::sqrtf(mean_sq_diff_f) as i64
 }
 
-/// Samples in a probe leg's band-membership window. Sixteen ~1 ms ticks span
-/// the chip velocity meter's 20 Hz filter time scale, so band entry sees the
-/// velocity the loop regulates rather than per-tick count ripple, which at
-/// one count per tick is already the width of the band.
+/// Samples in a probe leg band-membership window.
 pub(crate) const PROBE_BAND_WINDOW_SAMPLES: usize = 16;
 
 /// Online band-entry and recovery-IAE accumulator for one capture leg.
 ///
-/// The [`VelocityObservationRing`](crate::commissioning::outer::state::VelocityObservationRing)
-/// retains only its most recent 256 samples, so a capture that runs up to the
-/// full [`ROBUSTNESS_MEASUREMENT_BUDGET_US`] budget cannot be scanned after the
-/// fact -- the early transient has already been overwritten. This accumulator
-/// therefore folds each observation in as it arrives, deriving exactly the same
-/// band-entry time and recovery IAE that [`band_entry_time_us`] and
-/// [`recovery_iae_q`] would compute over the intact sample stream. The ring is
-/// left to serve only the settled tail (stationarity + residual).
+/// Folds each observation in as it arrives, yielding the band-entry time and recovery IAE
+/// of [`band_entry_time_us`] and [`recovery_iae_q`] without retaining the full stream.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 pub(crate) struct ReversalOnlineAccumulator {
     target_rate_q: i64,
@@ -254,19 +224,12 @@ impl ReversalOnlineAccumulator {
         }
     }
 
-    /// Re-arm the accumulator for a fresh leg targeting `target_rate_q` with a
-    /// symmetric `band_q` half-width and a `dwell_us` sustained-residence
-    /// requirement. Also clears the leg-scoped overshoot-excess tracking
-    /// (`actual_position_counts`, `expected_position_q`, `peak_excess_q`):
-    /// unlike the old whole-cycle peak this design replaces, the excess
-    /// tracker is scoped to one leg, so the reverse leg's own `reset()` call
-    /// is the reversal-command instant it anchors at.
+    /// Re-arm for a fresh leg targeting `target_rate_q` with a symmetric `band_q` half-width
+    /// and a `dwell_us` residence requirement, clearing the leg-scoped overshoot tracking.
     ///
-    /// Band membership is judged on the mean rate of the last
-    /// `band_window_samples` observations (1 for each raw tick, at most
-    /// [`PROBE_BAND_WINDOW_SAMPLES`]); samples before the window first
-    /// fills are out of band. The recovery IAE and the overshoot tracker keep
-    /// integrating the raw per-tick rate.
+    /// Band membership is judged on the mean rate of the last `band_window_samples`
+    /// observations (at most [`PROBE_BAND_WINDOW_SAMPLES`]); IAE and overshoot use the raw
+    /// per-tick rate.
     pub(crate) fn reset_with_band_window(
         &mut self,
         target_rate_q: i64,
@@ -297,12 +260,8 @@ impl ReversalOnlineAccumulator {
 
     /// Fold one observation into the running band-entry and IAE state.
     ///
-    /// Mirrors [`band_entry_time_us`]/[`recovery_iae_q`] exactly: band entry is
-    /// recorded at the *first* sample of the dwell that first satisfies
-    /// `dwell_us`, and the recovery IAE integrates `|rate - target| * elapsed`
-    /// over every sample strictly before that dwell start. Once band entry is
-    /// recorded, further observations are ignored so the IAE stays frozen at
-    /// the transient it measured.
+    /// Mirrors [`band_entry_time_us`]/[`recovery_iae_q`]; once band entry is recorded,
+    /// further observations are ignored.
     pub(crate) fn observe(&mut self, delta_counts: i32, elapsed_us: u32) {
         self.expected_position_q = self
             .expected_position_q
@@ -377,20 +336,14 @@ impl ReversalOnlineAccumulator {
         self.band_entry_iae_q
     }
 
-    /// Peak positive excess of actual displacement over the ideal
-    /// constant-target-rate trajectory, observed since the last `reset()`
-    /// -- i.e. scoped to one leg. Zero for a leg that never ran ahead of its
-    /// commanded target rate.
+    /// Peak positive excess of actual displacement over the ideal constant-target-rate
+    /// trajectory since the last `reset()`.
     pub(crate) fn reversal_overshoot_counts(&self) -> u16 {
         u16::try_from(self.peak_excess_q / OVERSHOOT_SCALE_Q).unwrap_or(u16::MAX)
     }
 
-    /// Whole-leg mean velocity-to-target ratio in percent: accumulated signed
-    /// displacement as a fraction of the ideal constant-target-rate
-    /// displacement. Around 100 tracked the commanded rate; below 100 ran
-    /// behind (sat below the band); above 100 with a nonzero
-    /// [`Self::reversal_overshoot_counts`] ran ahead (hunted across). Zero
-    /// before any target displacement accrues.
+    /// Whole-leg mean velocity-to-target ratio in percent; zero before any target
+    /// displacement accrues.
     pub(crate) fn velocity_to_target_pct(&self) -> i32 {
         if self.expected_position_q == 0 {
             return 0;
@@ -403,9 +356,7 @@ impl ReversalOnlineAccumulator {
 
 /// Absolute per-direction gate thresholds for one reversal-robustness probe.
 ///
-/// Compared directly against `ReversalMetrics`, never against another
-/// candidate's own measurement, so the gate cannot be gamed by an
-/// over-integrated candidate that is merely "less bad" than its peers.
+/// Compared directly against `ReversalMetrics`, never against another candidate.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 pub(crate) struct RobustnessThresholds {
     /// Maximum allowed `reconvergence_time_us`.
@@ -416,50 +367,14 @@ pub(crate) struct RobustnessThresholds {
     pub iae_max_q: i64,
 }
 
-/// Conservative, pre-characterization seed thresholds. Deliberately loose:
-/// the gate must never false-reject a good candidate before the hardware
-/// characterization pass tightens these values. The gate compares the
-/// per-direction median of each metric against these bounds, so a single
-/// tail cycle cannot by itself trip a threshold.
+/// Conservative seed thresholds, deliberately loose. The gate compares the per-direction
+/// median of each metric against these bounds.
 ///
-/// Structural censoring: a conclusive tail cycle cannot be measured while the
-/// tail threshold (`2 * t_max`) exceeds `ROBUSTNESS_MEASUREMENT_BUDGET_US` --
-/// band entry past the budget reads as inconclusive, never as a slow
-/// conclusive cycle. The tail-reject path is therefore dormant until the tail
-/// threshold is pinned below the budget.
-///
-/// `r_max_q` is the deficit-Q equivalent of 10% of a reference acceptance
-/// target rate (176 rpm at `REFERENCE_ENCODER_COUNTS_PER_REV` = 4000 counts
-/// per rev, `commissioning/outer/limits.rs`), computed offline against
-/// `VELOCITY_RATE_Q_SCALE` and frozen as a literal -- never recomputed at
-/// runtime, which would silently reintroduce a self-relative gate:
-///
-/// ```text
-/// target_rate_q = target_velocity_rpm * counts_per_rev * VELOCITY_RATE_Q_SCALE / 60
-///               = 176 * 4_000 * 1_000 / 60
-///               = 704_000_000 / 60
-///               = 11_733_333 (truncated)
-/// r_max_q = target_rate_q * 10 / 100 = 1_173_333 (truncated)
-/// ```
-///
-/// `iae_max_q` is a loose *transient* envelope, not a settled-residual one:
-/// the recovery window integrates the reversal transient, whose error starts
-/// near twice the target rate. The seed allows a 2x margin over that peak
-/// error (`2 * target_rate_q`) sustained across the IAE reference window
-/// (`ROBUSTNESS_IAE_REFERENCE_WINDOW_US`), in the same rate-Q-microsecond unit
-/// as the internal `recovery_iae_q` the gate compares:
-///
-/// ```text
-/// iae_max_q = 2 (margin) * (2 * target_rate_q) * ROBUSTNESS_IAE_REFERENCE_WINDOW_US
-///           = 2 * (2 * 11_733_333) * 500_000
-///           = 23_466_666_000_000 (rate-Q microseconds)
-/// ```
+/// `r_max_q` and `iae_max_q` are frozen literals derived offline from a 176 rpm reference
+/// target at 4000 counts per rev; they are never recomputed at runtime.
 pub(crate) const ROBUSTNESS_THRESHOLDS: RobustnessThresholds = RobustnessThresholds {
     t_max_us: ROBUSTNESS_MEASUREMENT_BUDGET_US - ROBUSTNESS_TRIP_TIME_HEADROOM_US,
-    // Loose seed (10% of target), pending hardware characterization.
     r_max_q: 1_173_333,
-    // Loose seed: 2x margin over the full-budget peak-error transient,
-    // pending hardware characterization.
     iae_max_q: 2 * (2 * 11_733_333) * 500_000,
 };
 
@@ -470,93 +385,56 @@ pub(crate) const TRIP_RESIDUAL: u8 = 1 << 1;
 /// Bit set in `tripped_mask` when `recovery_iae_q` exceeds `iae_max_q`.
 pub(crate) const TRIP_IAE: u8 = 1 << 2;
 
-/// Settle-band half-width, as a percentage of `|target_rate_q|`. The phase
-/// derives `band_q = |target_rate_q| * ROBUSTNESS_BAND_FRACTION_PCT / 100`
-/// at runtime. This is a settle-detection tolerance proportional to target,
-/// not a self-relative gate -- the ratio concern is confined to `t_max_us`,
-/// which stays absolute.
+/// Settle-band half-width, as a percentage of `|target_rate_q|`.
 pub(crate) const ROBUSTNESS_BAND_FRACTION_PCT: u32 = 5;
 
 /// Minimum sustained dwell inside the settle band, in microseconds.
-/// ~48 ticks at the ~1 ms observation cadence, under the 64-sample shortest
-/// stationary suffix (`VELOCITY_SUFFIX_LENGTHS[0]`).
+/// About 48 ticks at the 1 ms observation cadence, under the shortest stationary suffix.
 pub(crate) const ROBUSTNESS_BAND_DWELL_US: u32 = 48_000;
 
-/// Overall measurement budget for one reversal-robustness probe leg, in
-/// microseconds; must exceed `t_max_us`. A leg that does not reach band entry
-/// within this budget is inconclusive. The IAE bound does not follow this
-/// budget; see [`ROBUSTNESS_IAE_REFERENCE_WINDOW_US`].
+/// Overall measurement budget for one probe leg, in microseconds; must exceed `t_max_us`.
+/// A leg that does not reach band entry within it is inconclusive.
 pub(crate) const ROBUSTNESS_MEASUREMENT_BUDGET_US: u32 = 700_000;
 
-/// Fixed integration window the live IAE bound is derived over, so the gate's
-/// transient envelope stays put when the measurement budget changes.
+/// Fixed integration window the live IAE bound is derived over.
 pub(crate) const ROBUSTNESS_IAE_REFERENCE_WINDOW_US: u32 = 500_000;
 
-/// Gap between the measurement budget and the reconvergence trip line. Wider
-/// than [`ROBUSTNESS_BAND_DWELL_US`], so a conclusive cycle can still land
-/// between the trip line and the budget's censoring point.
+/// Gap between the measurement budget and the reconvergence trip line.
 pub(crate) const ROBUSTNESS_TRIP_TIME_HEADROOM_US: u32 = 100_000;
 
-/// Probe-leg cruise target as a percentage of the campaign amplitude. The
-/// planner sizes the amplitude so that 1.5x of it meets the machine velocity
-/// ceiling, an allowance for a 0-to-target step; the reversal is a full sign
-/// flip, twice that step, so at full amplitude a 25% relative overshoot lands
-/// on the ceiling and the outer safety faults instead of the gate deciding.
+/// Probe-leg cruise target as a percentage of the campaign amplitude.
 pub(crate) const ROBUSTNESS_LEG_AMPLITUDE_PCT: i32 = 85;
 
-/// Bounded retry count for an inconclusive probe leg. Band entry is stochastic
-/// and occasionally misses within a single leg's budget; each retry re-runs a
-/// fresh leg within that same budget, so a slow cycle gets four independent
-/// attempts before its slot is consumed inconclusive. Prefer more retries over a
-/// longer per-leg budget: extending the budget lengthens each leg's spin and
-/// risks tripping the outer-safety travel envelope, whereas a retry does not.
+/// Bounded retry count for an inconclusive probe leg.
 pub(crate) const ROBUSTNESS_MAX_RETRIES: u8 = 4;
 
-/// Number of `ROBUSTNESS_MEASUREMENT_BUDGET_US`-sized legs run per probe
-/// cycle: the establish settle (`begin_capture` in the establish state), the
-/// reversal measurement (`begin_capture` again in the reverse state), the
-/// between-legs zero-target rest window `open_zero_window` opens, and the one
-/// bounded re-opened rest window a rejected rest is granted before the run
-/// faults. All four legs in `robustness_reversal` budget their deadline off
-/// this same constant, so the worst-case per-cycle envelope is this leg count
-/// times `ROBUSTNESS_MEASUREMENT_BUDGET_US`.
+/// Number of `ROBUSTNESS_MEASUREMENT_BUDGET_US`-sized legs run per probe cycle: establish,
+/// reversal, rest window, and one re-opened rest window.
 ///
-/// The per-leg settle-analysis window (`SETTLE_ANALYSIS_BUDGET_US`) is
-/// deliberately not charged: it is a bounded post-capture analysis, not a
-/// motion budget, and this envelope bounds motion time. Folding it in would
-/// still fit the u16 field but overstate the moving envelope.
+/// The worst-case per-cycle motion envelope is this count times the budget; analysis time
+/// is not charged.
 pub(crate) const ROBUSTNESS_LEGS_PER_CYCLE: u32 = 4;
 
-/// Near-zero/degenerate cut-in divisor for [`robustness_thresholds_for`]: a
-/// `plant_rate_q` below `target_rate_q / PLANT_RATE_DEGENERATE_MIN_DIVISOR`
-/// (a documented small fraction of target, ~0.4%) fails open to
-/// [`ROBUSTNESS_IAE_SEED_MAX_Q`] instead of scaling the coefficient down
-/// toward a reject-everything threshold.
+/// Degenerate cut-in divisor for [`robustness_thresholds_for`]: a `plant_rate_q` below
+/// `target_rate_q / PLANT_RATE_DEGENERATE_MIN_DIVISOR` fails open to
+/// [`ROBUSTNESS_IAE_SEED_MAX_Q`].
 pub(crate) const PLANT_RATE_DEGENERATE_MIN_DIVISOR: i64 = 256;
 
-/// The retired loose IAE seed (see [`ROBUSTNESS_THRESHOLDS`]'s doc comment
-/// for its derivation). Kept as both the near-zero/degenerate fail-open
-/// value and the dormant-equivalent anchor that
-/// [`ROBUSTNESS_IAE_COEFF_NUM`]/[`ROBUSTNESS_IAE_COEFF_DEN`] are calibrated
-/// against.
+/// Loose IAE seed used as the degenerate fail-open value and as the calibration anchor for
+/// [`ROBUSTNESS_IAE_COEFF_NUM`]/[`ROBUSTNESS_IAE_COEFF_DEN`].
 pub(crate) const ROBUSTNESS_IAE_SEED_MAX_Q: i64 = 23_466_666_000_000;
 
-/// Calibration coefficient (numerator) for [`robustness_thresholds_for`]'s
-/// `iae_max_q`: `iae_max_q = plant_rate_q * NUM * REFERENCE_WINDOW_US / DEN`. Split as a
-/// rational so the calibration is exact.
+/// Calibration coefficient (numerator) for `iae_max_q` in [`robustness_thresholds_for`]:
+/// `iae_max_q = plant_rate_q * NUM * REFERENCE_WINDOW_US / DEN`.
 ///
-/// Candidate-independence invariant: the `plant_rate_q` this scales must derive
-/// from breakaway plant identification, never a candidate's own reversal
-/// measurement, or a candidate could loosen its own gate by degrading its
-/// measured response. See [`RobustnessThresholds`] for the same invariant.
+/// `plant_rate_q` must derive from breakaway plant identification, never a candidate own
+/// reversal measurement.
 pub(crate) const ROBUSTNESS_IAE_COEFF_NUM: i64 = 29;
 /// Calibration coefficient (denominator). See [`ROBUSTNESS_IAE_COEFF_NUM`].
 pub(crate) const ROBUSTNESS_IAE_COEFF_DEN: i64 = 200;
 
-/// Reduce the two reversal-direction response intervals from the accepted
-/// point's identified settled-rate response into one worse-of plant rate,
-/// in rate-Q units: per direction `max(|low|, |high|)`, pooled across the
-/// two directions with worse-of `max`.
+/// Reduce the two reversal-direction response intervals into one worse-of plant rate in
+/// rate-Q units: per direction `max(|low|, |high|)`, pooled with `max`.
 pub(crate) fn reduce_plant_rate_q(intervals: &[[i32; 2]; 2]) -> i64 {
     let dir0 = intervals[0][0]
         .unsigned_abs()
@@ -567,15 +445,11 @@ pub(crate) fn reduce_plant_rate_q(intervals: &[[i32; 2]; 2]) -> i64 {
     i64::from(dir0.max(dir1))
 }
 
-/// Construct plant-adaptive robustness thresholds from the accepted point's
-/// identified settled-rate response (`plant_rate_q`, see
-/// [`reduce_plant_rate_q`]) and the reference target rate. `t_max_us` and
-/// `r_max_q` are carried over unchanged from [`ROBUSTNESS_THRESHOLDS`]; only
-/// `iae_max_q` adapts to the identified plant.
+/// Construct plant-adaptive robustness thresholds from the identified settled-rate response
+/// (`plant_rate_q`, see [`reduce_plant_rate_q`]) and the reference target rate.
 ///
-/// Candidate-independence invariant: `plant_rate_q` must derive from
-/// breakaway plant identification, never a candidate's own measurement --
-/// see [`ROBUSTNESS_IAE_COEFF_NUM`].
+/// `t_max_us` and `r_max_q` carry over from [`ROBUSTNESS_THRESHOLDS`]; only `iae_max_q`
+/// adapts. See [`ROBUSTNESS_IAE_COEFF_NUM`] for the `plant_rate_q` provenance requirement.
 pub(crate) fn robustness_thresholds_for(
     plant_rate_q: i64,
     target_rate_q: i64,
@@ -629,19 +503,17 @@ mod tests {
 
     #[test]
     fn band_entry_reports_first_stable_dwell_and_ignores_earlier_excursions() {
-        // 20 ticks at 1000us: first 5 far from target, then within band for the rest.
         let mut ring = VelocityObservationRing::new();
-        let target = per_tick_rate_q(100, 1_000); // rate for 100 counts/1ms
+        let target = per_tick_rate_q(100, 1_000);
         for _ in 0..5 {
             ring.push(400, 1_000).unwrap();
-        } // way over
+        }
         for _ in 0..15 {
             ring.push(100, 1_000).unwrap();
-        } // on target
-        // band tolerant of 1 count, dwell 3ms
+        }
         let band = per_tick_rate_q(1, 1_000);
         let t = band_entry_time_us(&ring, target, band, 3_000).expect("enters band");
-        assert_eq!(t, 5_000); // reversal-to-band-entry = 5 ticks * 1000us
+        assert_eq!(t, 5_000);
     }
 
     #[test]
@@ -660,8 +532,8 @@ mod tests {
     fn recovery_iae_sums_absolute_error_times_elapsed() {
         let mut ring = VelocityObservationRing::new();
         let target = per_tick_rate_q(100, 1_000);
-        ring.push(120, 1_000).unwrap(); // +20 counts error
-        ring.push(80, 1_000).unwrap(); // -20 counts error
+        ring.push(120, 1_000).unwrap();
+        ring.push(80, 1_000).unwrap();
         let iae = recovery_iae_q(&ring, target, 2);
         let per_err = (per_tick_rate_q(20, 1_000)).abs() * 1_000;
         assert_eq!(iae, per_err * 2);
@@ -669,27 +541,18 @@ mod tests {
 
     #[test]
     fn band_entry_ignores_the_stationarity_suffix_selector() {
-        // A ring the suffix selector would exclude (a large early excursion
-        // dominates the long suffixes) but whose derived-rate band entry is
-        // clean once settled. band_entry_time_us takes only the ring + target +
-        // band + dwell -- no StationarityWork/suffix input -- so the selector
-        // outcome structurally cannot affect the reconvergence-time metric.
         let mut ring = VelocityObservationRing::new();
         let target = per_tick_rate_q(100, 1_000);
         for _ in 0..8 {
             ring.push(500, 1_000).unwrap();
-        } // large early excursion
+        }
         for _ in 0..64 {
             ring.push(100, 1_000).unwrap();
-        } // clean band residence
+        }
         let band = per_tick_rate_q(1, 1_000);
         assert!(band_entry_time_us(&ring, target, band, 3_000).is_some());
     }
 
-    /// Feed identical sample streams through the online accumulator and the pure
-    /// scanners; the accumulator must reproduce band-entry time and recovery IAE
-    /// exactly, since production folds samples online (the 256-sample ring
-    /// cannot retain a full 500 ms transient).
     fn assert_online_matches_pure(samples: &[(i32, u32)], target: i64, band: i64, dwell_us: u32) {
         let mut ring = VelocityObservationRing::new();
         let mut online = ReversalOnlineAccumulator::new();
@@ -722,7 +585,6 @@ mod tests {
     fn online_accumulator_matches_pure_scanners_for_transient_then_settle() {
         let target = per_tick_rate_q(100, 1_000);
         let band = per_tick_rate_q(1, 1_000);
-        // 30 ticks far out of band, then a sustained on-target dwell.
         let samples: [(i32, u32); 110] =
             core::array::from_fn(|i| (if i < 30 { 400 } else { 100 }, 1_000));
         assert_online_matches_pure(&samples, target, band, 48_000);
@@ -841,7 +703,7 @@ mod tests {
     #[test]
     fn overshoot_is_zero_when_leg_tracks_target_rate_exactly() {
         let mut online = ReversalOnlineAccumulator::new();
-        let target = per_tick_rate_q(100, 1_000); // 100 counts per 1ms tick
+        let target = per_tick_rate_q(100, 1_000);
         online.reset_with_band_window(target, 0, 0, 1);
         for _ in 0..10 {
             online.observe(100, 1_000);
@@ -855,14 +717,9 @@ mod tests {
         let target = per_tick_rate_q(100, 1_000);
         online.reset_with_band_window(target, 0, 0, 1);
         for _ in 0..3 {
-            // 2x target rate for 3 ticks: +100 counts of excess per tick.
             online.observe(200, 1_000);
         }
         for _ in 0..10 {
-            // Settles back onto the target rate exactly -- this does not erase
-            // the excess already reached, it only stops it from growing
-            // further, since actual and expected now advance in lockstep. This
-            // is the case a single-point-at-band-entry comparison would miss.
             online.observe(100, 1_000);
         }
         assert_eq!(online.reversal_overshoot_counts(), 300);
@@ -874,29 +731,11 @@ mod tests {
         let target = per_tick_rate_q(100, 1_000);
         online.reset_with_band_window(target, 0, 0, 1);
         for _ in 0..10 {
-            // Half the target rate, never ahead of the ideal trajectory.
             online.observe(50, 1_000);
         }
         assert_eq!(online.reversal_overshoot_counts(), 0);
     }
 
-    /// Reverse-target (negative `target_rate_q`) counterparts of the three
-    /// cases above. `overshoot_is_zero_when_leg_tracks_target_rate_exactly`'s
-    /// negative counterpart is deliberately omitted: with actual and expected
-    /// exactly equal, `excess_q` is `0` before the sign projection is even
-    /// applied, so that case cannot distinguish a correct sign projection from
-    /// an omitted or broken one at any target sign -- it is structurally
-    /// incapable of catching a sign bug, so a negative-target duplicate would
-    /// add no coverage. The burst and behind-target cases below are not
-    /// redundant with that reasoning: the sign projection is a no-op for a
-    /// positive target (`signum() == 1`), so the *positive*-target burst/behind
-    /// tests above cannot distinguish "sign applied" from "sign omitted"
-    /// either -- only a *negative*-target case exercises a projection that
-    /// actually changes the sign of `excess_q` before clamping. A sign-omitted
-    /// implementation would report `300` here as `0`
-    /// (`overshoot_sign_symmetry_burst_...`) and `0` here as a spurious nonzero
-    /// value (`overshoot_sign_symmetry_behind_...`) -- so both are needed to
-    /// close the gap the positive-only tests leave open.
     #[test]
     fn overshoot_sign_symmetry_holds_for_a_reverse_target_burst() {
         let mut online = ReversalOnlineAccumulator::new();
@@ -917,49 +756,33 @@ mod tests {
         let target = per_tick_rate_q(-100, 1_000);
         online.reset_with_band_window(target, 0, 0, 1);
         for _ in 0..10 {
-            // Half the target magnitude, same (negative) direction -- never
-            // ahead of the ideal trajectory. A sign-omitted implementation
-            // computes `(actual*SCALE - expected_q)`, which is positive here
-            // (actual is *less* negative than expected) and would wrongly clamp
-            // to a nonzero value instead of 0.
             online.observe(-50, 1_000);
         }
         assert_eq!(online.reversal_overshoot_counts(), 0);
     }
 
-    /// The excess tracker is leg-scoped: `reset()` must clear it, unlike the
-    /// old whole-cycle peak this design replaces (which was cleared only once
-    /// per cycle, by the now-deleted `reset_cycle_peak()`). Without this test,
-    /// a future change that accidentally drops the three new clearing lines
-    /// from `reset()` would leave every other test in this file passing (they
-    /// each call `reset()` only once, at the start), while production code
-    /// would silently carry a burst's excess across into the next leg.
     #[test]
     fn reset_clears_the_excess_tracker_for_a_fresh_leg() {
         let mut online = ReversalOnlineAccumulator::new();
         let target = per_tick_rate_q(100, 1_000);
         online.reset_with_band_window(target, 0, 0, 1);
         for _ in 0..3 {
-            online.observe(200, 1_000); // burst: reaches overshoot 300
+            online.observe(200, 1_000);
         }
         assert_eq!(online.reversal_overshoot_counts(), 300);
 
-        online.reset_with_band_window(target, 0, 0, 1); // new leg
+        online.reset_with_band_window(target, 0, 0, 1);
         assert_eq!(
             online.reversal_overshoot_counts(),
             0,
             "reset() must clear peak_excess_q, not carry it into the new leg"
         );
-        online.observe(100, 1_000); // exactly on target: only this leg's sample counts
+        online.observe(100, 1_000);
         assert_eq!(online.reversal_overshoot_counts(), 0);
     }
 
     #[test]
     fn t_max_is_a_live_range_coarse_catch() {
-        // Above the observed hot-plant conclusive max and below the conclusive-
-        // time censoring point (budget minus dwell): a conclusive leg slower
-        // than the budget cannot reach this threshold and reads as inconclusive
-        // instead, so the catch is deliberately coarse.
         assert_eq!(ROBUSTNESS_THRESHOLDS.t_max_us, 600_000);
         const { assert!(ROBUSTNESS_THRESHOLDS.t_max_us > 450_000) };
         const {
@@ -982,15 +805,11 @@ mod tests {
 
     #[test]
     fn tail_threshold_stays_dormant_above_budget() {
-        // 2 * t_max exceeds the measurement budget, so a conclusive tail cycle
-        // cannot be measured (band entry past budget reads inconclusive). The
-        // cause-10 tail-latch path stays dormant, unchanged by the t_max move.
         const { assert!(2 * ROBUSTNESS_THRESHOLDS.t_max_us > ROBUSTNESS_MEASUREMENT_BUDGET_US) };
     }
 
     #[test]
     fn reduce_plant_rate_q_takes_worse_of_max_bound() {
-        // dir0 bounds |-3|,|5| -> 5 ; dir1 bounds |7|,|-2| -> 7 ; worse-of -> 7
         let intervals = [[-3, 5], [7, -2]];
         assert_eq!(reduce_plant_rate_q(&intervals), 7);
     }
@@ -998,21 +817,16 @@ mod tests {
     #[test]
     fn iae_max_q_scales_with_plant_rate_above_the_degenerate_cut_in() {
         let target = 11_733_333;
-        // Both plant rates are well above the near-zero cut-in (target/256), so
-        // both take the coefficient path rather than the fail-open seed.
         let a = robustness_thresholds_for(1_000_000, target).iae_max_q;
         let b = robustness_thresholds_for(2_000_000, target).iae_max_q;
         assert!(a > 0 && b > a);
-        assert!((b - 2 * a).abs() <= 1); // ~linear in plant_rate_q (integer rounding)
+        assert!((b - 2 * a).abs() <= 1);
     }
 
     #[test]
     fn degenerate_or_near_zero_plant_fails_open_to_the_retired_seed() {
-        // <= 0 AND any positive value below the near-zero cut-in (target/256) must
-        // fail open to the retired seed, independent of the coefficient -- never a
-        // reject-everything iae_max_q ~ 0.
         let target = 11_733_333;
-        let below_cut_in = target / (PLANT_RATE_DEGENERATE_MIN_DIVISOR * 2); // target/512
+        let below_cut_in = target / (PLANT_RATE_DEGENERATE_MIN_DIVISOR * 2);
         for plant in [0_i64, -5, below_cut_in] {
             assert_eq!(
                 robustness_thresholds_for(plant, target).iae_max_q,
@@ -1024,9 +838,6 @@ mod tests {
     #[test]
     fn calibrated_coefficient_accepts_reference_gains_and_rejects_the_weak_anchor() {
         use crate::commissioning::outer::velocity::robustness_reporting::IAE_WIRE_TO_INTERNAL_US_PER_S;
-        // Measured accept ceiling and reject floor (median recovery IAE, in
-        // wire rate-Q-seconds); the gate compares in internal
-        // rate-Q-microseconds, hence the scale.
         const PLANT_RATE_Q: i64 = 16_300_855;
         const TARGET_RATE_Q: i64 = 11_733_333;
         let accept_ceiling_q = 774_513 * IAE_WIRE_TO_INTERNAL_US_PER_S;
@@ -1076,9 +887,6 @@ mod tests {
 
     #[test]
     fn dac_rms_q_is_nonzero_for_alternating_error() {
-        // Error alternates +d/-d around the target every tick: after demeaning
-        // (mean 0 for an even-length alternating series), each first difference
-        // has magnitude 2d, so dac_rms_q = 2d exactly.
         let target_rate_q = per_tick_rate_q(100, 1_000);
         let high = observation(110, 1_000);
         let low = observation(90, 1_000);
@@ -1127,23 +935,13 @@ mod tests {
         let samples = [observation(100, 1_000)];
         assert_eq!(dac_rms_q(&samples[..], 0, 0, target_rate_q), 0);
         assert_eq!(dac_rms_q(&samples[..], 0, 1, target_rate_q), 0);
-        // Range extends past what the source has -- observation() returns None
-        // for the missing indices; must not panic, must not count them.
         assert_eq!(dac_rms_q(&samples[..], 0, 5, target_rate_q), 0);
     }
 
-    /// Cross-checks `dac_rms_q` against `analyze_sweep.py`'s `over_gain_metrics`
-    /// definition via a genuinely independent reference: a non-alternating,
-    /// non-symmetric error sequence run through a separate demean ->
-    /// first-difference -> RMS calculation, compared against `dac_rms_q`'s
-    /// output. A 1% relative tolerance absorbs `f32`-vs-`f64` rounding at
-    /// realistic rate-Q magnitudes without masking a materially wrong formula.
     #[test]
     fn dac_rms_q_matches_an_independently_computed_reference() {
         let target_rate_q = 0_i64;
         let elapsed_us = 1_000_u32;
-        // Non-alternating, non-symmetric-mean error sequence (in units of K =
-        // per_tick_rate_q(1, elapsed_us)): [2, 10, 4, 8, 6].
         const DELTA_COUNTS: [i32; 5] = [2, 10, 4, 8, 6];
         let samples: [RawVelocityObservation; 5] = DELTA_COUNTS.map(|d| observation(d, elapsed_us));
         let k = per_tick_rate_q(1, elapsed_us) as f64;
@@ -1160,10 +958,6 @@ mod tests {
         let expected = mean_sq_diff.sqrt() * k;
 
         let actual = dac_rms_q(&samples[..], 0, samples.len(), target_rate_q) as f64;
-        // 1% relative tolerance: generous enough to absorb f32-vs-f64 rounding
-        // at this magnitude, tight enough to still catch a materially wrong
-        // formula (a missing demean step, wrong denominator, etc. would miss
-        // by far more than 1%).
         let tolerance = expected.abs() * 0.01;
         assert!(
             (actual - expected).abs() <= tolerance,

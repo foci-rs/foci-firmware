@@ -34,8 +34,6 @@ pub enum FixedGainAmplitudeOrder {
 /// Pack the amplitude order and the slot order into one wire byte.
 ///
 /// The amplitude order occupies the low nibble and the slot order the high one.
-/// `ForwardFirst` encodes as zero, so every non-mirrored run keeps the byte it
-/// had before slot order was recorded.
 pub const fn schedule_order_code(
     order: FixedGainAmplitudeOrder,
     slot_order: IntegralSlotOrder,
@@ -195,9 +193,6 @@ impl FixedGainAmplitudePlan {
             encoder_counts_per_rev: self.encoder_counts_per_rev,
             i_start: self.selected_i,
             positive_rung_count: self.amplitude_count,
-            // Not applicable to a fixed-I fixed-gain-amplitude acquisition;
-            // only a response-ladder plan regenerates a half-octave rung
-            // from this field.
             i_top_cap: 0,
             family_size: self.family_size,
             moving_stroke_us: self.moving_stroke_us,
@@ -226,9 +221,6 @@ impl FixedGainAmplitudePlan {
             },
             acceptance_source: AcceptanceSource::NonBreakaway,
             amplitude_targets_rpm: self.target_rpm,
-            // Amplitude acquisitions carry no real Proportional response intervals;
-            // the retained identity and qualifiers now have their own
-            // fields below.
             selected_response_intervals_q: [[0; 2]; 2],
             recovery_lower_rate_q: self.recovery_lower_rate_q,
             recovery_quantization_exposed: self.recovery_quantization_exposed,
@@ -267,12 +259,6 @@ pub fn plan_fixed_gain_amplitude(
     slot_order: IntegralSlotOrder,
     current_config: VelocityIntegralPlan,
 ) -> Result<FixedGainAmplitudePlan, FixedGainAmplitudePlanError> {
-    // Every retained authority family (combined and breakaway alike) must carry
-    // amplitude acceptance authority: well-ordered, correctly signed response
-    // intervals per direction, not merely a nonempty pair. This is the same
-    // `commanded_side_lower_rate_q` call the recovery geometry below performs,
-    // so the gate and the computation can never disagree about what "finite"
-    // means here.
     let recovery_authority_consistent = commanded_side_lower_rate_q(
         VelocityDirection::Forward,
         i64::from(point.selected_response_intervals_q[0][0]),

@@ -1,7 +1,4 @@
 //! Pure, host-testable breakaway probe cursor and shared motion vocabulary.
-//!
-//! Nothing here moves the axis. A later phase drives each requested stroke and folds
-//! its physical-excursion result back into [`UpwardBreakawayCursor`].
 
 use super::breakaway_plan::PROBE_MAX_OBSERVATIONS;
 use super::sweep_plan::MAX_SWEEP_RUNGS;

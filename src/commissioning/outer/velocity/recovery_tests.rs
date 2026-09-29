@@ -210,11 +210,7 @@ fn recovery_plan_failure_config(start_offset_counts: i32) -> RungOriginRecoveryC
 #[test]
 fn zone_two_runtime_failure_reports_recovery_plan_failed() {
     let mut plan = plan_rung_origin_recovery(live_budget(), 4_000, 4_394).unwrap();
-    // Zero cap forces `recovery_runtime_us`'s `InvalidRequest`, not the
-    // `ExceedsPrimitiveCap` arm already handled as `ContainedDeadline`.
     plan.maximum_slot_us = 0;
-    // Offset strictly between the recenter target (166) and the origin band
-    // (1_000) selects the dormant-but-drifted Zone 2 branch.
     let config = recovery_plan_failure_config(500);
 
     assert!(matches!(
@@ -227,8 +223,6 @@ fn zone_two_runtime_failure_reports_recovery_plan_failed() {
 fn zone_three_runtime_failure_reports_recovery_plan_failed() {
     let mut plan = plan_rung_origin_recovery(live_budget(), 4_000, 4_394).unwrap();
     plan.maximum_slot_us = 0;
-    // Offset beyond the origin band (1_000) selects the moving-recovery
-    // Zone 3 branch.
     let config = recovery_plan_failure_config(2_000);
 
     assert!(matches!(
@@ -366,15 +360,6 @@ impl RecoveryFixture {
         }
     }
 
-    /// Drive to a terminal step, counting the recovery-owned diagnostics
-    /// (`RestSelection`, `RestAnalysis`) returned along the way.
-    ///
-    /// The caller must already have driven every time-based `At(_)` wait
-    /// (the moving deadline, the settle capture window) with `sample`/`step`,
-    /// exactly as the other fixture-driven tests do. From that point on, the
-    /// remaining steps are `ReadyNow`, at most one `RestSelection`, at most
-    /// one `RestAnalysis`, and finally a genuine terminal step (`Finished`,
-    /// `Contained`, `Fault`, or `RestUnconfirmed`).
     fn drive_to_terminal(&mut self) -> (RungOriginRecoveryStep, u32, u32) {
         let mut selection_count = 0u32;
         let mut analysis_count = 0u32;
@@ -419,10 +404,6 @@ impl RecoveryFixture {
         self.step()
     }
 
-    /// Drive to one step short of the moving target, returning the elapsed time.
-    ///
-    /// Leaves the final observation to the caller, which is how a dispatcher-taken
-    /// sample completes the moving phase.
     fn approach_moving_target(&mut self, start_offset_counts: i32) -> u64 {
         const STEP_COUNTS: i32 = 20;
         let target = moving_arrival_counts();
@@ -440,12 +421,6 @@ impl RecoveryFixture {
         elapsed_us
     }
 
-    /// Drive the axis in to the moving target and return the handover time.
-    ///
-    /// The moving phase ends inside the origin band rather than on its edge, so
-    /// arriving takes several samples: the outer envelope caps how far the axis
-    /// may travel per millisecond, and a single jump to the target trips it.
-    /// Walking at a legal rate is also what the axis actually does.
     fn arrive_at_moving_target(&mut self, start_offset_counts: i32) -> u64 {
         const STEP_COUNTS: i32 = 20;
         let target = moving_arrival_counts();
@@ -533,8 +508,6 @@ fn selected_recovery_discards_lead_in_before_scoring_rest() {
         }
     };
 
-    // The moving phase now hands over at the target inside the band, so entry is
-    // recorded there rather than on the band edge.
     assert_eq!(
         analysis.first_in_band_offset_counts,
         moving_arrival_counts()
@@ -671,17 +644,6 @@ fn recovery_controller_contained_paths_never_write_a_nonzero_target() {
 
 #[test]
 fn moving_phase_drives_inside_the_band_before_settling() {
-    // The moving phase used to end on the first sample inside the band, so
-    // settle began at the edge and any outward movement before the final
-    // in-band test pushed the rung out of it. Measured across 29 moving
-    // recoveries on 2026-08-11: the final position is outward of the closest
-    // approach every time, by 11 to 50 counts, leaving a final margin of 0 to
-    // 62. Two rungs finished 2 and 5 counts outside and ended Integral.
-    //
-    // The moving phase therefore drives to a target inside the band. The band
-    // itself is unchanged: it is the settle travel reserve in counts, and the
-    // acceptance test, the return-distance plan and the already-centered
-    // short-circuit all still use it.
     let band = i32::try_from(origin_band_counts()).unwrap();
     let target = i32::try_from(recovery_moving_target_counts(origin_band_counts())).unwrap();
     assert!(target < band, "the moving target sits inside the band");
@@ -689,8 +651,6 @@ fn moving_phase_drives_inside_the_band_before_settling() {
     let mut fixture = RecoveryFixture::new(1_400, Some(14_000_000));
     fixture.command_motion();
 
-    // Walk in toward the origin at the cadence the envelope allows, and record
-    // the offset at which the moving phase hands over to settle.
     let mut handover = None;
     for sample in 1..=40 {
         let offset = 1_400 - sample as i32 * 20;
@@ -858,10 +818,6 @@ fn recovery_controller_uses_constant_signed_target_and_bounds_wrong_way_growth()
         RungOriginRecoveryStep::At(_)
     ));
 
-    // Two counts of wrong-way growth is jitter, not a wrong-direction drive.
-    // Recovery's own success criterion accepts anything within
-    // `origin_band_counts`, so a fatal gate an order of magnitude tighter than
-    // the band it aims for discards a whole campaign for nothing.
     backend.elapsed_us_value = 2_000;
     backend.mechanical_encoder_position_counts_value = 460;
     assert!(
@@ -876,9 +832,6 @@ fn recovery_controller_uses_constant_signed_target_and_bounds_wrong_way_growth()
         "two counts of wrong-way growth is inside the band and must be tolerated"
     );
 
-    // Beyond the band it is a genuine wrong-direction drive and still faults.
-    // Stepped at 12 counts/ms, just under the 13 counts/ms envelope cap, so the
-    // velocity gate does not fire first and mask the reason under test.
     let band = origin_band_counts();
     let mut elapsed = 2_000_u64;
     let mut position = 460_u32;
@@ -976,10 +929,6 @@ fn capture_settle_rejects_elapsed_delta_overflowing_u16() {
     let first_us = first * 1_000;
     assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first_us));
 
-    // Re-arm the independent safety grid at this tick so its next deadline
-    // (one `OUTER_SAFETY_SAMPLE_PERIOD_US` later) is past this sample:
-    // `check_outer_safety` then takes its not-due early-out and cannot
-    // overwrite the forced observation below before `CaptureSettle` reads it.
     fixture.safety.arm_safety_observation(first_us).unwrap();
     fixture
         .safety
@@ -1195,8 +1144,6 @@ fn recovery_contact_passive_settle_rejects_an_out_of_band_origin() {
 fn recovery_consumes_the_safety_observation_taken_by_the_outer_dispatcher() {
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
-    // Drive to one step short of the target so the dispatcher's own observation
-    // is the one that completes the moving phase.
     let elapsed_us = fixture.approach_moving_target(1_040);
     fixture.backend.elapsed_us_value = elapsed_us + 1_000;
     fixture.backend.mechanical_encoder_position_counts_value =
@@ -1222,8 +1169,6 @@ fn recovery_consumes_the_safety_observation_taken_by_the_outer_dispatcher() {
 fn recovery_retains_dispatcher_timing_for_the_zero_target_settle() {
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
-    // Drive to one step short of the target, then let the dispatcher take the
-    // observation that completes the moving phase.
     let elapsed_us = fixture.approach_moving_target(1_040);
     fixture.backend.elapsed_us_value = elapsed_us + 1_000;
     fixture.backend.mechanical_encoder_position_counts_value =
@@ -1392,13 +1337,11 @@ fn recovery_safety_inherits_velocity_local_and_absolute_position_faults() {
     .unwrap();
     local.safety.position_window = 100;
     local.command_motion();
-    // Local (per-stroke) branch now reports its own code (POSITION_LOCAL = 11).
     assert_eq!(safety_fault(local.sample(1_000, -20)), 11);
 
     let mut absolute = RecoveryFixture::new(8_458, Some(14_000_000));
     absolute.safety.positive_position_window = 8_500;
     absolute.command_motion();
-    // Absolute (machine-headroom) branch keeps POSITION = 5.
     assert_eq!(safety_fault(absolute.sample(1_000, 8_550)), 5);
 }
 
@@ -1436,25 +1379,14 @@ fn recovery_safety_rejects_unconfirmed_rest() {
     }
 }
 
-/// The origin having drifted by a single encoder sample must not end the
-/// campaign.
-///
-/// The captured start offset feeds only the planned return distance; every
-/// verdict reads the live position for direction. Exact
-/// equality here discarded whole campaigns for one count of drift out of a
-/// thousand-count target band.
 #[test]
 fn recovery_tolerates_origin_drift_within_the_target_band() {
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
-    // One outer-safety encoder sample landing between the tick that captured
-    // the origin and the tick recovery begins.
     fixture.safety.unwrapped_position = 1_041;
 
     assert_eq!(fixture.step(), RungOriginRecoveryStep::ReadyNow);
 }
 
-/// The tolerance is the band recovery aims for, and is applied in both
-/// directions.
 #[test]
 fn recovery_tolerates_origin_drift_up_to_the_whole_band() {
     let band = i32::try_from(origin_band_counts()).unwrap();
@@ -1470,10 +1402,6 @@ fn recovery_tolerates_origin_drift_up_to_the_whole_band() {
     }
 }
 
-/// Drift beyond the band reports its measurement, then contains from the
-/// live position instead of faulting: every verdict already reads live
-/// position, so a stale plan cannot produce a wrong outcome, only a smaller
-/// return distance than planned.
 #[test]
 fn recovery_reports_and_contains_on_drift_beyond_the_band() {
     let band = i32::try_from(origin_band_counts()).unwrap();
@@ -1487,7 +1415,6 @@ fn recovery_reports_and_contains_on_drift_beyond_the_band() {
     assert_eq!(evidence.expected_counts, 1_040);
     assert_eq!(evidence.observed_counts, observed);
 
-    // Containment arrives one tick later, from the live position.
     let RungOriginRecoveryStep::Contained(report) = fixture.step() else {
         panic!("drift beyond the band must contain, not fault");
     };
@@ -1496,18 +1423,6 @@ fn recovery_reports_and_contains_on_drift_beyond_the_band() {
     assert_eq!(report.final_offset_counts, observed);
 }
 
-/// A drift that crosses zero is necessarily already inside the recenter target.
-///
-/// This is why tolerating recenter-target-sized drift is safe with respect to
-/// direction. Commanding on a stale sign would drive the motor away from the
-/// origin, so the question is whether a tolerated drift can flip the sign
-/// while motion is still required. It cannot: crossing zero within a drift of
-/// at most `recenter` forces `|captured| + |live| <= recenter`, hence
-/// `|live| < recenter`, and a position inside the recenter target is
-/// `AlreadyCentered` with no motion commanded at all.
-///
-/// The controller reads the live position for its direction regardless, so the
-/// hazard stays closed if this tolerance is ever widened.
 #[test]
 fn a_sign_flip_within_the_drift_tolerance_needs_no_motion() {
     let recenter = i32::try_from(recovery_recenter_target_counts(origin_band_counts())).unwrap();
@@ -1535,8 +1450,6 @@ fn a_sign_flip_within_the_drift_tolerance_needs_no_motion() {
     }
 }
 
-/// Offset at which the moving phase completes: inside the band by the
-/// stopping margin, so settle begins with room for outward movement.
 fn moving_arrival_counts() -> i32 {
     i32::try_from(recovery_moving_target_counts(origin_band_counts())).unwrap()
 }
@@ -1546,48 +1459,6 @@ fn origin_band_counts() -> u32 {
         .expect("live geometry plans")
         .origin_band_counts
 }
-
-// The Klipper host assembler accepts a hidden trace-only evidence run of 0 to
-// 2 positions before a rung-origin recovery, and refuses 0 for outcomes 1
-// (`Recovered`) and 5 (`RecoveredWithCurrentHeadroom`). Both bounds are
-// properties of this controller, not of the host, and they follow from a
-// structural fact rather than an exhaustive search:
-//
-// `step_rung_origin_recovery` returns a recovery-owned diagnostic at exactly
-// two sites, both inside `RecoveryState::AnalyzeSettle`
-// (`recovery/controller.rs`): `RestSelection` when `poll_scored_rest_confirmation`
-// yields `Diagnostic`, and `RestAnalysis` immediately after (guarded by
-// `!runtime.current_contact_detected()` — if contact is detected, we return early
-// with `Finished` or `Contained` instead). Every other return site yields `ReadyNow`,
-// `At`, `OriginMismatch`, `Finished`, `Contained`, `RestUnconfirmed`, or a
-// `recovery_fault`, none of which commits a recovery-owned trace record.
-//
-// The count is bounded by 2 because each site fires at most once per
-// recovery:
-//
-// - `AnalyzeSettle` is entered at most once. Nothing in the controller ever
-//   transitions back into `CaptureSettle` with `lead_in: false` (the only
-//   predecessor that calls `analysis.reset_for_scored_rest` and advances into
-//   `AnalyzeSettle`) after `AnalyzeSettle` has been reached.
-// - Within one `AnalyzeSettle` visit, `poll_scored_rest_confirmation` can
-//   yield `Diagnostic` at most once. `StationarityWork::poll` only returns
-//   `RestDiagnostic` from its `Idle { mode: RestDiagnostic { .. } }` stage,
-//   and that stage transitions to `RestDecisionReady` in the same call that
-//   produces the diagnostic (`stationarity.rs`, `advance_rest_diagnostic` and
-//   the empty-suffix branch of `poll`). Every subsequent poll dispatches
-//   through `RestDecisionReady` (`resume_rest_decision`) or `Blocking`
-//   (`RestWitness` reconstruction), never back through `Idle`, so the next
-//   non-`Pending` result is always `RestComplete`. This is also covered
-//   independently, at the `StationarityWork` level, by
-//   `sweep_analysis::tests::scored_rest_contract_yields_diagnostic_before_conditioned_witness`,
-//   which fails via `Option::replace` if `Diagnostic` is ever produced twice.
-// - `RestAnalysis` is returned once, from the tail of that same
-//   `AnalyzeSettle` visit, and immediately moves `runtime.state` to
-//   `RecoveryState::RestTerminal`, which never returns to `AnalyzeSettle`.
-//
-// The tests below drive every legal outcome through `RecoveryFixture` and
-// assert the exact diagnostic count each one commits, reusing the existing
-// scenario setups rather than rebuilding them.
 
 #[test]
 fn recovery_diagnostic_count_already_centered() {
@@ -1619,10 +1490,6 @@ fn recovery_diagnostic_count_no_commanded_side_rate() {
 
 #[test]
 fn recovery_diagnostic_count_start_offset_outside_position_window() {
-    // The `WriteGains` guard judges the start against the absolute window on
-    // the side the axis occupies. 11_040 still fits the recovery deadline
-    // (~1.97 ms of 3.0 ms), so the runtime reaches `WriteGains` instead of
-    // being turned away at construction with `RecoveryBindingSource::Deadline`.
     let mut fixture = RecoveryFixture::new_with_source(
         11_040,
         Some(14_000_000),
@@ -1643,9 +1510,6 @@ fn recovery_diagnostic_count_start_offset_outside_position_window() {
 
 #[test]
 fn recovery_diagnostic_count_current_contact_before_settle_poll() {
-    // Same setup as `recovery_current_observer_covers_motion_and_zero_target_settle`:
-    // clamp contact is detected while finishing the moving phase, inside
-    // `RecoveryState::Observe`, well before `AnalyzeSettle` is ever entered.
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
     let handover_us = fixture.arrive_at_moving_target(1_040);
@@ -1677,15 +1541,6 @@ fn recovery_diagnostic_count_current_contact_before_settle_poll() {
 
 #[test]
 fn recovery_diagnostic_count_current_contact_after_settle_poll() {
-    // Same timeline as `recovery_controller_confirms_fixed_settle_and_reports_complete_geometry`
-    // (a normal recovery completion), but the velocity-output clamp status flag is
-    // only raised once the scored settle capture has finished. `recovery_safety_sample`
-    // never reads `STATUS_FLAGS`, so this register never trips contact detection during
-    // `CaptureSettle`; contact is discovered only when `AnalyzeSettle` calls
-    // `finish_velocity_current_zero_phase` after `poll_scored_rest_confirmation`
-    // has already produced its one `RestSelection`. The scored rest completed,
-    // so its evidence is reported before the clamp-bound outcome resolves: the
-    // selection is followed by `RestAnalysis`, then the contained terminal.
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
     let handover_us = fixture.arrive_at_moving_target(1_040);
@@ -1728,11 +1583,6 @@ fn recovery_diagnostic_count_current_contact_after_settle_poll() {
 
 #[test]
 fn recovery_diagnostic_count_passive_settle_proven_after_contact() {
-    // Same setup as `recovery_contact_passive_settle_proves_an_in_band_origin`:
-    // `ProvePassiveSettle` marks contact detected in `Observe`, then still
-    // runs the ordinary scored settle in `CaptureSettle`. The proven passive
-    // rest is the evidence outcome 5 rests on, so `AnalyzeSettle` reports it as
-    // `RestAnalysis` before the clamp-bound terminal resolves.
     let mut fixture = RecoveryFixture::new_with_policy(
         1_040,
         Some(14_000_000),
@@ -1851,7 +1701,6 @@ fn recovery_diagnostic_count_normal_completion() {
 
 #[test]
 fn recovery_diagnostic_count_scored_rest_rejected() {
-    // Same timeline as `selected_recovery_reports_completed_unconfirmed_rest_without_a_fault`.
     let mut fixture = RecoveryFixture::new_with_policy(
         1_040,
         Some(14_000_000),
@@ -1889,7 +1738,6 @@ fn recovery_diagnostic_count_scored_rest_rejected() {
 
 #[test]
 fn recenter_target_is_a_sixth_of_the_band_and_strictly_inside_it() {
-    // Live geometry: band 1000 -> recenter target 166 (floor of 1000/6).
     let band = origin_band_counts();
     assert_eq!(band, 1_000);
     let recenter = recovery_recenter_target_counts(band);
@@ -1902,9 +1750,6 @@ fn recenter_target_is_a_sixth_of_the_band_and_strictly_inside_it() {
 
 #[test]
 fn geometry_rejects_a_band_too_small_to_derive_a_recenter_target() {
-    // A settle reserve of one mrev floors the band to 4 counts, whose sixth is
-    // 0: recovery could not re-center inward, so the plan is refused rather than
-    // admitted with a degenerate zone.
     let mut budget = live_budget();
     budget.settle_travel_reserve_mrev = 1;
     assert_eq!(
@@ -1913,12 +1758,9 @@ fn geometry_rejects_a_band_too_small_to_derive_a_recenter_target() {
     );
 }
 
-// A dormant-but-drifted entry inside the band now re-centers toward origin and
-// hands over at or inside the recenter target, not the 875 Zone-3 target.
 #[test]
 fn zone_two_recenters_a_drifted_axis_toward_origin() {
     let recenter = i32::try_from(recovery_recenter_target_counts(origin_band_counts())).unwrap();
-    // 500 is inside the band (1000) and above the recenter target (166): Zone 2.
     let mut fixture = RecoveryFixture::new(500, Some(14_000_000));
     fixture.command_motion();
 
@@ -1941,9 +1783,6 @@ fn zone_two_recenters_a_drifted_axis_toward_origin() {
     );
 }
 
-// A Zone-2 magnitude with no settled-rate authority cannot move inward, so it
-// is a surfaced containment -- ContainedNoRate, mirroring Zone 3's rate-less
-// path -- not a false AlreadyCentered claim.
 #[test]
 fn zone_two_without_rate_is_contained_no_rate() {
     let (terminal, _, _) = {
@@ -1962,7 +1801,6 @@ fn zone_two_without_rate_is_contained_no_rate() {
     assert_eq!(report.total_duration_us, 0);
 }
 
-// An offset at or inside the recenter target stays a no-op.
 #[test]
 fn zone_one_offset_stays_already_centered() {
     let mut fixture = RecoveryFixture::new(120, Some(14_000_000));
@@ -1977,12 +1815,10 @@ fn zone_one_offset_stays_already_centered() {
     assert_eq!(report.moving_duration_us, 0);
 }
 
-// An above-band entry still faults an outward excursion during the move.
 #[test]
 fn zone_three_still_faults_a_wrong_way_excursion() {
     let mut fixture = RecoveryFixture::new(1_400, Some(14_000_000));
     fixture.command_motion();
-    // Drive outward past start + band -> wrong_way must fault.
     let step = fixture.sample(
         1_000,
         1_400 + i32::try_from(origin_band_counts()).unwrap() + 1,
@@ -2000,7 +1836,7 @@ fn zone_three_still_faults_a_wrong_way_excursion() {
 fn zone_two_budget_uses_the_actual_return_distance_not_the_worst_case() {
     let band = origin_band_counts();
     let recenter = recovery_recenter_target_counts(band);
-    let worst_case = band - recenter; // 834 on the live geometry
+    let worst_case = band - recenter;
     assert!(recovery_runtime_us(worst_case, 14_000_000, 3_000_000).is_ok());
 
     let slow_rate = 500_000_u64;
@@ -2078,10 +1914,6 @@ fn zone_two_slow_rate_falls_back_to_contained_deadline_not_a_fault() {
 #[test]
 fn moving_deadline_overflow_is_a_schedule_deadline_fault() {
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
-    // Push the primitive-start clock to the very edge of the representable
-    // range so `started_us + moving_budget_us` overflows `u64`. The moving
-    // budget itself (checked_sub) stays comfortably positive at this offset,
-    // isolating the checked_add failure this test targets.
     fixture.backend.elapsed_us_value = u64::MAX - 1_000;
     assert_eq!(fixture.step(), RungOriginRecoveryStep::ReadyNow);
     assert_eq!(fixture.step(), RungOriginRecoveryStep::ReadyNow);

@@ -1,16 +1,8 @@
 //! Shared low-level helpers used by multiple commissioning stages.
-//!
-//! These are thin wrappers over `CommissioningBackend` register I/O that
-//! several phases reach for: sub-register packing, integrator resets,
-//! and biquad-filter coefficient writes. Lives outside the per-phase
-//! submodules so the inner and outer state machines can both call them
-//! without circular dependencies.
 
 use crate::commissioning::types::CommissioningBackend;
 use foci_tmc4671::registers::SubRegister;
 
-/// Write a sub-register via the backend's regular register writes.
-///
 /// TMC4671 sub-registers use selector/address register 0x4E and data register 0x4D.
 pub(crate) async fn write_sub_register<B: CommissioningBackend>(
     backend: &mut B,
@@ -37,7 +29,6 @@ pub(crate) async fn write_sub_register_checked<B: CommissioningBackend>(
         .map_err(|_| ())
 }
 
-/// Clear torque/flux PI error sums for current-loop captures.
 pub(crate) async fn clear_current_integrators<B: CommissioningBackend>(
     backend: &mut B,
 ) -> Result<(), ()> {
@@ -47,7 +38,6 @@ pub(crate) async fn clear_current_integrators<B: CommissioningBackend>(
     write_sub_register_checked(backend, PID_ERROR_PID_FLUX_ERROR_SUM, 0).await
 }
 
-/// Write velocity biquad filter coefficients.
 pub(crate) async fn write_biquad_velocity<B: CommissioningBackend>(
     backend: &mut B,
     cutoff_hz: u16,
@@ -56,7 +46,6 @@ pub(crate) async fn write_biquad_velocity<B: CommissioningBackend>(
     let _ = write_biquad_velocity_checked(backend, cutoff_hz, pwm_maxcnt).await;
 }
 
-/// Write velocity biquad filter coefficients and report SPI failures.
 pub(crate) async fn write_biquad_velocity_checked<B: CommissioningBackend>(
     backend: &mut B,
     cutoff_hz: u16,
@@ -79,7 +68,6 @@ pub(crate) async fn write_biquad_velocity_checked<B: CommissioningBackend>(
     Ok(())
 }
 
-/// Write position biquad filter coefficients.
 pub(crate) async fn write_biquad_position<B: CommissioningBackend>(
     backend: &mut B,
     cutoff_hz: u16,
@@ -88,7 +76,6 @@ pub(crate) async fn write_biquad_position<B: CommissioningBackend>(
     let _ = write_biquad_position_checked(backend, cutoff_hz, pwm_maxcnt).await;
 }
 
-/// Write position biquad filter coefficients and report SPI failures.
 pub(crate) async fn write_biquad_position_checked<B: CommissioningBackend>(
     backend: &mut B,
     cutoff_hz: u16,
@@ -111,7 +98,6 @@ pub(crate) async fn write_biquad_position_checked<B: CommissioningBackend>(
     Ok(())
 }
 
-/// Write flux biquad filter coefficients.
 pub(crate) async fn write_biquad_flux<B: CommissioningBackend>(
     backend: &mut B,
     cutoff_hz: u16,
@@ -120,7 +106,6 @@ pub(crate) async fn write_biquad_flux<B: CommissioningBackend>(
     let _ = write_biquad_flux_checked(backend, cutoff_hz, pwm_maxcnt).await;
 }
 
-/// Write flux biquad filter coefficients and report SPI failures.
 pub(crate) async fn write_biquad_flux_checked<B: CommissioningBackend>(
     backend: &mut B,
     cutoff_hz: u16,
@@ -143,7 +128,6 @@ pub(crate) async fn write_biquad_flux_checked<B: CommissioningBackend>(
     Ok(())
 }
 
-/// Write torque biquad filter coefficients.
 pub(crate) async fn write_biquad_torque<B: CommissioningBackend>(
     backend: &mut B,
     cutoff_hz: u16,
@@ -152,7 +136,6 @@ pub(crate) async fn write_biquad_torque<B: CommissioningBackend>(
     let _ = write_biquad_torque_checked(backend, cutoff_hz, pwm_maxcnt).await;
 }
 
-/// Write torque biquad filter coefficients and report SPI failures.
 pub(crate) async fn write_biquad_torque_checked<B: CommissioningBackend>(
     backend: &mut B,
     cutoff_hz: u16,

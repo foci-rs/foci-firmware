@@ -63,13 +63,8 @@ pub struct IntegralAuthoritySummary {
     pub encoder_counts_per_rev: u32,
     /// Hard torque-target limit the plan was built under.
     pub hard_torque_limit: u16,
-    /// Inclusive usable torque-target boundary the plan was built under.
-    ///
-    /// Retained rather than recomputed because the breakaway campaign measures
-    /// it from the live current observer's clamp limit, so nothing derives it
-    /// from configuration at resume time.
+    /// Inclusive usable torque-target boundary the plan was built under; retained, not recomputed.
     pub usable_torque_limit: u16,
-    /// Available authority for proving absence of transient clamp contact.
     pub(crate) limit_evidence_capability: super::velocity_clamp::VelocityLimitEvidenceCapability,
     /// Number of positive-I rungs.
     pub positive_rung_count: u8,
@@ -154,16 +149,9 @@ pub struct RetainedIntegralEvidence {
     pub evidence: IntegralRunEvidence,
     /// Optional response-boundary location; never part of reproduction authority.
     pub rest_boundary: Option<IntegralRestBoundaryReference>,
-    /// One-based breakaway target-terminus rung, or `0` when this run's own
-    /// sweep did not record one.
+    /// One-based breakaway target-terminus rung, or `0` when this run did not record one.
     ///
-    /// Distinct from `rest_boundary`: a breakaway target terminus is encoded
-    /// on the wire as `rest_boundary_rung_plus_one` alone, with
-    /// `rest_boundary_slot_plus_one == 0` (see `terminal_target_terminus`),
-    /// which `rest_boundary`'s pairwise decode cannot represent. Retained so a
-    /// reproduced `Complete` promotion can fall back to the terminus already
-    /// proven by the first sufficient run when the confirmation run's own
-    /// terminus check did not re-trip.
+    /// Distinct from `rest_boundary`, which cannot represent a terminus.
     pub target_terminus_rung_plus_one: u8,
     /// Run-completion time retained as non-gating context.
     pub run_completed_us: u64,
@@ -203,8 +191,6 @@ pub struct AcceptancePoint {
     /// Packed operating-point, model-validity, and evidence-quality qualifiers.
     pub qualifier_bits: u16,
     /// Unforgeable breakaway confirmation token that authorized this point.
-    /// A breakaway plan cannot be reconstructed from the request alone, so the
-    /// amplitude preflight rebuilds it deterministically from this token.
     pub token: Option<super::integral_plan::ConfirmedAcquisitionDigest>,
     /// Next allowed amplitude acquisition.
     pub progress: FixedGainAmplitudeProgress,
@@ -224,8 +210,6 @@ pub enum IntegralRetentionSlotState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-// Fixed inline storage is required because firmware has no heap. The exact
-// slot remains below its explicit 648-byte ceiling.
 #[allow(clippy::large_enum_variant)]
 enum RetainedIntegral {
     Empty,
@@ -268,9 +252,6 @@ impl IntegralReproductionDelta {
     }
 }
 
-// Keep comparison evidence compact: this value is carried through board-facing
-// commissioning outcomes, so storing derived per-rung arrays here can exhaust
-// the F407 RTIC task stack before any motion begins.
 const _: () = assert!(core::mem::size_of::<IntegralReproductionDelta>() <= 600);
 
 /// Firmware-owned outcome of one Integral retained-state transition.
@@ -515,8 +496,6 @@ impl<const CHANNELS: usize> Default for IntegralRetentionSlots<CHANNELS> {
     }
 }
 
-// The retained slot is fixed inline storage on a target with no heap, so its
-// ceiling is enforced rather than assumed.
 const _: () = assert!(core::mem::size_of::<IntegralRetentionSlot>() <= 656);
 
 /// Derive one anchor-relative response interval with checked outward subtraction.
@@ -569,7 +548,6 @@ pub fn signed_divergence_gap(
     i32::try_from(gap).map_err(|_| IntegralEvidenceError::Conversion)
 }
 
-/// Compare two sufficient raw curves without contiguity or cross-direction gates.
 pub(super) fn compare_integral_runs_with_boundaries(
     previous: IntegralRunEvidence,
     current: IntegralRunEvidence,

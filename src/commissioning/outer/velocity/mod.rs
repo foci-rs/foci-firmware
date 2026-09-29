@@ -6,6 +6,11 @@ pub(crate) mod breakaway_excursion;
 pub mod breakaway_plan;
 pub(crate) mod breakaway_reporting;
 pub mod breakaway_search;
+#[cfg(feature = "trace")]
+pub(crate) mod breakaway_trace_reporting;
+pub mod combined_plan;
+#[cfg(test)]
+mod combined_plan_tests;
 pub mod fixed_gain_amplitude_evidence;
 #[cfg(test)]
 mod fixed_gain_amplitude_evidence_tests;
@@ -13,13 +18,6 @@ pub mod fixed_gain_amplitude_plan;
 #[cfg(test)]
 mod fixed_gain_amplitude_plan_tests;
 pub(crate) mod fixed_gain_amplitude_reporting;
-// breakaway_trace_reporting is the raw FTRC trace-record encoder for the
-// breakaway campaign; gated on `trace` like every other raw trace encoder.
-#[cfg(feature = "trace")]
-pub(crate) mod breakaway_trace_reporting;
-pub mod combined_plan;
-#[cfg(test)]
-mod combined_plan_tests;
 pub mod integral_evidence;
 #[cfg(test)]
 mod integral_evidence_tests;
@@ -72,13 +70,9 @@ pub(crate) use integral_sweep::{
     integral_fault_terminal, integral_i_at, step_velocity_integral_with_trace,
 };
 
-/// Zero the TMC4671 velocity-loop integral error sum.
+/// Zero the TMC4671 velocity-loop integral error sum (`PID_ERROR_PID_VELOCITY_ERROR_SUM`).
 ///
-/// Writes `PID_ERROR_PID_VELOCITY_ERROR_SUM = 0` so a fresh velocity command
-/// starts from a clean integrator. This clears only the error-sum accumulator;
-/// it does not touch `PID_VELOCITY_OFFSET` (see [`clear_velocity_offset`]).
-/// Shared by the breakaway campaign, the Integral-phase integral sweep, and origin
-/// recovery; self-contained with no dependency on any commissioning phase state.
+/// Does not touch `PID_VELOCITY_OFFSET`; see [`clear_velocity_offset`].
 ///
 /// # Errors
 ///
@@ -98,13 +92,9 @@ where
     .map_err(|_| crate::autotune::CommissionError::Spi)
 }
 
-/// Zero the TMC4671 velocity feedforward offset.
+/// Zero the TMC4671 velocity feedforward offset (`PID_VELOCITY_OFFSET`).
 ///
-/// The runtime STEP/DIR feedforward can leave a nonzero `PID_VELOCITY_OFFSET`
-/// residual from a homing move; [`clear_velocity_error_sum`] does not clear it.
-/// Called at each commissioning velocity-phase entry (discovery ladder start,
-/// Integral-phase integral sweep, robustness establish) so a residual offset does not
-/// bias the leg into creep.
+/// Does not clear the error sum; see [`clear_velocity_error_sum`].
 ///
 /// # Errors
 ///

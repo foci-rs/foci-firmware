@@ -13,7 +13,6 @@ const TRIPLES: [u8; 4] = [0b0111, 0b1011, 0b1101, 0b1110];
 
 /// Exact closed interval accepted by the domain-neutral consensus primitive.
 pub trait ConsensusInterval: Copy {
-    /// Return inclusive signed integer bounds in the caller's declared domain.
     fn inclusive_bounds(self) -> [i32; 2];
 }
 
@@ -60,10 +59,7 @@ pub struct DirectionalConsensus {
 }
 
 /// Compute the union of all closed three-observation intersections.
-///
-/// The four corrected observation intervals are the only statistical atoms.
-/// This function performs exact deterministic set arithmetic and never changes
-/// an observation's intrinsic classification.
+/// Compute the union of all closed three-observation intersections.
 pub fn depth_three_consensus<I: ConsensusInterval>(
     collected_mask: u8,
     classes: [VelocityObservationClass; CONSENSUS_OBSERVATIONS_PER_DIRECTION],

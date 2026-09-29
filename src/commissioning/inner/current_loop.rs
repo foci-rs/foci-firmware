@@ -1,12 +1,4 @@
-//! Phases 6 and 7: Current-loop gain synthesis and step-response
-//! validation.
-//!
-//! `step_current_tune` reads the electrical model from Phase 5 and applies
-//! the physical-P tuning rule to derive flux/torque PI gains plus a step
-//! amplitude for validation. `step_current_validate` then writes those
-//! gains, samples flux and torque current responses at short fixed delays,
-//! classifies the per-axis evidence, and fails explicitly on invalid measured
-//! current gains.
+//! Phases 6 and 7: Current-loop gain synthesis and step-response validation.
 
 use crate::autotune::{
     CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CaptureDirection, CommissionError, CommissionPhase,
@@ -28,19 +20,15 @@ use foci_tmc4671::pid::PidGainPair;
 #[cfg(test)]
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
-/// Current-loop validation sub-state machine (Phase 7).
 #[derive(Debug, defmt::Format)]
 pub(crate) enum CurrentValidateState {
-    /// Write PI gains to TMC4671 registers.
     WriteGains,
-    /// Switch to torque mode and apply an axis current target.
     AxisStepSetup {
         axis: CurrentValidationAxis,
         sample_index: u8,
         sample_delay_ms: u16,
         direction: CaptureDirection,
     },
-    /// Wait for the short sample delay to elapse.
     AxisSampleDelay {
         axis: CurrentValidationAxis,
         sample_index: u8,
@@ -48,14 +36,12 @@ pub(crate) enum CurrentValidateState {
         direction: CaptureDirection,
         deadline_us: u64,
     },
-    /// Read the delayed current/voltage sample and append pair evidence.
     AxisSampleRead {
         axis: CurrentValidationAxis,
         sample_index: u8,
         sample_delay_ms: u16,
         direction: CaptureDirection,
     },
-    /// Wait for physical current to decay after returning the target to zero.
     AxisSampleSettle {
         axis: CurrentValidationAxis,
         sample_index: u8,
@@ -64,90 +50,53 @@ pub(crate) enum CurrentValidateState {
         directional: AxisDirectionalEvidence,
         deadline_us: u64,
     },
-    /// Classify one axis after all configured sample delays.
-    AxisClassify { axis: CurrentValidationAxis },
-    /// Restore safe state before finalizing.
-    SafeState { deadline_us: u64 },
-    /// Emit final InnerResult.
+    AxisClassify {
+        axis: CurrentValidationAxis,
+    },
+    SafeState {
+        deadline_us: u64,
+    },
     Finalize,
 }
 
-/// Accumulated data for current-loop validation.
 #[derive(Debug, Clone, defmt::Format)]
 pub(crate) struct CurrentValidateData {
-    /// The electrical model from Phase 5.
     pub(crate) model: ElectricalModel,
-    /// Currently applied gains.
     pub(crate) gains: CurrentGains,
-    /// Candidate gains last written for validation, before safe-state restore.
     pub(crate) candidate_gains: CurrentGains,
-    /// Retry attempt associated with `candidate_gains`.
     pub(crate) candidate_attempt: u8,
-    /// Flux-axis validation retry attempt index carried in evidence.
     pub(crate) flux_attempt: u8,
-    /// Torque-axis validation retry attempt index carried in evidence.
     pub(crate) torque_attempt: u8,
-    /// Flux-axis step amplitude (absolute current target counts).
     pub(crate) flux_step_amplitude: u16,
-    /// Torque-axis step amplitude (absolute current target counts).
     pub(crate) torque_step_amplitude: u16,
-    /// Final commissioning status to report.
     pub(crate) final_status: CommissionStatus,
-    /// Configured PIDOUT voltage limit for saturation detection.
     pub(crate) pidout_limit: u32,
-    /// Target cap derived from the configured current limit.
     pub(crate) current_limited: u32,
-    /// Target cap derived from PIDOUT headroom and candidate P gain.
     pub(crate) voltage_limited: u32,
-    /// Maximum candidate P gain used for voltage-limited target sizing.
     pub(crate) max_p: u32,
-    /// Validated mechanical encoder domain for motion checks.
     pub(crate) encoder_domain: Option<EncoderDomain>,
-    /// Encoder count captured immediately before the active short sample target.
     pub(crate) sample_encoder_start: u32,
-    /// Positive half of the active positive/negative delay pair.
     pub(crate) pending_positive_sample: Option<AxisDirectionalEvidence>,
-    /// Number of populated settled-flux raw validation reads.
     pub(crate) current_settled_validation_count: u8,
-    /// Raw settled-flux validation reads retained for offline analysis.
     pub(crate) current_settled_validation: [CurrentValidationSettledSampleEvidence;
         crate::autotune::CURRENT_VALIDATION_SETTLED_MAX_SAMPLES],
-    /// Number of populated flux-axis validation evidence items.
     pub(crate) current_flux_validation_count: u8,
-    /// Flux-axis validation evidence by sample delay.
     pub(crate) current_flux_validation:
         [CurrentValidationAxisEvidence; crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
-    /// Number of populated torque-axis validation evidence items.
     pub(crate) current_torque_validation_count: u8,
-    /// Torque-axis validation evidence by sample delay.
     pub(crate) current_torque_validation:
         [CurrentValidationAxisEvidence; crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
-    /// Warning bits accumulated through current-loop commissioning.
-    ///
-    /// Bits 0, 1, and 3 come from Phase 5 model gates; bit 2 is unused. Bit 5
-    /// is ORed if gains fell back to defaults.
     pub(crate) inner_warning_flags: u8,
-    /// Accepted production inductance evidence.
     pub(crate) inductance: InductanceEvidence,
-    /// Shared multi-point resistance-identification result from Phase 5.
     pub(crate) resistance_result: crate::resistance_identification::ResistanceRunResult,
-    /// Completed Phase 5 timing summaries in resistance, inductance, delay order.
     pub(crate) timing: [crate::commissioning::types::CommissionTimingSummary; 3],
-    /// Resistance count-slope (milli-units) consumed by the gain-formula path.
-    /// Captured before any averaging so the final InnerResult can record the
-    /// same-run 64x count-slope-milli audit counterpart against
-    /// `selected_r_count_slope_milli`.
     pub(crate) resistance_gain_path_count_slope_milli: i32,
-    /// Firmware-owned gain-source and axis-split evidence selected at tune time.
     pub(crate) current_loop_evidence: CurrentLoopEvidence,
 }
 
-/// Current axis under short-sample validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum CurrentValidationAxis {
-    /// Flux / D-axis current validation.
     Flux,
-    /// Torque / Q-axis current validation.
     Torque,
 }
 
@@ -176,14 +125,10 @@ struct AxisSampleRegisters {
     status_flags: u32,
 }
 
-/// Step amplitude as a fraction of run_current (15% = 15/100).
 const VALIDATION_STEP_PERCENT: u32 = 15;
-/// Keep validation proportional output below the PIDOUT clamp.
 const VALIDATION_PIDOUT_HEADROOM_PERMILLE: u32 = 800;
-/// Minimum useful validation target before quantization dominates the evidence.
 const VALIDATION_MIN_STEP_AMPLITUDE: u16 = 128;
 
-/// Settling time after removing validation current targets (microseconds).
 const VALIDATION_SETTLE_US: u64 = 50_000;
 
 const FLUX_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_FLUX_VALIDATION_SAMPLE_COUNT] =
@@ -196,34 +141,17 @@ const SETTLED_FLUX_AVERAGE_INTERVAL_US: u32 = 250;
 const SETTLED_FLUX_MIN_RESPONSE_PERMILLE: u16 = 850;
 const SETTLED_FLUX_MAX_RESPONSE_PERMILLE: u16 = 1150;
 
-///
-/// The torque validation path stays at the lower signal-floor target to avoid
-/// adding torque exposure while testing the flux settled-gate SNR.
 const SETTLED_FLUX_VALIDATION_STEP_AMPLITUDE: u32 = 224;
 
-/// PID output voltage limit used during current-loop validation.
-///
-/// ADC calibration leaves `PIDOUT_UQ_UD_LIMITS` at 1024 as a conservative
-/// safety cap, but the measured validation captures can hit that cap before
-/// reaching the current target. 2000 matches the bounded encoder-alignment
-/// limit and remains well below the operational closed-loop limit.
 const CURRENT_VALIDATE_PIDOUT_LIMIT: u32 = 2000;
-/// Validation runs unproven gains, and the TMC4671 has no backstop on actual
-/// phase current below `PIDOUT_UQ_UD_LIMITS`, so the rail is bounded by
-/// current: this multiple of the run-current peak through the identified R.
 const VALIDATION_RAIL_CURRENT_MULTIPLE: u32 = 3;
 pub(crate) const CURRENT_SAFE_PIDOUT_LIMIT: u32 = 1024;
 
 const CURRENT_VALIDATE_PHI_E_SELECTION: u32 = 3;
 
-/// Current-loop step overshoot the highest gain-floor step must fit under
-/// the resistance ceiling, since `run_capture` trips on any sample above it.
 const GAIN_FLOOR_TORQUE_STEP_OVERSHOOT_MARGIN_PERMILLE: u32 = 200;
 const GAIN_FLOOR_TORQUE_STEP_HIGH_PERMILLE: u32 =
     1000 - GAIN_FLOOR_TORQUE_STEP_OVERSHOOT_MARGIN_PERMILLE;
-/// Spacing between the three measured amplitudes. Below the lowest the axis
-/// is still in breakaway creep, whose fitted acceleration does not scale with
-/// current and bends the line.
 const GAIN_FLOOR_TORQUE_STEP_SPACING_PERMILLE: u32 = 100;
 const GAIN_FLOOR_TORQUE_STEP_PERMILLE: [u32; 3] = [
     GAIN_FLOOR_TORQUE_STEP_HIGH_PERMILLE - 2 * GAIN_FLOOR_TORQUE_STEP_SPACING_PERMILLE,
@@ -491,17 +419,11 @@ fn validation_gate(
     let (min_response_permille, max_response_permille) = match (axis, sample_delay_ms) {
         (CurrentValidationAxis::Flux, 1) => (250, 1250),
         (CurrentValidationAxis::Flux, 2) => (700, 1250),
-        // The 5 ms flux sample remains bandwidth evidence. Response magnitude
-        // is reported, but response-only misses do not block axis acceptance;
-        // the 100 ms sample below is the steady-state closure gate.
         (CurrentValidationAxis::Flux, 5) => (850, 1150),
         (CurrentValidationAxis::Flux, _) => (
             SETTLED_FLUX_MIN_RESPONSE_PERMILLE,
             SETTLED_FLUX_MAX_RESPONSE_PERMILLE,
         ),
-        // Zero-delay torque is an earliest-possible geometry discriminator.
-        // Keep safety/status/cross-axis gates active, but do not make an
-        // intentionally pre-settle response magnitude block commissioning.
         (CurrentValidationAxis::Torque, 0) => (0, 1250),
         (CurrentValidationAxis::Torque, 1) => (250, 1250),
         (CurrentValidationAxis::Torque, _) => (550, 1250),
@@ -991,10 +913,6 @@ fn append_settled_samples(
     append_directional_settled_samples(data, axis, sample_index, 1, negative);
 }
 
-/// Capture coordinates for one directional current-validation sample: axis,
-/// sample slot, settle delay, and the direction just completed. These four
-/// always travel together -- they are also the fields the per-step
-/// `CurrentValidateState` variants carry -- so they move as one value.
 struct DirectionalSampleStep {
     axis: CurrentValidationAxis,
     sample_index: u8,
@@ -1137,11 +1055,6 @@ fn evidence_axis_passed(
 }
 
 fn axis_pass_status(axis: CurrentValidationAxis, sample: &CurrentValidationAxisEvidence) -> u8 {
-    // Flux short samples are bandwidth telemetry. The long-dwell flux sample
-    // proves steady-state closure and is the sole hard orientation/coupling
-    // gate; safety/status gates still apply at every delay. Torque is
-    // motion-limited, so its cross/response shape is telemetry while
-    // safety/status gates remain hard.
     let telemetry_status = match axis {
         CurrentValidationAxis::Flux => {
             sample.sample_delay_ms < 100 && is_transient_current_telemetry_status(sample.status)
@@ -1390,8 +1303,6 @@ async fn stop_after_current_sample_error<B: CommissioningBackend>(
     Ok(deadline_us)
 }
 
-/// Thin phase: read the electrical model, compute physical current-loop gains,
-/// and transition immediately to validation.
 pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     profile: CommissionProfile,
@@ -1437,8 +1348,6 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
         gains.effective_bandwidth_hz,
     );
 
-    // Compute step amplitude: 15% of run_current, capped so validation does
-    // not saturate PIDOUT before the current-loop response can be measured.
     let current_limit = u32::from(backend.current_limit());
     let validation = validation_pidout_ceiling(
         current_limit,
@@ -1483,10 +1392,6 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             inductance,
             resistance_result,
             timing,
-            // The gain-formula path consumes `model.r_count_milli`, already in the
-            // `ELECTRICAL_MODEL_RESISTANCE_SCALE` (milli) count-slope unit
-            // space — identical to `selected_r_count_slope_milli`, so the 64x
-            // mismatch is directly readable from the persisted artifacts.
             resistance_gain_path_count_slope_milli: model.r_count_milli as i32,
             current_loop_evidence,
         },
@@ -1494,11 +1399,6 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     StepResult::PhaseChanged(CommissionPhase::CurrentValidate)
 }
 
-/// Advance current-loop validation sub-state.
-///
-/// Writes current-loop gains, runs bidirectional short samples for each current
-/// axis, classifies the per-delay evidence, and fails explicitly on invalid
-/// measured current gains.
 pub(crate) async fn step_current_validate<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     _buf: &mut TransientBuffer,
@@ -1516,8 +1416,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
 
     match validate_state {
         CurrentValidateState::WriteGains => {
-            // Write gains to TMC4671 PI registers.
-            // PID_FLUX_P_FLUX_I: P in [31:16], I in [15:0]
             let flux_reg = PidGainPair::new(data.gains.flux_p, data.gains.flux_i).register_value();
             let torque_reg =
                 PidGainPair::new(data.gains.torque_p, data.gains.torque_i).register_value();
@@ -1564,7 +1462,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     Err(EncoderMathError::AmbiguousHalfTurn) => unreachable!(),
                 };
 
-            // Clear any previous validation evidence for this attempt.
             data.pending_positive_sample = None;
             data.current_settled_validation_count = 0;
             data.current_settled_validation = [CurrentValidationSettledSampleEvidence::EMPTY;
@@ -1591,8 +1488,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             let sample_index = *sample_index;
             let sample_delay_ms = *sample_delay_ms;
             let dir = *direction;
-            // Switch to torque mode using the same advanced PI
-            // controller structure as the tuned current loop.
             if backend
                 .write_register(MODE_RAMP_MODE_MOTION, MOTION_TORQUE_ADVANCED_PI)
                 .await
@@ -1600,9 +1495,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
-            // A fault latched during the mode write above is only visible in
-            // firmware; the guarded STATUS_FLAGS clear below runs four awaited
-            // sub-register writes later. No await before the pin.
             if backend.interlock_tripped() {
                 return super::fail_inner(phase, CommissionError::FaultInterlock);
             }
@@ -1780,8 +1672,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 }
             };
 
-            // Return to zero target and clear accumulated current error so
-            // the next short sample starts from a defined controller state.
             if backend
                 .write_register(PID_TORQUE_FLUX_TARGET, 0)
                 .await
@@ -1959,7 +1849,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 }
             }
 
-            // Restore safe state.
             let safe_restore_result =
                 restore_current_validation_safe_state(backend, data.gains).await;
             if safe_restore_result.is_err()
@@ -2210,7 +2099,6 @@ mod tests {
 
     use super::*;
 
-    /// Maximum backend register operations issued by one current-validation arm.
     const CURRENT_VALIDATE_MAX_REGISTER_OPS_PER_ARM: usize = 37;
 
     fn p_gain(raw: u16) -> PidPGain {
@@ -3231,9 +3119,6 @@ mod tests {
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
-            // The fault latches while the torque-mode write is in flight: the
-            // interlock reads clear on entry and is set by the time the pin
-            // would go high, so a pre-entry guard alone would miss it.
             backend.trip_interlock_on_write = Some(MODE_RAMP_MODE_MOTION.addr());
 
             let result = step_current_validate(
