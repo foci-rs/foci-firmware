@@ -298,9 +298,11 @@ const STALL_THRESHOLD_MAX_UNITS: u32 = 16_384;
 /// revolution); `persistence` the number of consecutive control ticks
 /// either check must hold before latching. Out-of-range values, or
 /// `margin_units >= stall_units`, are a config error and enter shutdown.
-/// `homing_ma` is stored as-is: the homing tick, which owns the board
-/// current scale and the stored run limit, refuses to clamp when the
-/// converted value is not below the run limit.
+/// `homing_ma` above the board's run current cap is a config error and
+/// enters shutdown with nothing stored. Below the cap it is stored as-is
+/// and the homing tick, which owns the board current scale and the stored
+/// run limit, still refuses to clamp when the converted value is not
+/// below the run limit.
 #[klipper_command]
 pub fn foci_config_homing(
     ctx: &mut dyn FociRuntimeHost,
@@ -328,6 +330,20 @@ pub fn foci_config_homing(
         if ctx.enter_shutdown() {
             let clock = ctx.now();
             ctx.send_shutdown(ShutdownReason::FociHomingConfigInvalid, clock);
+        }
+        return;
+    }
+    let cap_ma = ctx.max_run_current_ma();
+    if homing_ma > cap_ma {
+        defmt::error!(
+            "foci_config_homing: oid={} homing_ma={} exceeds board cap {}",
+            oid,
+            homing_ma,
+            cap_ma
+        );
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::FociHomingCurrentExceedsBoardLimit, clock);
         }
         return;
     }
@@ -919,6 +935,46 @@ mod tests {
         assert_eq!(tmc_state.stall_margin_units.load(Relaxed), 100);
         assert_eq!(tmc_state.stall_persistence.load(Relaxed), 3);
         assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn foci_config_homing_accepts_cap_level_and_zero_homing_current() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        for homing_ma in [10_000u32, 0] {
+            let mut ctx = MockCtx::new(2);
+            let mut sender = EmptySender;
+            config_stepper_channel(ctx.state(), 10, 1).unwrap();
+            let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+
+            foci_config_homing(&mut ctx, &mut sender, 10, homing_ma, 819, 100, 3);
+
+            assert_eq!(tmc_state.homing_current_ma.load(Relaxed), homing_ma);
+            assert_eq!(ctx.last_shutdown, None);
+        }
+    }
+
+    #[test]
+    fn foci_config_homing_over_cap_shuts_down_before_storing_anything() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = EmptySender;
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.homing_current_ma.store(111, Relaxed);
+        tmc_state.stall_ceiling_units.store(222, Relaxed);
+        tmc_state.stall_margin_units.store(33, Relaxed);
+        tmc_state.stall_persistence.store(4, Relaxed);
+
+        foci_config_homing(&mut ctx, &mut sender, 10, 10_001, 819, 100, 3);
+
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(ShutdownReason::FociHomingCurrentExceedsBoardLimit)
+        );
+        assert_eq!(tmc_state.homing_current_ma.load(Relaxed), 111);
+        assert_eq!(tmc_state.stall_ceiling_units.load(Relaxed), 222);
+        assert_eq!(tmc_state.stall_margin_units.load(Relaxed), 33);
+        assert_eq!(tmc_state.stall_persistence.load(Relaxed), 4);
     }
 
     #[test]
