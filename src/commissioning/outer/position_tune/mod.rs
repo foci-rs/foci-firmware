@@ -48,7 +48,7 @@ pub(crate) const RESTORE_WAIT_US: u32 = 50_000;
 
 pub(crate) const STROKE_POLL_US: u32 = 1_000;
 
-const TAU_Q16: i64 = 411_775;
+const TAU_Q16: i64 = (core::f64::consts::TAU * 65_536.0 + 0.5) as i64;
 
 /// Which directional leg of a rung's stroke is being driven.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
