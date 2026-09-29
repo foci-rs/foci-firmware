@@ -74,6 +74,8 @@ pub const VELOCITY_FF_FLAG_CLAMPED: u8 = 1 << 0;
 
 /// Version-6 critical payload length.
 pub const CRITICAL_PAYLOAD_LEN: usize = 88;
+const CRITICAL_RESERVED_OFFSET: usize = 84;
+const _: () = assert!(CRITICAL_RESERVED_OFFSET + 4 == CRITICAL_PAYLOAD_LEN);
 /// Version-5 current-path payload length.
 pub const CURRENT_PATH_PAYLOAD_LEN: usize = 16;
 
@@ -98,6 +100,10 @@ pub const VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID: u8 = 1 << 1;
 /// Reserved, historical-only: `velocity_diagnostic_value` carried
 /// `ACTUAL_VELOCITY_PPTM`. No live producer sets it; never reassign.
 pub const VELOCITY_OBSERVATION_FLAG_PPTM_ACTUAL_VALID: u8 = 1 << 2;
+/// Metadata payload schema version emitted by the firmware.
+pub const METADATA_SCHEMA_VERSION: u8 = 1;
+/// Trace feature revision advertised in the metadata payload.
+pub const TRACE_FEATURE_REVISION: u8 = 1;
 /// Maximum metadata string bytes in firmware frames.
 pub const METADATA_STRING_MAX: usize = 31;
 /// Maximum source labels in a metadata frame.
@@ -476,7 +482,7 @@ pub fn encode_critical_payload(sample: &CriticalSample, out: &mut [u8; CRITICAL_
     } else {
         0
     };
-    put_i32(out, 84, 0);
+    put_i32(out, CRITICAL_RESERVED_OFFSET, 0);
 }
 
 /// Encode a current-path payload.

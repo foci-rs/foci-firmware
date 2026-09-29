@@ -4,9 +4,10 @@ use core::sync::atomic::{AtomicU16, Ordering};
 
 use crate::trace::stream::{
     EVENT_PAYLOAD_LEN, EventSample, FRAME_TYPE_EVENT, FRAME_TYPE_STATUS, FrameBuf, FrameHeader,
-    METADATA_PAYLOAD_MAX, METADATA_SOURCE_MAX, METADATA_STRING_MAX, SOURCE_INDEX_NA,
-    SOURCE_KIND_BOARD, SOURCE_KIND_FOCI, SOURCE_KIND_KLIPPER, SOURCE_KIND_USB, STATUS_PAYLOAD_LEN,
-    StatusSample, encode_event_payload, encode_status_payload, sequence_before_or_equal,
+    METADATA_PAYLOAD_MAX, METADATA_SCHEMA_VERSION, METADATA_SOURCE_MAX, METADATA_STRING_MAX,
+    SOURCE_INDEX_NA, SOURCE_KIND_BOARD, SOURCE_KIND_FOCI, SOURCE_KIND_KLIPPER, SOURCE_KIND_USB,
+    STATUS_PAYLOAD_LEN, StatusSample, TRACE_FEATURE_REVISION, encode_event_payload,
+    encode_status_payload, sequence_before_or_equal,
 };
 
 /// One trace source advertised by metadata and used by source-scoped frames.
@@ -201,8 +202,8 @@ pub fn build_metadata_payload(
     metadata_push(
         &mut payload,
         &[
-            1,
-            1,
+            METADATA_SCHEMA_VERSION,
+            TRACE_FEATURE_REVISION,
             inputs.sources.len() as u8,
             inputs.skipped_sample_counter_count,
         ],
