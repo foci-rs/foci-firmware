@@ -1,11 +1,4 @@
-//! Lifecycle command handlers: status queries (`get_clock`, `get_uptime`,
-//! `get_config`), recovery (`clear_shutdown`, `config_reset`, `reset`),
-//! and diagnostic (`emergency_stop`, `debug_nop`, `allocate_oids`,
-//! `finalize_config`).
-//!
-//! Handler bodies bind to the capability traits declared in
-//! [`crate::context`] instead of concrete board types; the board crate
-//! wires up the trait impls on its own `FirmwareCtx`.
+//! Lifecycle command handlers: status, recovery and diagnostics.
 
 use ankyra::prelude::klipper_command;
 
@@ -58,12 +51,7 @@ pub fn get_config(ctx: &mut dyn StateAccess) {
     );
 }
 
-/// Clear shutdown state, allowing normal command processing to resume.
-///
-/// Matches Klipper C `command_clear_shutdown` (basecmd.c). If called
-/// when not in shutdown, triggers a shutdown instead. `SHUTDOWN_ACTIVE`
-/// is only cleared when the underlying clear actually succeeds, so an
-/// invalid clear that enters shutdown does not immediately undo it.
+/// Clear shutdown state; outside shutdown this triggers a shutdown instead.
 #[klipper_command(in_shutdown)]
 pub fn clear_shutdown(ctx: &mut dyn ShutdownRecovery) {
     match foci_klipper::commands::lifecycle::clear_shutdown(ctx.state()) {
@@ -79,11 +67,7 @@ pub fn clear_shutdown(ctx: &mut dyn ShutdownRecovery) {
     }
 }
 
-/// Full config reset: clear all OIDs, steppers, and shutdown state.
-///
-/// Matches Klipper C `config_reset` (basecmd.c:262). Only available
-/// during shutdown. The host uses this as a fallback restart mechanism
-/// when hardware `reset` is not available (linux/PRU platforms).
+/// Full config reset: clear all OIDs, steppers, and shutdown state. Only available during shutdown.
 #[klipper_command(in_shutdown)]
 pub fn config_reset(ctx: &mut dyn LifecycleReset) {
     use core::sync::atomic::Ordering::Relaxed;
@@ -95,24 +79,19 @@ pub fn config_reset(ctx: &mut dyn LifecycleReset) {
         return;
     }
     foci_klipper::commands::lifecycle::config_reset(ctx.state());
-    // Full TriggerDomain reset (board-side implementation of TrsyncHost).
     ctx.reset_all();
-    // Clear derived mailbox state outside critical section
     REPORT_PENDING.store(false, Relaxed);
     HOMING_TRIGGERED.store(0xFF, Relaxed);
     HOMING_STATE.store(0, Relaxed);
     HOMING_REENTER_PENDING.store(false, Relaxed);
-    // Clear firmware-side endstop pin assignments
     for pin_id in &ENDSTOP_PIN_IDS {
         pin_id.store(0xFF, Relaxed);
     }
-    // Reset board-local control and protocol state
     reset_all_tmc_channels();
     reset_all_stepper_channels();
     reset_all_analog_channels();
     STATS_SEND_TIME.store(0, Relaxed);
     STATS_SEND_TIME_HIGH.store(0, Relaxed);
-    // Signal tmc_control to drain stale requests from the pre-reset epoch
     TMC_QUEUE_FLUSH.store(true, Relaxed);
 }
 
@@ -135,11 +114,7 @@ pub fn emergency_stop(ctx: &mut dyn ShutdownRecovery) {
     }
 }
 
-/// Reset the MCU. Matches Klipper's `command_reset` (armcm_reset.c).
-///
-/// Writes `CANBOOT_BYPASS` to Katapult's request signature so the
-/// bootloader skips straight to the application after reset. This is
-/// used by `FIRMWARE_RESTART`.
+/// Reset the MCU, bypassing Katapult straight to the application (used by `FIRMWARE_RESTART`).
 #[klipper_command(in_shutdown)]
 pub fn reset(ctx: &mut dyn ShutdownRecovery) {
     ctx.reset_to_bootloader();
@@ -158,7 +133,6 @@ mod tests {
 
     use super::*;
 
-    /// Serializes tests touching the global `SHUTDOWN_ACTIVE` atomic.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     struct MockCtx {

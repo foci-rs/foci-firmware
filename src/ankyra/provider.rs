@@ -1,21 +1,10 @@
-//! Ankyra provider aggregating FOCI protocol items shared across all
-//! FOCI-family boards. Board crates compose this with their own
-//! `BOARD_PROVIDER` (which carries board-specific commands, enumerations,
-//! and constants like `CLOCK_FREQ` / `Pins`) inside their
-//! `ankyra_config!` invocation via `ankyra_reexport_provider!`.
-//!
-//! Dev-gated TMC handlers (`tmc_init`, `tmc_test_spin`, `tmc_write_register`,
-//! `tmc_read_register`) are included only when the `dev` feature is enabled.
-//! Matching the board-side `BOARD_PROVIDER` pattern, we use two top-level
-//! `ankyra_provider!` invocations guarded by `#[cfg(feature = "dev")]` and
-//! `#[cfg(not(feature = "dev"))]` so the list shape matches the set of
-//! descriptor fns compiled in the current feature set.
+//! Ankyra provider for FOCI protocol items shared by all boards.
+//! Dev-gated TMC handlers are included only with the `dev` feature.
 
 #[cfg(feature = "dev")]
 ankyra::ankyra_provider! {
     name: FOCI_FIRMWARE_PROVIDER,
     commands: [
-        // Lifecycle
         crate::ankyra::handlers::lifecycle::get_clock,
         crate::ankyra::handlers::lifecycle::get_uptime,
         crate::ankyra::handlers::lifecycle::get_config,
@@ -26,14 +15,11 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::lifecycle::emergency_stop,
         crate::ankyra::handlers::lifecycle::reset,
         crate::ankyra::handlers::lifecycle::debug_nop,
-        // Analog in
         crate::ankyra::handlers::analog_in::config_analog_in,
         crate::ankyra::handlers::analog_in::query_analog_in,
-        // Digital out
         crate::ankyra::handlers::digital_out::config_digital_out,
         crate::ankyra::handlers::digital_out::queue_digital_out,
         crate::ankyra::handlers::digital_out::update_digital_out,
-        // Stepper
         crate::ankyra::handlers::stepper::config_stepper,
         crate::ankyra::handlers::stepper::queue_step,
         crate::ankyra::handlers::stepper::set_next_step_dir,
@@ -41,23 +27,19 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::stepper::stepper_get_position,
         crate::ankyra::handlers::stepper::stepper_get_commanded_position,
         crate::ankyra::handlers::stepper::stepper_stop_on_trigger,
-        // Endstop
         crate::ankyra::handlers::endstop::config_endstop,
         crate::ankyra::handlers::endstop::endstop_home,
         crate::ankyra::handlers::endstop::endstop_query_state,
-        // Trsync
         crate::ankyra::handlers::trsync::config_trsync,
         crate::ankyra::handlers::trsync::trsync_set_timeout,
         crate::ankyra::handlers::trsync::trsync_start,
         crate::ankyra::handlers::trsync::trsync_trigger,
-        // SPI
         crate::ankyra::handlers::spi::config_spi,
         crate::ankyra::handlers::spi::config_spi_shutdown,
         crate::ankyra::handlers::spi::config_spi_without_cs,
         crate::ankyra::handlers::spi::spi_send,
         crate::ankyra::handlers::spi::spi_set_bus,
         crate::ankyra::handlers::spi::spi_transfer,
-        // TMC plain
         crate::ankyra::handlers::tmc::tmc_set_auto_calibrate_on_enable,
         crate::ankyra::handlers::tmc::tmc_set_accel_feedforward,
         crate::ankyra::handlers::tmc::tmc_set_current,
@@ -78,12 +60,10 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::tmc::tmc_position_torque_offset_sample_test,
         crate::ankyra::handlers::tmc::tmc_voltage_step_test,
         crate::ankyra::handlers::tmc::tmc_resistance_test,
-        // TMC dev-gated
         crate::ankyra::handlers::tmc::tmc_init,
         crate::ankyra::handlers::tmc::tmc_test_spin,
         crate::ankyra::handlers::tmc::tmc_write_register,
         crate::ankyra::handlers::tmc::tmc_read_register,
-        // FOCI (foci_tune stays board-local)
         crate::ankyra::handlers::foci::foci_adc_vm_offset,
         crate::ankyra::handlers::foci::foci_calibrate,
         crate::ankyra::handlers::foci::foci_commission,
@@ -184,7 +164,6 @@ ankyra::ankyra_provider! {
 ankyra::ankyra_provider! {
     name: FOCI_FIRMWARE_PROVIDER,
     commands: [
-        // Lifecycle
         crate::ankyra::handlers::lifecycle::get_clock,
         crate::ankyra::handlers::lifecycle::get_uptime,
         crate::ankyra::handlers::lifecycle::get_config,
@@ -195,14 +174,11 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::lifecycle::emergency_stop,
         crate::ankyra::handlers::lifecycle::reset,
         crate::ankyra::handlers::lifecycle::debug_nop,
-        // Analog in
         crate::ankyra::handlers::analog_in::config_analog_in,
         crate::ankyra::handlers::analog_in::query_analog_in,
-        // Digital out
         crate::ankyra::handlers::digital_out::config_digital_out,
         crate::ankyra::handlers::digital_out::queue_digital_out,
         crate::ankyra::handlers::digital_out::update_digital_out,
-        // Stepper
         crate::ankyra::handlers::stepper::config_stepper,
         crate::ankyra::handlers::stepper::queue_step,
         crate::ankyra::handlers::stepper::set_next_step_dir,
@@ -210,23 +186,19 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::stepper::stepper_get_position,
         crate::ankyra::handlers::stepper::stepper_get_commanded_position,
         crate::ankyra::handlers::stepper::stepper_stop_on_trigger,
-        // Endstop
         crate::ankyra::handlers::endstop::config_endstop,
         crate::ankyra::handlers::endstop::endstop_home,
         crate::ankyra::handlers::endstop::endstop_query_state,
-        // Trsync
         crate::ankyra::handlers::trsync::config_trsync,
         crate::ankyra::handlers::trsync::trsync_set_timeout,
         crate::ankyra::handlers::trsync::trsync_start,
         crate::ankyra::handlers::trsync::trsync_trigger,
-        // SPI
         crate::ankyra::handlers::spi::config_spi,
         crate::ankyra::handlers::spi::config_spi_shutdown,
         crate::ankyra::handlers::spi::config_spi_without_cs,
         crate::ankyra::handlers::spi::spi_send,
         crate::ankyra::handlers::spi::spi_set_bus,
         crate::ankyra::handlers::spi::spi_transfer,
-        // TMC plain — dev-gated entries omitted when feature is off
         crate::ankyra::handlers::tmc::tmc_set_auto_calibrate_on_enable,
         crate::ankyra::handlers::tmc::tmc_set_accel_feedforward,
         crate::ankyra::handlers::tmc::tmc_set_current,
@@ -247,7 +219,6 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::tmc::tmc_position_torque_offset_sample_test,
         crate::ankyra::handlers::tmc::tmc_voltage_step_test,
         crate::ankyra::handlers::tmc::tmc_resistance_test,
-        // FOCI (foci_tune stays board-local)
         crate::ankyra::handlers::foci::foci_adc_vm_offset,
         crate::ankyra::handlers::foci::foci_calibrate,
         crate::ankyra::handlers::foci::foci_commission,

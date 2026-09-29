@@ -1,16 +1,4 @@
-//! TMC4671 command handlers: `tmc_init`, `tmc_read_register`,
-//! `tmc_write_register`, `tmc_set_current`, `tmc_set_motion_scale`,
-//! `tmc_set_encoder_dir`, `tmc_set_flux_filter`, `tmc_set_pid_gains`,
-//! `tmc_set_position_filter`, `tmc_set_position_gains`,
-//! `tmc_set_torque_filter`, `tmc_set_velocity_feedforward_rpm`,
-//! `tmc_set_velocity_filter`, `tmc_set_velocity_limit`,
-//! `tmc_set_voltage_limit`, `tmc_current_torque_sample_test`,
-//! `tmc_position_torque_offset_sample_test`, `tmc_voltage_step_test`,
-//! `tmc_resistance_test`, `tmc_set_auto_calibrate_on_enable`, `tmc_test_spin`.
-//!
-//! Handler bodies bind to the capability traits declared in
-//! [`crate::context`]; the board crate wires up the trait impls on its
-//! own `FirmwareCtx`.
+//! TMC4671 command handlers.
 
 use ankyra::prelude::klipper_command;
 use core::sync::atomic::Ordering;
@@ -61,10 +49,7 @@ pub fn tmc_write_register(ctx: &mut dyn TmcWriteHost, oid: u8, addr: u8, value: 
 }
 
 /// Read a TMC4671 register via SPI (dev-only).
-///
-/// The response is sent asynchronously as a `tmc_register_value` reply.
-/// If the queue is full the request is dropped silently; the Python
-/// query_command timeout handles the missing reply naturally.
+/// The reply is sent asynchronously as `tmc_register_value`; dropped silently if the queue is full.
 #[cfg(feature = "dev")]
 #[klipper_command]
 pub fn tmc_read_register(ctx: &mut dyn TmcWriteHost, oid: u8, addr: u8) {
@@ -79,16 +64,8 @@ pub fn tmc_read_register(ctx: &mut dyn TmcWriteHost, oid: u8, addr: u8) {
     }
 }
 
-/// Set motor run current. The firmware converts milliamps to
-/// `PID_TORQUE_FLUX_LIMITS` register counts using the board-specific
-/// current scaling factor.
-///
-/// Recorded in channel state and applied by the TMC task on its control
-/// tick. See [`TmcChannelState::config_apply_pending`] for why this does
-/// not enqueue.
-///
-/// A request above the board's run current cap enters shutdown and stores
-/// nothing.
+/// Set motor run current in milliamps, converted to `PID_TORQUE_FLUX_LIMITS` counts. Applied on the TMC task control tick.
+/// A request above the board run current cap enters shutdown and stores nothing.
 #[klipper_command]
 pub fn tmc_set_current(ctx: &mut dyn TmcWriteHost, oid: u8, run_ma: u32) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -154,13 +131,7 @@ pub fn tmc_set_motion_scale(
     }
 }
 
-/// Set ABN encoder count direction. `invert=1` flips the count direction
-/// so the position PID has correct (negative) feedback. Depends on
-/// motor/encoder wiring — not board-specific.
-///
-/// Recorded in channel state and applied by the TMC task on its control
-/// tick. See [`TmcChannelState::config_apply_pending`] for why this does
-/// not enqueue.
+/// Set ABN encoder count direction; `invert=1` flips it. Applied on the TMC task control tick.
 #[klipper_command]
 pub fn tmc_set_encoder_dir(ctx: &mut dyn TmcWriteHost, oid: u8, channel: u8, invert: u8) {
     let Some((_channel, state)) = foci_tmc_state_matching_or_shutdown(ctx, oid, channel) else {
@@ -174,11 +145,7 @@ pub fn tmc_set_encoder_dir(ctx: &mut dyn TmcWriteHost, oid: u8, channel: u8, inv
         .fetch_or(crate::state::tmc::PENDING_ENCODER_DIR, Ordering::Release);
 }
 
-/// Set inner loop PI gains from host (explicit override or saved values).
-///
-/// Recorded in channel state and applied by the TMC task on its control
-/// tick. See [`TmcChannelState::config_apply_pending`] for why this does
-/// not enqueue.
+/// Set inner loop PI gains from host config.
 #[klipper_command]
 pub fn tmc_set_pid_gains(
     ctx: &mut dyn TmcWriteHost,
@@ -214,10 +181,7 @@ pub fn tmc_set_pid_gains(
         .fetch_or(crate::state::tmc::PENDING_INNER_GAINS, Ordering::Release);
 }
 
-/// Set velocity biquad filter cutoff frequency from host config.
-///
-/// Recorded in channel state and applied by the TMC task on its control tick.
-/// See [`TmcChannelState::config_apply_pending`] for why this does not enqueue.
+/// Set velocity biquad filter cutoff frequency.
 #[klipper_command]
 pub fn tmc_set_velocity_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -231,10 +195,7 @@ pub fn tmc_set_velocity_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u
         .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Release);
 }
 
-/// Set torque biquad filter cutoff frequency from host config.
-///
-/// Recorded in channel state and applied by the TMC task on its control
-/// tick. See [`TmcChannelState::config_apply_pending`].
+/// Set torque biquad filter cutoff frequency.
 #[klipper_command]
 pub fn tmc_set_torque_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -248,10 +209,7 @@ pub fn tmc_set_torque_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16
         .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Release);
 }
 
-/// Set position target biquad filter cutoff frequency from host config.
-///
-/// Recorded in channel state and applied by the TMC task on its control
-/// tick. See [`TmcChannelState::config_apply_pending`].
+/// Set position target biquad filter cutoff frequency.
 #[klipper_command]
 pub fn tmc_set_position_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -265,10 +223,7 @@ pub fn tmc_set_position_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u
         .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Release);
 }
 
-/// Set flux biquad filter cutoff frequency from host config.
-///
-/// Recorded in channel state and applied by the TMC task on its control
-/// tick. See [`TmcChannelState::config_apply_pending`].
+/// Set flux biquad filter cutoff frequency.
 #[klipper_command]
 pub fn tmc_set_flux_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -283,10 +238,6 @@ pub fn tmc_set_flux_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) 
 }
 
 /// Set position/velocity PI gains from host config.
-///
-/// Recorded in channel state and applied by the TMC task on its control
-/// tick. See [`TmcChannelState::config_apply_pending`] for why this does
-/// not enqueue.
 #[klipper_command]
 pub fn tmc_set_position_gains(
     ctx: &mut dyn TmcWriteHost,
@@ -375,11 +326,7 @@ pub fn tmc_set_accel_feedforward(
     );
 }
 
-/// Set PID velocity limit from host config.
-///
-/// Caps position PID output to prevent integrator-driven velocity runaway.
-/// Firmware default: 500,000. Override via `pid_velocity_limit` in
-/// `printer.cfg`.
+/// Set PID velocity limit, capping position PID output. Firmware default 500,000.
 #[klipper_command]
 pub fn tmc_set_velocity_limit(ctx: &mut dyn ShutdownRecovery, oid: u8, limit: u32) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -414,10 +361,7 @@ pub fn tmc_set_voltage_limit(ctx: &mut dyn TmcWriteHost, oid: u8, voltage_limit:
 }
 
 /// Run a bounded current-loop step diagnostic.
-///
-/// This command only queues a fixed diagnostic sequence. The board task
-/// rejects it unless the motor is already enabled and calibrated by the
-/// production path.
+/// The board task rejects it unless the motor is enabled and calibrated.
 #[klipper_command]
 pub fn tmc_current_step_test(
     ctx: &mut dyn TmcWriteHost,
@@ -466,10 +410,7 @@ pub fn tmc_current_step_test(
 }
 
 /// Run a bounded current-vector step diagnostic.
-///
-/// This command only queues a fixed diagnostic sequence. The board task
-/// rejects it unless the motor is already enabled and calibrated by the
-/// production path.
+/// The board task rejects it unless the motor is enabled and calibrated.
 #[klipper_command]
 pub fn tmc_current_vector_step_test(
     ctx: &mut dyn TmcWriteHost,
@@ -511,11 +452,8 @@ pub fn tmc_current_vector_step_test(
     }
 }
 
-/// Run a bounded torque-current pulse and sample it before the old dwell floor.
-///
-/// This command only queues a fixed diagnostic sequence. The board task
-/// rejects it unless the motor is already enabled and calibrated by the
-/// production path.
+/// Run a bounded torque-current pulse and sample it.
+/// The board task rejects it unless the motor is enabled and calibrated.
 #[klipper_command]
 pub fn tmc_current_torque_sample_test(
     ctx: &mut dyn TmcWriteHost,
@@ -558,10 +496,7 @@ pub fn tmc_current_torque_sample_test(
 }
 
 /// Run a bounded position-mode torque-offset pulse and sample it.
-///
-/// This command only queues a fixed diagnostic sequence. The board task rejects
-/// it unless the motor is already enabled, calibrated, idle, outside a homing
-/// move, and still in production position mode.
+/// The board task rejects it unless the motor is enabled, calibrated, idle, outside a homing move, and in production position mode.
 #[klipper_command]
 pub fn tmc_position_torque_offset_sample_test(
     ctx: &mut dyn TmcWriteHost,
@@ -601,10 +536,7 @@ pub fn tmc_position_torque_offset_sample_test(
 }
 
 /// Run a bounded open-loop voltage-vector pulse and sample it.
-///
-/// This command only queues a fixed diagnostic sequence. The board task rejects
-/// it unless the motor is already enabled, calibrated, idle, outside a homing
-/// move, and still in production position mode.
+/// The board task rejects it unless the motor is enabled, calibrated, idle, outside a homing move, and in production position mode.
 #[klipper_command]
 pub fn tmc_voltage_step_test(
     ctx: &mut dyn TmcWriteHost,
@@ -642,11 +574,8 @@ pub fn tmc_voltage_step_test(
     }
 }
 
-/// Run the shared resistance-identification sweep over an already-armed motor.
-///
-/// This command only queues a fixed diagnostic sequence. The board task
-/// rejects it unless the motor is already enabled, calibrated, and ADC
-/// offsets are ready; it does not touch commissioning state.
+/// Run the shared resistance-identification sweep over an armed motor.
+/// The board task rejects it unless the motor is enabled, calibrated, and ADC offsets are ready.
 #[klipper_command]
 pub fn tmc_resistance_test(ctx: &mut dyn TmcWriteHost, oid: u8, detail: u8) {
     let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -676,11 +605,6 @@ pub fn tmc_set_auto_calibrate_on_enable(ctx: &mut dyn ShutdownRecovery, oid: u8,
 
 /// Composite bound for handlers that both enqueue TMC requests and may
 /// trigger shutdown on queue-full errors.
-///
-/// `&mut dyn Trait1 + Trait2` is not a valid trait-object type in stable
-/// Rust for two non-auto traits; this named supertrait is the dyn-safe way
-/// to compose `ShutdownRecovery` (shutdown + clock) and `TmcHost` (request
-/// enqueue), the same pattern as [`crate::context::LifecycleReset`].
 pub trait TmcWriteHost: ShutdownRecovery + TmcHost {}
 impl<T: ?Sized + ShutdownRecovery + TmcHost> TmcWriteHost for T {}
 
@@ -933,8 +857,6 @@ mod tests {
     fn tmc_set_current_cannot_shut_down_on_a_full_queue() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut ctx = MockCtx::new(2);
-        // A full request channel is exactly the connect-time condition that
-        // shut the MCU down; recording config must be immune to it.
         ctx.accept_request = false;
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
@@ -978,8 +900,6 @@ mod tests {
     fn tmc_set_encoder_dir_cannot_shut_down_on_a_full_queue() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut ctx = MockCtx::new(2);
-        // A full request channel is exactly the connect-time condition that
-        // shut the MCU down; recording config must be immune to it.
         ctx.accept_request = false;
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
@@ -1026,8 +946,6 @@ mod tests {
     fn tmc_set_pid_gains_cannot_shut_down_on_a_full_queue() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut ctx = MockCtx::new(2);
-        // A full request channel is exactly the connect-time condition that
-        // shut the MCU down; recording config must be immune to it.
         ctx.accept_request = false;
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
@@ -1107,8 +1025,6 @@ mod tests {
     fn tmc_set_position_gains_queue_full_does_not_shut_down_and_preserves_confirmed_gains() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut ctx = MockCtx::new(2);
-        // A full request channel is exactly the connect-time condition that
-        // used to shut the MCU down; recording config must be immune to it.
         ctx.accept_request = false;
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
@@ -1194,15 +1110,11 @@ mod tests {
 
         tmc_set_velocity_filter(&mut ctx, &mut sender, 10, 200);
 
-        // The cutoff is recorded in channel state...
         assert_eq!(tmc_state.velocity_filter_hz.load(Relaxed), Some(200));
-        // ...and the filter bit is flagged for the TMC task to apply on its
-        // control tick...
         assert_ne!(
             tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_FILTERS,
             0
         );
-        // ...without consuming a slot on the bounded request channel.
         assert!(ctx.last_request.borrow().is_none());
         assert_eq!(ctx.last_shutdown, None);
     }
@@ -1213,7 +1125,6 @@ mod tests {
 
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut ctx = MockCtx::new(2);
-        // A full channel is the connect-time condition that shut the MCU down.
         ctx.accept_request = false;
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
@@ -1238,8 +1149,6 @@ mod tests {
 
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut ctx = MockCtx::new(2);
-        // A full request channel is exactly the connect-time condition that
-        // shut the MCU down; recording config must be immune to it.
         ctx.accept_request = false;
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
@@ -1265,8 +1174,6 @@ mod tests {
 
         tmc_set_voltage_limit(&mut ctx, &mut sender, 10, 20_000);
 
-        // Recorded in channel state for the TMC task to apply on its control
-        // tick; config setters no longer consume a request-channel slot.
         assert_eq!(tmc_state.voltage_limit_cfg.load(Relaxed), 20_000);
         assert_ne!(
             tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_VOLTAGE_LIMIT,
@@ -1289,7 +1196,6 @@ mod tests {
 
         tmc_set_voltage_limit(&mut ctx, &mut sender, 10, 0);
 
-        // Raw chip minimum is accepted, not rejected as out of range.
         assert_eq!(tmc_state.voltage_limit_cfg.load(Relaxed), 0);
         assert_ne!(
             tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_VOLTAGE_LIMIT,
@@ -1730,14 +1636,6 @@ mod tests {
         );
     }
 
-    /// Regression guard for the whole connect-time config allowlist: exactly
-    /// the nine handlers below must be immune to `QueueFull` (they never
-    /// touch the TMC request queue at all), and `tmc_set_motion_scale` must
-    /// remain the one exception that still enqueues and shuts down on
-    /// `QueueFull`. Individual handlers each have their own focused test
-    /// from the task that converted them; this test exists so a future
-    /// handler that forgets to convert (or a regression that reintroduces
-    /// an enqueue) fails here even if every per-handler test still passes.
     #[test]
     fn connect_time_config_handlers_are_immune_to_queue_full() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
@@ -1778,21 +1676,6 @@ mod tests {
         );
     }
 
-    /// Every connect-time handler must raise its pending bit with `Release`.
-    ///
-    /// Raising the bit is what publishes the value stored just above it, and
-    /// the drain claims the bit with `Acquire` before reading that value.
-    /// `Acquire` only orders against a `Release` on the writing side, so a
-    /// relaxed raise leaves the pair unsynchronised: the store and the raise
-    /// may be reordered against each other, and a drain that claims the bit
-    /// in between applies the previous value while clearing the bit that
-    /// pointed at the new one -- the lost update this mechanism exists to
-    /// prevent.
-    ///
-    /// Guarded at the source because the property is invisible to a host
-    /// test: x86 will not reorder these stores, so a handler added with
-    /// relaxed ordering passes every behavioural test and only misbehaves on
-    /// the Cortex-M targets this firmware ships to.
     #[test]
     fn connect_time_config_handlers_raise_their_pending_bit_with_release_ordering() {
         let source = include_str!("tmc.rs");

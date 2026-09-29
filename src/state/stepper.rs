@@ -1,6 +1,4 @@
-//! Stepper protocol state: position target, step interval/direction,
-//! timer-active mirror, actual position. The heapless step-queue and
-//! HardwareStepper handles stay board-local.
+//! Stepper protocol state shared across priorities.
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32};
 
@@ -13,19 +11,15 @@ pub const NO_STEPPER_CHANNEL: u8 = u8::MAX;
 /// Channel that first observed a fatal step deadline miss.
 pub static STEPPER_DEADLINE_MISS_CHANNEL: AtomicU8 = AtomicU8::new(NO_STEPPER_CHANNEL);
 
-/// Cross-priority runtime state for one board-local stepper channel.
+/// Cross-priority runtime state for one stepper channel.
 pub struct StepperChannelState {
-    /// Stepper position target, updated by protocol dispatch.
     pub position_target: AtomicI32,
-    /// Step count incremented by the hardware step ISR.
     pub position: AtomicI32,
     /// Current step interval in board timer ticks.
     pub interval: AtomicU32,
-    /// Current segment interval delta in board timer ticks per step.
+    /// Interval delta in board timer ticks per step.
     pub interval_add: AtomicI32,
-    /// Current step direction.
     pub direction: AtomicBool,
-    /// P1-readable mirror of board-local step timer activity.
     pub timer_active_mirror: AtomicBool,
     planner_steps_per_rev: AtomicU32,
 }
@@ -62,10 +56,8 @@ impl StepperChannelState {
             .store(value, core::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Returns the configured logical planner steps per mechanical revolution.
-    ///
-    /// The complete scale's acquire publication gate is checked before reading
-    /// this cross-state planner mirror.
+    /// Configured logical planner steps per mechanical revolution; `None` until the motion scale is
+    /// configured.
     pub fn planner_steps_per_rev(
         &self,
         tmc_state: &crate::state::tmc::TmcChannelState,
@@ -92,7 +84,7 @@ pub fn stepper_channel(channel: u8) -> Option<&'static StepperChannelState> {
     STEPPER_CHANNELS.get(channel as usize)
 }
 
-/// Return the OpenFFBoard-compatible channel-0 runtime state.
+/// Runtime state for board-local channel 0.
 pub fn stepper_channel0() -> &'static StepperChannelState {
     &STEPPER_CHANNELS[0]
 }

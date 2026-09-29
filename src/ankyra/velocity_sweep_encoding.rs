@@ -6,9 +6,6 @@ pub const VELOCITY_SWEEP_CANONICAL_RECORD_MAX: usize = 128;
 const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// One fixed-width canonical velocity-sweep evidence record.
-///
-/// The same bytes feed the firmware integrity digest and the trace-only offline
-/// audit stream, preventing those two representations from drifting apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VelocitySweepCanonicalRecord {
     bytes: [u8; VELOCITY_SWEEP_CANONICAL_RECORD_MAX],
@@ -131,11 +128,6 @@ pub(crate) fn encode_rate_values(values: [i64; 5]) -> ([i32; 5], u8) {
 }
 
 /// Encode command-lifetime outer-safety timing outside stage evidence digests.
-///
-/// Raw-only: its sole caller is the raw-emission helper
-/// `emit_outer_safety_timing_trace`, which pushes the encoded record to
-/// `record_velocity_sweep_trace_record`. Kept on the raw-emission `trace`
-/// feature rather than un-gated with the rest of the digest-path encoders.
 #[cfg(feature = "trace")]
 pub(crate) fn encode_outer_safety_timing_record(
     engine_sequence: u32,

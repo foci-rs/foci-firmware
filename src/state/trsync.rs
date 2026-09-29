@@ -1,5 +1,4 @@
-//! Trsync protocol state: homing FSM, homing-triggered oid, endstop
-//! pin map.
+//! Trsync homing state machine, triggered oid, and endstop pin map.
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32};
 
@@ -8,42 +7,23 @@ use foci_klipper::state::NUM_ENDSTOPS;
 /// One past the highest valid physical-GPIO pin number in the Klipper
 /// pin enumeration (`PA0`..`PE15` = 0..79). Pin values at or above this
 /// are virtual (no GPIO backing) and must not be passed to GPIO helpers.
-///
-/// Matches `GPIO_NUM_PORTS * 16` (5 ports × 16 pins) defined in
-/// `openffboard-fw::helpers::trsync`.
 pub const GPIO_MAX_PIN_VALUE: u8 = 5 * 16;
 
 /// Homing I-suppression state machine.
 /// 0=Idle, 1=SuppressPending, 2=Suppressing, 3=RestorePending
 pub static HOMING_STATE: AtomicU8 = AtomicU8::new(0);
 
-/// Klipper clock at which the pending homing move's steps begin.
-///
-/// Klipper derives a trsync's `report_clock` from the homing move's start
-/// clock, so `stepper_stop_on_trigger` records the linked trsync's report
-/// clock here. That command itself arrives as soon as the host plans the
-/// home, often while the previous move is still stepping, so neither the
-/// state-1 step hold nor the P1 clamp may key off its receipt: the hold
-/// defers only steps scheduled at or after this clock, and P1 applies the
-/// clamp a fixed lead ahead of it. On a later MCU of a multi-MCU home Klipper
-/// offsets the report clock by up to 0.3 x the trsync timeout after the start.
+/// Klipper clock at which the pending homing move's steps begin; steps scheduled earlier are not
+/// held.
 pub static HOMING_START_CLOCK: AtomicU32 = AtomicU32::new(0);
 
-/// A homing pass registered while the previous pass was still being torn
-/// down (state 2 or 3), so the tick must re-enter state 1 after the restore
-/// instead of returning to idle.
-///
-/// Klipper's second homing pass registers within milliseconds of the first
-/// pass's trigger, before the tick has restored run current; without this
-/// the registration would be lost and the second pass would run unclamped.
+/// A homing pass registered while the previous pass was still tearing down (state 2 or 3); the tick
+/// re-enters state 1 after the restore instead of returning to idle.
 pub static HOMING_REENTER_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Begin homing preparation for a move whose steps start at `start_clock`.
 ///
-/// Publishes the start clock before the idle-to-pending transition so no
-/// reader can observe state 1 with a stale clock. Returns whether this call
-/// made the transition; a second stepper registering on the same trsync
-/// records the same clock and returns `false`.
+/// Returns whether this call made the idle-to-pending transition.
 pub fn begin_homing_preparation(start_clock: u32) -> bool {
     use core::sync::atomic::Ordering::Relaxed;
     HOMING_START_CLOCK.store(start_clock, Relaxed);
@@ -59,9 +39,7 @@ pub fn begin_homing_preparation(start_clock: u32) -> bool {
 
 /// Whether a step scheduled at `step_clock` must wait for homing preparation.
 ///
-/// Only steps at or after [`HOMING_START_CLOCK`] are held, while
-/// [`HOMING_STATE`] is 1 or a re-entry is queued behind a restore; steps of
-/// a move still in flight when the host announced the home run on schedule.
+/// Only steps at or after [`HOMING_START_CLOCK`] are held.
 pub fn step_held_for_homing(step_clock: u32) -> bool {
     use core::sync::atomic::Ordering::Relaxed;
     (HOMING_STATE.load(Relaxed) == 1 || HOMING_REENTER_PENDING.load(Relaxed))

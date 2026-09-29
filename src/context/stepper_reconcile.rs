@@ -80,11 +80,9 @@ impl<const CHANNELS: usize> StepperReconcilePending<CHANNELS> {
 
     /// Transfer currently published work into one local snapshot.
     ///
-    /// The masks transfer independently. A stop published between the two
-    /// swaps can follow an arm captured in the earlier snapshot. Stop
-    /// producers publish `motor_armed = false` before the stop bit, so the
-    /// captured arm reads current state and no-ops before the stop snapshot
-    /// reconciles authoritative timer state.
+    /// The two masks transfer independently; a stop published between the swaps can follow an arm
+    /// captured earlier, which is safe because stop producers clear `motor_armed` before the stop
+    /// bit.
     pub fn take_pending(&self) -> PendingStepperReconciliation<CHANNELS> {
         PendingStepperReconciliation {
             stop_mask: self.stop_mask.swap(0, Ordering::Acquire),

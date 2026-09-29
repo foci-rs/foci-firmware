@@ -1,15 +1,5 @@
-//! Per-capability context traits that board crates implement on their
-//! concrete `FirmwareCtx<'a>` struct. Handlers in `ankyra::handlers`
-//! take `ctx: &mut dyn <TraitName>` — the narrowest trait covering
-//! the operations that handler performs.
-//!
-//! All traits must be dyn-safe: no generic methods, no closure
-//! parameters, no associated items. If a caller needs composed
-//! capabilities (`StateAccess + TmcHost`), use a supertrait bound
-//! (`trait X: StateAccess + TmcHost {}` with blanket impl).
-//!
-//! Each trait method exists because at least one handler body requires
-//! it.
+//! Per-capability context traits that board crates implement on `FirmwareCtx`.
+//! All traits must be dyn-safe.
 
 pub mod stepper;
 pub mod stepper_reconcile;
@@ -48,9 +38,6 @@ pub trait BoardChannels {
 }
 
 /// Klipper MCU clock source (typically a CPU timer counter).
-///
-/// Separated from `ShutdownRecovery` so the pure clock-reporting
-/// handlers (`get_clock`, `get_uptime`) bind to the minimum surface.
 pub trait ClockSource {
     fn now(&self) -> u32;
 }
@@ -67,19 +54,10 @@ pub trait ShutdownRecovery: StateAccess + ClockSource {
     fn reset_to_bootloader(&mut self) -> !;
 
     /// Emit a `klipper_shutdown` message on the firmware's transport.
-    ///
-    /// Cross-crate bridge: lifted handlers (living in `foci-firmware`)
-    /// cannot invoke `::ankyra::klipper_shutdown!` directly because the
-    /// macro expands to a `crate::_ankyra_config::…` path that only
-    /// resolves in the board binary. The board-side impl dispatches
-    /// through [`crate::dispatch_shutdown!`] to the matching
-    /// `klipper_shutdown_from!` call.
     fn send_shutdown(&mut self, reason: crate::shutdown::ShutdownReason, clock: u32);
 }
 
-/// Endstop GPIO configuration and sampling. Pure hardware access;
-/// runtime state lives inside the trigger domain and is reached via
-/// `TrsyncHost`.
+/// Endstop GPIO configuration and sampling.
 pub trait EndstopHost: StateAccess {
     fn configure_input(&mut self, pin: u8, pull_up: bool);
     fn read_pin(&self, pin: u8) -> bool;
@@ -87,23 +65,11 @@ pub trait EndstopHost: StateAccess {
     fn stall_channel_for_pin(&self, pin: u8) -> Option<u8>;
 }
 
-/// Board-specific analog-in pin resolution. Stateless by design -- the
-/// implementing board's context type just forwards to its own
-/// `board_config::analog_pin_channel`. All *stateful* sampling data lives
-/// in `analog_in::ANALOG_CHANNELS`, a process-wide static reachable
-/// without going through this trait at all (each board's heartbeat, which
-/// samples the channels and sends `analog_in_state`, never implements or
-/// needs this trait).
+/// Board-specific analog-in pin resolution.
 pub trait AnalogInHost {
     fn resolve_analog_pin(&self, pin: u8) -> Option<u8>;
 }
 
-/// Composite bound for the `config_reset` handler: needs shutdown
-/// recovery (to enter shutdown on error), clock reporting (for the
-/// `klipper_shutdown!` clock arg), and full trigger-domain reset.
-///
-/// `&mut dyn Trait1 + Trait2` is not a valid trait-object type in
-/// stable Rust for two non-auto traits; this named supertrait is the
-/// dyn-safe way to compose the capabilities the handler needs.
+/// Composite bound for the `config_reset` handler.
 pub trait LifecycleReset: ShutdownRecovery + TrsyncHost {}
 impl<T: ?Sized + ShutdownRecovery + TrsyncHost> LifecycleReset for T {}

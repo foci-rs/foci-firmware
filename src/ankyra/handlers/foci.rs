@@ -1,17 +1,4 @@
-//! FOCI-specific `foci_*` command handlers: selftest, calibration,
-//! commissioning and its cancel, homing configuration, stall query, and
-//! diagnostic readouts (register dump, ADC VM offset, stack watermark).
-//!
-//! Handler bodies bind to the capability traits declared in
-//! [`crate::context`]; the board crate wires up the trait impls on its
-//! own `FirmwareCtx`. `foci_tune` stays board-local because its
-//! implementation calls `foci_tune_inner`, which emits replies via the
-//! board-local ankyra transport sender.
-//!
-//! Failure replies for commissioning/calibration are emitted
-//! synchronously so the host always sees a terminal reply even when the
-//! request cannot be enqueued; progress/success replies arrive later
-//! from the `tmc_control` task.
+//! FOCI-specific `foci_*` command handlers.
 
 use ankyra::prelude::klipper_command;
 use core::sync::atomic::Ordering::Relaxed;
@@ -28,10 +15,8 @@ const STACK_WATERMARK_STATUS_NOT_PAINTED: u8 = 1;
 const STACK_WATERMARK_STATUS_LOWER_BOUND: u8 = 2;
 const STACK_WATERMARK_STATUS_MOTION_ACTIVE: u8 = 3;
 
-/// Trigger TMC4671 self-test diagnostic via the commissioning engine.
-///
-/// Only one commissioning operation may be in flight at a time.
-/// Concurrent requests are rejected with `CommissionError::AlreadyRunning`.
+/// Trigger TMC4671 self-test via the commissioning engine.
+/// Rejected with `CommissionError::AlreadyRunning` if a commissioning operation is in flight.
 #[klipper_command]
 pub fn foci_selftest(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     let Some((channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -59,22 +44,13 @@ pub fn foci_selftest(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     }
 }
 
-/// Calibrate the TMC4671: ADC offset calibration, encoder alignment,
-/// and closed-loop entry via the commissioning engine.
-///
-/// Must be called after `tmc_set_motion_scale` populates the channel step width.
-/// Rejected if the step width is unset, or if another commissioning
-/// operation is already in flight.
+/// Calibrate the TMC4671: ADC offset, encoder alignment, closed-loop entry.
+/// Requires the channel step width from `tmc_set_motion_scale`; rejected if unset or if a commissioning operation is in flight.
 #[klipper_command]
 pub fn foci_calibrate(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     let Some((channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
-    // Pre-flight: the physical pulse width must have been populated by a prior
-    // tmc_set_motion_scale command. If it hasn't, fail before touching hardware
-    // — otherwise calibration would succeed but the motor would silently
-    // refuse to respond to step pulses. The engine's ClosedLoopActivation
-    // phase also checks the named configured physical width.
     if state.physical_step_width().is_none() {
         defmt::error!(
             "foci_calibrate rejected: STEP_WIDTH not configured (call tmc_set_motion_scale first)"
@@ -117,19 +93,10 @@ pub fn foci_calibrate(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     }
 }
 
-/// Dump all TMC4671 registers via klipper_output protocol.
-///
-/// The firmware reads registers internally and streams results as
-/// `foci_dump_value` replies terminated by `foci_dump_done`. Replaces
-/// Python-side register reads. If the queue is full the request is
-/// dropped silently; the Python wait loop timeout handles the missing
-/// reply naturally.
+/// Dump all TMC4671 registers as `foci_dump_value` replies terminated by `foci_dump_done`.
+/// If the queue is full the request is dropped silently.
 #[klipper_command]
 pub fn foci_dump_registers(ctx: &mut dyn FociRuntimeHost, oid: u8) {
-    // Surface any panic/HardFault or interrupted breakaway campaign recovered
-    // from no-init RAM on the previous boot, once, riding the dump the host
-    // already issues on connect. A completed breadcrumb remains useful context
-    // for a fault but is quiet on its own.
     let fault = crate::diagnostic::take_last_panic();
     let breadcrumb = crate::diagnostic::take_last_boot_breakaway_breadcrumb();
     if fault.is_some() || breadcrumb.is_some_and(|record| record.interrupted) {
@@ -161,11 +128,7 @@ pub fn foci_dump_registers(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     }
 }
 
-/// Return the cached ADC_VM mode-5 startup offset for voltage decoding.
-///
-/// This query is intentionally passive: it does not touch TMC registers or
-/// enqueue a measurement. Board startup captures the offset before any motor
-/// enable path; the host reads that cached evidence during connect.
+/// Return the cached ADC_VM mode-5 startup offset; does not touch TMC registers.
 #[klipper_command]
 pub fn foci_adc_vm_offset(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -190,25 +153,9 @@ pub fn foci_adc_vm_offset(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     );
 }
 
-/// Report the MSP stack high-water mark from the boot-time sentinel paint.
-///
-/// Host-triggered by design: the reply describes the deepest point the stack
-/// has reached since boot, so it must be issued after the workload under test
-/// rather than sampled automatically. The scan masks interrupts, so this is not
-/// something to poll and not something to issue during motion.
-///
-/// The scan masks interrupts, which would delay the step timer and the position
-/// tick, so it is refused with `status = 3` unless every channel is disarmed,
-/// its step queue empty, and its step timer idle. That quiescence check is
-/// handed to the scan rather than made here, so it runs inside the same
-/// critical section that masks the walk; deciding it out here would leave a
-/// window for an interrupt to start motion between the answer and the mask.
-///
-/// `status` is otherwise 0 when the scan reached the first overwritten word, 1
-/// on a board that never painted, and 2 when the scan window ran out with every
-/// word still holding the sentinel, which makes `stack_unused_bytes` a lower
-/// bound on headroom rather than a measurement of it. See
-/// [`crate::stack_watermark`].
+/// Report the MSP stack high-water mark since boot.
+/// The scan masks interrupts, so it is refused with `status = 3` unless every channel is disarmed, its step queue empty, and its step timer idle.
+/// Otherwise `status` is 0 (first overwritten word found), 1 (board never painted), or 2 (window exhausted; `stack_unused_bytes` is a lower bound).
 #[klipper_command]
 pub fn foci_stack_watermark(ctx: &mut dyn TmcHost, oid: u8) {
     use crate::stack_watermark::StackScan;
@@ -241,10 +188,8 @@ pub fn foci_stack_watermark(ctx: &mut dyn TmcHost, oid: u8) {
     );
 }
 
-/// Start current-loop commissioning (diagnostics + current tune + closed-loop entry).
-///
-/// Only one commissioning operation may be in flight at a time.
-/// Concurrent requests are rejected with `CommissionError::AlreadyRunning`.
+/// Start current-loop commissioning (diagnostics, current tune, closed-loop entry).
+/// Rejected with `CommissionError::AlreadyRunning` if a commissioning operation is in flight.
 #[klipper_command]
 pub fn foci_commission(ctx: &mut dyn FociRuntimeHost, oid: u8, profile: u8) {
     let Some((channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -273,11 +218,7 @@ pub fn foci_commission(ctx: &mut dyn FociRuntimeHost, oid: u8, profile: u8) {
     }
 }
 
-/// Request cancellation of the in-flight commissioning run on one channel.
-///
-/// A no-op if the channel has no commissioning run in flight -- the engine's
-/// own run-start path clears any stale request, so setting the flag here is
-/// always safe regardless of timing.
+/// Request cancellation of the in-flight commissioning run on one channel; no-op if none.
 #[klipper_command]
 pub fn foci_commission_cancel(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -286,23 +227,11 @@ pub fn foci_commission_cancel(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     state.cancel_requested.store(true, Relaxed);
 }
 
-/// Upper bound on the stall ceiling and margin: a quarter revolution, the
-/// same cap the host applies to stall_ceiling_mm/stall_margin_mm.
 const STALL_THRESHOLD_MAX_UNITS: u32 = 16_384;
 
 /// Store the homing-move clamp current and stall detector tunables.
-///
-/// `homing_ma` of 0 disables the clamp and the detector on this channel.
-/// `stall_units` is the unconditional ceiling and `margin_units` the
-/// baseline-relative margin, both in TMC position units (65536 per
-/// revolution); `persistence` the number of consecutive control ticks
-/// either check must hold before latching. Out-of-range values, or
-/// `margin_units >= stall_units`, are a config error and enter shutdown.
-/// `homing_ma` above the board's run current cap is a config error and
-/// enters shutdown with nothing stored. Below the cap it is stored as-is
-/// and the homing tick, which owns the board current scale and the stored
-/// run limit, still refuses to clamp when the converted value is not
-/// below the run limit.
+/// `homing_ma` of 0 disables the clamp and detector on this channel. `stall_units` is the unconditional ceiling and `margin_units` the baseline-relative margin, in TMC position units (65536 per revolution); `persistence` is the consecutive control ticks a check must hold before latching.
+/// Out-of-range values, `margin_units >= stall_units`, or `homing_ma` above the board run current cap enter shutdown with nothing stored.
 #[klipper_command]
 pub fn foci_config_homing(
     ctx: &mut dyn FociRuntimeHost,
@@ -353,8 +282,7 @@ pub fn foci_config_homing(
     state.stall_persistence.store(persistence, Relaxed);
 }
 
-/// Report the most recent homing-mode stall outcome and whether the clamp is
-/// still in force.
+/// Report the most recent homing-mode stall outcome and whether the clamp is still in force.
 #[klipper_command]
 pub fn foci_stall_query(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -732,12 +660,6 @@ mod tests {
         assert_eq!(ctx.last_shutdown, None);
     }
 
-    /// Drive `foci_stack_watermark` the way the transport does: encode `oid`
-    /// as Klipper VLQ, hand the bytes to the generated dispatch wrapper so the
-    /// argument is decoded off the wire, then re-decode the emitted reply's
-    /// encoded payload field by field. A descriptor typo or a field-order or
-    /// field-type drift fails here, where calling the handler directly and
-    /// reading the Rust struct back would not notice.
     fn dispatch_stack_watermark_over_the_wire(oid: u8) -> StackWatermarkReply {
         dispatch_stack_watermark_with_motion(oid, true)
     }
@@ -904,7 +826,7 @@ mod tests {
         tmc_state.stall_peak_error_units.store(1234, Relaxed);
         tmc_state.stall_trigger_tick.store(77, Relaxed);
         tmc_state.homing_clamp_active.store(true, Relaxed);
-        tmc_state.stall_trigger_path.store(2, Relaxed); // Margin
+        tmc_state.stall_trigger_path.store(2, Relaxed);
         tmc_state.stall_peak_margin_delta_units.store(45, Relaxed);
 
         foci_stall_query(&mut ctx, &mut sender, 10);
@@ -985,8 +907,8 @@ mod tests {
             (16_385, 100, 3),
             (819, 0, 3),
             (819, 16_385, 3),
-            (819, 819, 3), // margin_units == stall_units, not < it
-            (819, 900, 3), // margin_units > stall_units
+            (819, 819, 3),
+            (819, 900, 3),
             (819, 100, 0),
         ] {
             let mut ctx = MockCtx::new(2);

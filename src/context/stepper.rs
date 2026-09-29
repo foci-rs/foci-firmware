@@ -1,7 +1,4 @@
 //! Shared stepper context boundary and policy helpers.
-//!
-//! `StepperHost` is the handler-facing trait. The remaining items are
-//! board-hook traits and shared policy helpers used by board crates.
 
 use foci_klipper::commands::CommandError;
 use foci_klipper::commands::stepper::{QueueStepResult, queue_step_hw, reset_step_clock_hw};
@@ -9,28 +6,20 @@ use foci_klipper::stepper::StepMove;
 
 use super::trsync::TriggerDomainState;
 
-/// Stepper subsystem: direction/queue/clock operations exposed at the
-/// granularity the handler bodies actually need.
-///
-/// The step-timer / stop-check helpers exercised only by the RTIC task graph
-/// are intentionally separate from the handler-facing trait.
+/// Handler-facing stepper operations; step-timer and stop-check helpers used only by the RTIC task
+/// graph live in the board-hook traits.
 pub trait StepperHost: super::StateAccess {
-    /// Capture the direction bit for the next enqueued move on `channel`.
     fn set_next_step_dir(&mut self, channel: u8, forward: bool);
 
-    /// Enqueue a trapezoidal move onto the hardware step queue for `channel`.
     fn queue_step_move(&mut self, channel: u8, move_: StepMove) -> Result<(), StepperEnqueueError>;
 
-    /// Reset the step-clock reference for `channel`.
     fn reset_step_clock(&mut self, channel: u8, clock: u32) -> Result<(), CommandError>;
 }
 
 /// Queue drain accounting returned by board-local reset hooks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StepperDrainStats {
-    /// Number of stale move segments drained from the board queue.
     pub segments: u32,
-    /// Number of stale steps represented by drained move segments.
     pub steps: u32,
 }
 
@@ -45,30 +34,14 @@ impl StepperDrainStats {
 /// Distinct command-path failures while validating or enqueuing a move.
 #[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
 pub enum StepperEnqueueError {
-    /// A prerequisite board lookup failed before enqueue.
     Command(CommandError),
-    /// The physical move queue could not accept the segment.
-    QueueFull {
-        /// Board-local channel that rejected the segment.
-        channel: u8,
-        /// Queue length observed at the failed insertion.
-        queue_len: usize,
-    },
-    /// A move with no logical steps was rejected.
-    ZeroCount {
-        /// Board-local channel that rejected the segment.
-        channel: u8,
-    },
-    /// Motion was requested before the logical pulse mapper was installed.
-    MissingMotionScale {
-        /// Board-local channel that rejected the segment.
-        channel: u8,
-    },
+    QueueFull { channel: u8, queue_len: usize },
+    ZeroCount { channel: u8 },
+    MissingMotionScale { channel: u8 },
 }
 
 /// Board hook that keeps TriggerDomain timer state and the P1 mirror in sync.
 pub trait StepperTimerStateBoard {
-    /// Set shared timer-active state and update the board's P1-readable mirror.
     fn set_timer_active(
         &mut self,
         state: &mut TriggerDomainState,
@@ -79,28 +52,20 @@ pub trait StepperTimerStateBoard {
 
 /// Board hooks needed by shared `queue_step_move` policy.
 pub trait StepperQueueBoard: StepperTimerStateBoard {
-    /// Map an already validated command channel to a trigger-domain stepper.
     fn queue_stepper_index(&self, channel: u8) -> Result<usize, CommandError>;
 
-    /// Return whether the channel's logical-to-physical mapper is installed.
     fn motion_scale_configured(&self, channel: u8) -> Result<bool, CommandError>;
 
-    /// Prepare the move with board-local P2 stepper state and enqueue it.
     fn prepare_and_enqueue(&mut self, channel: u8, move_: StepMove) -> Result<usize, usize>;
 
-    /// Return whether the motor channel is electrically armed.
     fn motor_armed(&self, channel: u8) -> bool;
 
-    /// Record a discarded segment.
     fn record_discarded_segment(&mut self, _channel: u8, _steps: u32) {}
 
-    /// Record queue-full diagnostics.
     fn record_queue_full(&mut self, _channel: u8, _queue_len: usize) {}
 
-    /// Record an accepted segment and trace queue depth.
     fn record_queued_segment(&mut self, _channel: u8, _steps: u32, _queue_len: usize) {}
 
-    /// Arm the board timer after shared policy has accepted a queued move.
     fn arm_queue_step_timer(
         &mut self,
         state: &mut TriggerDomainState,
@@ -111,40 +76,31 @@ pub trait StepperQueueBoard: StepperTimerStateBoard {
 
 /// Board hooks needed by shared `reset_step_clock` policy.
 pub trait StepperResetBoard {
-    /// Map an already validated command channel to a trigger-domain stepper.
     fn reset_stepper_index(&self, channel: u8) -> Result<usize, CommandError>;
 
     /// Drain stale queued moves after `reset_step_clock_hw` accepts the reset.
     fn drain_step_queue(&mut self, channel: u8) -> Result<StepperDrainStats, CommandError>;
 
-    /// Reset board-local P2 and ISR stepper clocks.
     fn reset_stepper_clocks(&mut self, channel: u8, clock: u32) -> Result<(), CommandError>;
 
-    /// Record board-local reset diagnostics.
     fn record_reset_step_clock(&mut self, _channel: u8, _clock: u32, _stats: StepperDrainStats) {}
 }
 
 /// Board hooks needed by shared P2 stop-check policy.
 pub trait StepperStopCheckBoard: StepperTimerStateBoard {
-    /// Map a P2 stop-check channel to a trigger-domain stepper.
     fn stop_check_index(&self, channel: u8) -> Option<usize>;
 
-    /// Perform board-local stop-check side effects and clear timer-active.
     fn clear_step_timer(&mut self, state: &mut TriggerDomainState, stepper_idx: usize, channel: u8);
 }
 
 /// Board hooks needed by shared P2 arm-check policy.
 pub trait StepperArmCheckBoard: StepperTimerStateBoard {
-    /// Map a P2 arm-check channel to a trigger-domain stepper.
     fn arm_check_index(&self, channel: u8) -> Option<usize>;
 
-    /// Return whether the motor channel is electrically armed.
     fn motor_armed(&self, channel: u8) -> bool;
 
-    /// Return whether queued moves are waiting for this channel.
     fn queue_has_moves(&self, channel: u8) -> bool;
 
-    /// Perform board-local arm-check side effects and set timer-active.
     fn arm_check_timer(&mut self, state: &mut TriggerDomainState, stepper_idx: usize, channel: u8);
 }
 
@@ -220,13 +176,11 @@ pub fn reset_step_clock<B: StepperResetBoard + ?Sized>(
     Ok(())
 }
 
-/// Record a host segment discarded under `need_reset` and return whether it
-/// is the first worth logging in this episode.
+/// Record a host segment discarded under `need_reset`; returns whether it is the first worth
+/// logging in this episode.
 ///
-/// A trigger stop silences its own episode when it fires, since the host
-/// keeps streaming until it has processed the trigger, and a disarmed motor
-/// is not being driven. Anything else means the host is stepping a channel
-/// the firmware stopped without telling it.
+/// A trigger stop or a disarmed motor silences its own episode; anything else means the host is
+/// stepping a channel the firmware stopped without telling it.
 pub fn note_host_segment_discarded(
     state: &mut TriggerDomainState,
     stepper_idx: usize,

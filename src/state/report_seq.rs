@@ -1,11 +1,7 @@
 //! Per-channel diagnostic report sequence counters.
 //!
-//! Every fragment and terminal reply emitted for one diagnostic report
-//! shares a `report_seq` value drawn once per report from the channel the
-//! request targeted. The host uses it to detect a dropped fragment when
-//! the USB staging buffer silently discards a frame: a terminal reply
-//! whose fragments do not carry a matching sequence is treated as if the
-//! fragment never arrived.
+//! All fragments and the terminal reply of one report share a `report_seq`, so the host can
+//! detect fragments dropped by USB staging.
 
 use core::sync::atomic::{AtomicU8, Ordering::Relaxed};
 
@@ -25,8 +21,6 @@ pub fn next_report_seq(channel: u8) -> u8 {
 }
 
 /// Reset every channel's report sequence counter to zero.
-///
-/// Test seam only: lets tests assert on deterministic sequence values.
 #[cfg(test)]
 pub fn reset_report_seq() {
     for counter in &REPORT_SEQ {

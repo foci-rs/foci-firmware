@@ -1,12 +1,8 @@
-//! Firmware-wide `#[klipper_constant]` items registered into the
-//! Klipper data dictionary's `config` section. Board-specific
-//! constants (`CLOCK_FREQ`, `MCU`, `RESERVE_PINS_*`) live in the
-//! board crate.
+//! Firmware-wide `#[klipper_constant]` items for the Klipper data dictionary `config` section.
 
 use ankyra::prelude::klipper_constant;
 
-/// Klipper-protocol receive-window size in bytes. Matches the
-/// anchor reference implementation.
+/// Klipper-protocol receive-window size in bytes.
 #[klipper_constant]
 pub const RECEIVE_WINDOW: u32 = 192;
 

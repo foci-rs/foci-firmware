@@ -1,10 +1,4 @@
-//! Stepper command handlers: `config_stepper`, `queue_step`,
-//! `set_next_step_dir`, `reset_step_clock`, `stepper_get_position`,
-//! `stepper_get_commanded_position`, `stepper_stop_on_trigger`.
-//!
-//! Handler bodies bind to the capability traits declared in
-//! [`crate::context`] instead of concrete board types; the board crate
-//! wires up the trait impls on its own `FirmwareCtx`.
+//! Stepper command handlers.
 
 use core::sync::atomic::Ordering::Relaxed;
 
@@ -15,10 +9,8 @@ use crate::shutdown::ShutdownReason;
 use crate::state::stepper::stepper_channel;
 use crate::state::trsync::begin_homing_preparation;
 
-/// Register a stepper motor object.
-///
-/// STEP/DIR pins must be FOCI virtual pins that map to the same board-local
-/// TMC4671 channel. The TMC4671 handles stepping internally after config.
+/// Register a stepper object.
+/// STEP/DIR pins must be FOCI virtual pins mapping to the same board-local TMC4671 channel.
 #[klipper_command]
 pub fn config_stepper(
     ctx: &mut dyn StepperConfigHost,
@@ -81,10 +73,6 @@ pub fn config_stepper(
 }
 
 /// Enqueue a trapezoidal move segment for a stepper.
-///
-/// Delegates to [`StepperHost::queue_step_move`] which handles the
-/// trigger-domain critical section, need-reset check, direction
-/// preparation, SPSC queue push, and step-timer arming.
 #[klipper_command]
 pub fn queue_step(ctx: &mut dyn StepperQueue, oid: u8, interval: u32, count: u16, add: i16) {
     let Some(channel) = stepper_channel_or_shutdown(ctx, oid, || {
@@ -114,8 +102,6 @@ pub fn queue_step(ctx: &mut dyn StepperQueue, oid: u8, interval: u32, count: u16
 }
 
 /// Set the direction for subsequent steps on a stepper.
-///
-/// Direction is captured per-move in `queue_step` via `prepare_move()`.
 #[klipper_command]
 pub fn set_next_step_dir(ctx: &mut dyn StepperDirection, oid: u8, dir: u8) {
     let Some(channel) = stepper_channel_or_shutdown(ctx, oid, || {
@@ -137,10 +123,7 @@ pub fn set_next_step_dir(ctx: &mut dyn StepperDirection, oid: u8, dir: u8) {
     ctx.set_next_step_dir(channel, dir != 0);
 }
 
-/// Reset the step clock reference for a stepper.
-///
-/// Only valid when the stepper is inactive (timer not armed).
-/// Triggers shutdown if called while active (matches Klipper stepper.c).
+/// Reset the step clock reference. Only valid while the stepper is inactive; shuts down otherwise.
 #[klipper_command]
 pub fn reset_step_clock(ctx: &mut dyn StepperReset, oid: u8, clock: u32) {
     let Some(channel) = stepper_channel_or_shutdown(ctx, oid, || {
@@ -190,10 +173,6 @@ fn stepper_channel_or_shutdown(
     }
 }
 
-/// A host step command on a channel the commissioning engine currently
-/// owns is a protocol violation: the engine may have the channel armed for
-/// its own stroke, so a host segment would execute inside it. Shut down,
-/// as `reset_step_clock` does for a timing violation.
 fn refuse_if_commissioning_owned(ctx: &mut dyn ShutdownRecovery, oid: u8, channel: u8) -> bool {
     let owned = crate::state::tmc::tmc_channel(channel)
         .is_some_and(|tmc| tmc.commission_in_flight.load(Relaxed));
@@ -222,10 +201,7 @@ pub fn stepper_get_position(ctx: &mut dyn StateAccess, oid: u8) {
     );
 }
 
-/// Report the commanded (target) position of a stepper.
-///
-/// For hardware step/dir this is equivalent to `stepper_get_position`
-/// since the firmware tracks only the logical step count.
+/// Report the commanded position; equals `stepper_get_position` for hardware step/dir.
 #[klipper_command]
 pub fn stepper_get_commanded_position(ctx: &mut dyn StateAccess, oid: u8) {
     let pos = stepper_position(ctx, oid);
@@ -254,14 +230,9 @@ fn stepper_position(ctx: &mut dyn StateAccess, oid: u8) -> i32 {
     state.position.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-/// Link a stepper to a TrSync so the stepper stops when the TrSync triggers.
-///
-/// Multiple steppers can be linked to the same TrSync. When a trigger fires,
-/// all linked steppers are stopped.
+/// Link a stepper to a TrSync so it stops when the TrSync triggers.
 #[klipper_command]
 pub fn stepper_stop_on_trigger(ctx: &mut dyn StepperStopOnTrigger, oid: u8, trsync_oid: u8) {
-    // Resolve stepper OID to index via State (immutable borrow; copy
-    // the index before the mutable ctx methods are called).
     let stepper_idx = match ctx.state().steppers_by_oid.get(&oid).copied() {
         Some(idx) => idx,
         None => {
@@ -298,14 +269,7 @@ pub fn stepper_stop_on_trigger(ctx: &mut dyn StepperStopOnTrigger, oid: u8, trsy
     }
 }
 
-/// Composite bound for `queue_step`: needs shutdown recovery (to enter
-/// shutdown on error, which also implies `ClockSource` and `StateAccess`
-/// via its supertraits) and the stepper host (to delegate the move
-/// enqueue operation).
-///
-/// `&mut dyn ShutdownRecovery + StepperHost` is not a valid trait-object
-/// type in stable Rust for two non-auto traits; this named supertrait is
-/// the dyn-safe way to compose the capabilities.
+/// Composite bound for `queue_step`: shutdown recovery plus the stepper host.
 pub trait StepperQueue: ShutdownRecovery + StepperHost {}
 impl<T: ?Sized + ShutdownRecovery + StepperHost> StepperQueue for T {}
 
@@ -323,20 +287,12 @@ impl<T: ?Sized + ShutdownRecovery + BoardChannels> StepperConfigHost for T {}
 /// Composite bound for `reset_step_clock`: needs shutdown recovery (to
 /// enter shutdown on error) and the stepper host (to delegate the
 /// clock-reset operation).
-///
-/// `&mut dyn ShutdownRecovery + StepperHost` is not valid as a
-/// trait-object type; this named supertrait is the dyn-safe composition.
 pub trait StepperReset: ShutdownRecovery + StepperHost {}
 impl<T: ?Sized + ShutdownRecovery + StepperHost> StepperReset for T {}
 
 /// Composite bound for `stepper_stop_on_trigger`: needs shutdown recovery
 /// (to enter shutdown on error, implying `StateAccess` and `ClockSource`
 /// via its supertraits) and the trsync host (to call `link_stepper_stop`
-/// inside the trigger-domain critical section).
-///
-/// `&mut dyn ShutdownRecovery + TrsyncHost` is not a valid trait-object
-/// type in stable Rust for two non-auto traits; this named supertrait is
-/// the dyn-safe way to compose the capabilities.
 pub trait StepperStopOnTrigger: ShutdownRecovery + TrsyncHost {}
 impl<T: ?Sized + ShutdownRecovery + TrsyncHost> StepperStopOnTrigger for T {}
 

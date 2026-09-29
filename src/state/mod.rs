@@ -1,13 +1,4 @@
-//! Shared protocol-level state primitives.
-//!
-//! Each submodule holds the `pub static` atomics (and one embassy-sync
-//! `Signal`) for one subsystem, exactly mirroring the pre-lift layout
-//! in `openffboard-fw/src/state/*`.
-//!
-//! Distinct from `crate::tmc` (the TMC4671 driver layer) and
-//! `crate::trace` (the trace ring-buffer implementation) — this module
-//! holds only concurrency primitives read/written by ankyra handlers
-//! and RTIC tasks.
+//! Shared protocol-level `pub static` atomics, one submodule per subsystem.
 
 pub mod lifecycle;
 pub mod report_seq;

@@ -1,9 +1,4 @@
-//! Endstop command handlers: `config_endstop`, `endstop_home`,
-//! `endstop_query_state`.
-//!
-//! Handler bodies bind to the capability traits declared in
-//! [`crate::context`] instead of concrete board types; the board crate
-//! wires up the trait impls on its own `FirmwareCtx`.
+//! Endstop command handlers.
 
 use ankyra::prelude::klipper_command;
 
@@ -11,16 +6,8 @@ use crate::context::{EndstopHost, ShutdownRecovery, TrsyncHost};
 use crate::shutdown::ShutdownReason;
 use crate::state::trsync::{ENDSTOP_PIN_IDS, GPIO_MAX_PIN_VALUE};
 
-/// Register an endstop object.
-///
-/// Allocates the next free endstop slot and maps the Klipper OID to it.
-/// Configures the specified GPIO pin as input with optional pull-up
-/// resistor for endstop switch reading. Virtual pins (values at or above
-/// [`GPIO_MAX_PIN_VALUE`]) are accepted but skipped for GPIO
-/// configuration; if a virtual pin maps to a TMC channel via
-/// [`EndstopHost::stall_channel_for_pin`], that channel's
-/// `stall_endstop_configured` flag is set. Every pin id, real or
-/// virtual, is stored in `ENDSTOP_PIN_IDS`.
+/// Register an endstop object on a GPIO input pin.
+/// Virtual pins (>= `GPIO_MAX_PIN_VALUE`) skip GPIO setup and may map to a TMC stall channel.
 #[klipper_command]
 pub fn config_endstop(ctx: &mut dyn EndstopConfigHost, oid: u8, pin: u8, pull_up: u8) {
     let idx = match ctx.register_endstop(oid) {
@@ -35,7 +22,6 @@ pub fn config_endstop(ctx: &mut dyn EndstopConfigHost, oid: u8, pin: u8, pull_up
         }
     };
 
-    // Configure GPIO pin as input (only for real GPIO pins, not virtual).
     if pin < GPIO_MAX_PIN_VALUE {
         ctx.configure_input(pin, pull_up != 0);
         defmt::info!(
@@ -64,12 +50,8 @@ pub fn config_endstop(ctx: &mut dyn EndstopConfigHost, oid: u8, pin: u8, pull_up
     ENDSTOP_PIN_IDS[idx].store(pin, core::sync::atomic::Ordering::Relaxed);
 }
 
-/// Arm an endstop for homing.
-///
-/// Configures sampling parameters and links to a TrSync for trigger
-/// notification. Schedules the first endstop sample event via the
-/// trigger scheduler (TIM5 CC2). A `sample_count` of zero acts as a
-/// disarm request; no `trsync_oid` validation is performed in that case.
+/// Arm an endstop for homing and link it to a TrSync.
+/// A `sample_count` of zero disarms; `trsync_oid` is not validated then.
 #[klipper_command]
 #[allow(clippy::too_many_arguments)]
 pub fn endstop_home(
@@ -102,9 +84,7 @@ pub fn endstop_home(
     }
 }
 
-/// Query the current state of an endstop.
-///
-/// Returns homing status, next sample clock, and current pin value.
+/// Query homing status, next sample clock, and pin value.
 #[klipper_command]
 pub fn endstop_query_state(ctx: &mut dyn EndstopConfigHost, oid: u8) {
     match ctx.endstop_query(oid) {
@@ -133,25 +113,12 @@ pub fn endstop_query_state(ctx: &mut dyn EndstopConfigHost, oid: u8) {
 }
 
 /// Composite bound for `config_endstop` and `endstop_query_state`:
-/// both handlers need shutdown recovery (to enter shutdown on error),
-/// a clock source (for the shutdown clock argument), the trigger-domain
-/// bridge (to register/query the endstop slot), and GPIO access (to
-/// configure or read the endstop pin).
-///
-/// `&mut dyn ShutdownRecovery + TrsyncHost + EndstopHost` is not a
-/// valid trait-object type in stable Rust for multiple non-auto traits;
-/// this named supertrait is the dyn-safe way to compose the capabilities.
+/// shutdown recovery, the trigger-domain bridge and the endstop host.
 pub trait EndstopConfigHost: ShutdownRecovery + TrsyncHost + EndstopHost {}
 impl<T: ?Sized + ShutdownRecovery + TrsyncHost + EndstopHost> EndstopConfigHost for T {}
 
-/// Composite bound for `endstop_home`: needs shutdown recovery (to
-/// enter shutdown on error), a clock source (for the shutdown clock
-/// argument), and the trigger-domain bridge (to configure the homing
-/// runtime and schedule sample events).
-///
-/// `EndstopHost` is not required here — the pin ID is retrieved inside
-/// the `endstop_start_homing` trait-method body from
-/// `foci_firmware::state::trsync::ENDSTOP_PIN_IDS`.
+/// Composite bound for `endstop_home`: shutdown recovery plus the
+/// trigger-domain bridge.
 pub trait EndstopHomeHost: ShutdownRecovery + TrsyncHost {}
 impl<T: ?Sized + ShutdownRecovery + TrsyncHost> EndstopHomeHost for T {}
 

@@ -1,9 +1,4 @@
-//! Digital-output command handlers: `config_digital_out`,
-//! `queue_digital_out`, `update_digital_out`.
-//!
-//! Handler bodies bind to the capability traits declared in
-//! [`crate::context`] instead of concrete board types; the board crate
-//! wires up the trait impls on its own `FirmwareCtx`.
+//! Digital-output command handlers.
 
 use ankyra::prelude::klipper_command;
 
@@ -11,10 +6,8 @@ use crate::context::{BoardChannels, ShutdownRecovery, TmcHost};
 use crate::shutdown::ShutdownReason;
 use crate::tmc::tmc_set_enable;
 
-/// Register a digital output object for motor enable/disable.
-///
-/// The pin must be a FOCI virtual enable pin that maps to a board-local
-/// TMC4671 channel.
+/// Register a digital output for motor enable/disable.
+/// The pin must be a FOCI virtual enable pin mapped to a board-local TMC4671 channel.
 #[klipper_command]
 pub fn config_digital_out(
     ctx: &mut dyn DigitalOutConfigHost,
@@ -54,8 +47,6 @@ pub fn config_digital_out(
 }
 
 /// Schedule a digital output change at a given clock time.
-///
-/// Used by Klipper for timed motor enable/disable.
 #[klipper_command]
 pub fn queue_digital_out(ctx: &mut dyn DigitalOutHost, oid: u8, clock: u32, on_ticks: u32) {
     let _ = clock;
@@ -111,13 +102,7 @@ pub fn update_digital_out(ctx: &mut dyn DigitalOutHost, oid: u8, value: u8) {
 }
 
 /// Composite bound for `queue_digital_out` and `update_digital_out`:
-/// both handlers need shutdown recovery (to enter shutdown on error),
-/// a clock source (for the shutdown clock argument), and the TMC host
-/// (to enqueue the enable/disable request).
-///
-/// `&mut dyn ShutdownRecovery + TmcHost` is not a valid trait-object
-/// type in stable Rust for two non-auto traits; this named supertrait
-/// is the dyn-safe way to compose the capabilities.
+/// shutdown recovery plus the TMC host.
 pub trait DigitalOutHost: ShutdownRecovery + TmcHost {}
 impl<T: ?Sized + ShutdownRecovery + TmcHost> DigitalOutHost for T {}
 

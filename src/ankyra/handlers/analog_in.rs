@@ -1,22 +1,12 @@
-//! Generic ADC command handlers: `config_analog_in`, `query_analog_in`.
-//!
-//! Storage lives in `crate::analog_in::ANALOG_CHANNELS`, a process-wide
-//! static reachable directly via `analog_channel`/`find_channel_by_oid` --
-//! no host trait needed for it. The only board-specific piece is pin
-//! resolution, reached through [`crate::context::AnalogInHost`].
+//! Generic ADC command handlers.
 
 use ankyra::prelude::klipper_command;
 
 use crate::analog_in::{AnalogInConfig, analog_channel, find_channel_by_oid};
 use crate::context::AnalogInHost;
 
-/// Register an analog-in object and remember which channel it maps to.
-///
-/// Resolves the wire `pin` to a board-local channel index via
-/// [`AnalogInHost::resolve_analog_pin`] and records `oid` on that
-/// channel's slot. Unknown pins are silently ignored -- no channel is
-/// mapped and a subsequent `query_analog_in` for this `oid` will not find
-/// one.
+/// Register an analog-in object mapped to the board channel for `pin`.
+/// Unknown pins are silently ignored; a later `query_analog_in` for this `oid` finds no channel.
 #[klipper_command]
 pub fn config_analog_in(ctx: &mut dyn AnalogInHost, oid: u8, pin: u8) {
     if let Some(index) = ctx.resolve_analog_pin(pin)
@@ -26,21 +16,11 @@ pub fn config_analog_in(ctx: &mut dyn AnalogInHost, oid: u8, pin: u8) {
     }
 }
 
-/// Start (or restart) sampling on the channel `config_analog_in` already
-/// assigned to `oid`.
-///
-/// `query_analog_in` carries no `pin` on the wire, so the channel is
-/// recovered via [`find_channel_by_oid`] instead of pin resolution. A
-/// `sample_count` of zero is a no-op: Klipper's reference firmware treats
-/// it as an invalid request rather than a disarm.
+/// Start (or restart) sampling on the channel assigned to `oid`.
+/// A `sample_count` of zero is a no-op, not a disarm.
 #[klipper_command]
 #[allow(clippy::too_many_arguments)]
 pub fn query_analog_in(
-    // No pin resolution needed here -- query_analog_in carries no `pin` on
-    // the wire, only `oid`. Keep this first parameter regardless: the
-    // macro unconditionally treats the first parameter as "ctx" and
-    // splices the injected sender immediately after it -- dropping this
-    // parameter would shift the sender into the wire-argument position.
     _ctx: &mut dyn AnalogInHost,
     oid: u8,
     clock: u32,
@@ -72,9 +52,6 @@ mod tests {
     use super::*;
     use crate::analog_in::{analog_channel, find_channel_by_oid};
 
-    /// Maps every pin to channel `pin as u8` -- a trivial identity mock,
-    /// sufficient since these tests exercise oid/channel bookkeeping, not
-    /// pin-resolution logic (each board's `analog_pin_channel`, tested there).
     struct MockAnalogInHost;
     impl AnalogInHost for MockAnalogInHost {
         fn resolve_analog_pin(&self, pin: u8) -> Option<u8> {

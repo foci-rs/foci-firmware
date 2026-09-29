@@ -2,32 +2,24 @@
 
 use super::{QueueFull, StateAccess};
 
-/// TMC4671 request bus. Send-only; the `tmc_control` task on the
-/// board side consumes from the channel and performs the actual
-/// register writes.
+/// TMC4671 request bus. Send-only; the board's `tmc_control` task performs the register writes.
 pub trait TmcHost: StateAccess {
     fn enqueue_request(&self, req: crate::tmc::TmcRequest) -> Result<(), QueueFull>;
 
-    /// Capture read-only idle admission for motion-scale configuration.
     fn motion_scale_idle(
         &self,
         channel: u8,
     ) -> Result<(), crate::motion_scale::MotionScaleRejection>;
 
-    /// Report whether no channel is armed, queued, or stepping.
+    /// Whether no channel is armed, queued, or stepping.
     ///
-    /// Board-implemented because only the board knows its channel count and
-    /// owns its step queues. Gates work that must not run while interrupt-driven
-    /// motion is live, so an implementation that cannot tell must answer
-    /// `false`.
+    /// Gates work that must not run while interrupt-driven motion is live; an implementation that
+    /// cannot tell must answer `false`.
     fn motion_quiescent(&self) -> bool;
 
     /// Board-specific RMS milliamp ceiling for run and homing current.
-    ///
-    /// Board-implemented; mirrors `TmcConfig::max_run_current_ma`.
     fn max_run_current_ma(&self) -> u32;
 
-    /// Emit a host-visible reason before rejecting motion-scale configuration.
     fn report_motion_scale_rejection(
         &mut self,
         oid: u8,
@@ -37,14 +29,12 @@ pub trait TmcHost: StateAccess {
 
 /// Board hook for the RTIC TMC request sender.
 pub trait TmcRequestQueueBoard {
-    /// Try to send one request to the board TMC control task.
     fn try_send_tmc_request(&self, req: crate::tmc::TmcRequest) -> bool;
 }
 
-/// Enqueue one TMC request through the board RTIC sender hook.
+/// Enqueue one TMC request through the board sender hook.
 ///
-/// This helper is intentionally send-only. It does not inspect request kind
-/// and does not reserve commissioning admission.
+/// Send-only: does not inspect the request kind or reserve commissioning admission.
 pub fn enqueue_tmc_request<B: TmcRequestQueueBoard + ?Sized>(
     board: &B,
     req: crate::tmc::TmcRequest,

@@ -1,6 +1,4 @@
-//! TMC4671 protocol state primitives. The mpsc channel sender
-//! (TMC_REQUEST_SENDER) stays in the board crate — its Sender type's
-//! generic params bind to the board's RTIC app declaration.
+//! TMC4671 protocol state shared across priorities.
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
@@ -33,19 +31,12 @@ pub const PENDING_INNER_GAINS: u8 = 1 << 4;
 /// Bitmask constant for pending outer gains configuration.
 pub const PENDING_OUTER_GAINS: u8 = 1 << 5;
 
-/// Worst-case TMC request queue slots a connect-time config handler may
-/// occupy per channel. Connect-time handlers record state atomically and
-/// apply it on the TMC task's control tick instead of enqueuing (see
-/// `TmcChannelState::config_apply_pending`); `tmc_set_motion_scale` is the
-/// one deliberate exception and still enqueues one request per call. Each
-/// board's `TMC_CHANNEL_SIZE` compile-time assertion multiplies this by
-/// `TMC_CHANNEL_COUNT` to guard that headroom.
+/// Worst-case TMC request queue slots a connect-time config handler may occupy per channel;
+/// each board asserts at compile time that `TMC_CHANNEL_SIZE` covers this times the channel count.
 pub const CONNECT_TIME_QUEUE_SLOTS_PER_CHANNEL: usize = 1;
 
 const OPTIONAL_FILTER_HZ_UNSET: u32 = u32::MAX;
 
-/// Atomic storage for an optional biquad filter cutoff in Hz.
-///
 /// `None` means no host override has been configured, `Some(0)` means the host
 /// explicitly disabled the filter, and `Some(hz)` means the host supplied a
 /// concrete cutoff.
@@ -89,8 +80,6 @@ impl AtomicOptionalFilterHz {
 
 const OPTIONAL_INVERT_UNSET: u8 = u8::MAX;
 
-/// Atomic storage for an optional encoder-direction invert flag.
-///
 /// `None` means the host has never configured encoder direction on this
 /// channel — the drain must not write a default to `ABN_DECODER_MODE` in
 /// that case, since there is no safe direction to pick blind. `Some(false)`
@@ -131,95 +120,59 @@ impl AtomicOptionalInvert {
 
 /// Runtime state for one board-local TMC4671 channel.
 pub struct TmcChannelState {
-    /// Validated current limit for PID_TORQUE_FLUX_LIMITS (0x5E).
     current_limit_value: AtomicU16,
-    /// Set by P1 after calibration, cleared on disable/fault.
     pub motor_armed: AtomicBool,
-    /// Mirrors the physical enable-pin GPIO level. Set only from
-    /// `SharedCommissioningBackend::set_commission_enable_pin`, the single
-    /// choke point that actually writes the pin in a production build —
-    /// covers both the runtime arm/disarm path and commissioning's direct
-    /// `set_enable_pin` calls.
+    /// Mirrors the physical enable-pin GPIO level; written only by
+    /// `SharedCommissioningBackend::set_commission_enable_pin`.
     pub enable_pin_asserted: AtomicBool,
-    /// Captured at commission time from the actual `MOTOR_TYPE_N_POLE_PAIRS`
-    /// write. Zero means "no commission has happened yet — sentinel check
-    /// inactive". Used by `arm_motor_electrical` to detect silent chip
-    /// resets between commission and arm.
+    /// Captured at commission time from the `MOTOR_TYPE_N_POLE_PAIRS` write; zero means no
+    /// commission yet
+    /// (sentinel check inactive). Used by `arm_motor_electrical` to detect silent chip resets.
     pub motor_sentinel: AtomicU32,
-    /// Set by every `restore_safe_state_via_backend` pass, whether or not it
-    /// had failures — a restore alone does not confirm the chip is safe to
-    /// arm, only a fresh sentinel pass does. Cleared only by
-    /// `arm_motor_electrical` immediately after the sentinel and
-    /// PI-representation readbacks succeed, before any settling write or enable-pin assertion, or by a
-    /// full `TmcChannelState::reset()`. This is the compound "safe-state
-    /// pass AND fresh sentinel pass" latch the re-arm gate is built on; do
-    /// not clear it anywhere else.
+    /// Set by every `restore_safe_state_via_backend` pass, clean or not; cleared only by
+    /// `arm_motor_electrical` after the sentinel and PI-representation readbacks succeed, or by
+    /// `reset()`.
+    /// A restore alone does not confirm the chip is safe to arm.
     pub safe_state_incomplete: AtomicBool,
-    /// Set when the most recent `restore_safe_state_via_backend` pass had
-    /// one or more verified-write or PID-error-sum-clear failures. Checked
-    /// by `arm_motor_electrical`, which refuses to arm — without even
-    /// attempting the sentinel check — while this is set. Cleared by the
-    /// next restore pass that completes with zero failures. Distinct from
-    /// `safe_state_incomplete`: this only reflects the last restore pass
-    /// itself, not whether a sentinel pass has confirmed it since.
+    /// Set when the most recent restore pass had a verified-write or PID-error-sum-clear failure;
+    /// `arm_motor_electrical` refuses to arm while set. Cleared by the next failure-free restore
+    /// pass.
     pub safe_state_last_pass_failed: AtomicBool,
-    /// Failed-write count from the most recent safe-state restore pass.
     pub safe_state_failed_writes: AtomicU8,
-    /// Address of the first register or sub-register write that failed
-    /// during the most recent safe-state restore pass. `0xFF` means none.
+    /// Address of the first write that failed in the most recent restore pass; `0xFF` means none.
     pub safe_state_first_failed_register: AtomicU8,
-    /// If the first failure was a PID error-sum clear, the logical
-    /// sub-register selector (4=torque, 5=flux, 6=velocity, 7=position).
-    /// All four sums share the same physical selector/data registers, so
-    /// `safe_state_first_failed_register` alone cannot distinguish them.
-    /// `0xFF` means the first failure was not a PID error-sum clear, or
-    /// there was no failure.
+    /// Logical sub-register selector (4=torque, 5=flux, 6=velocity, 7=position) when the first
+    /// failure
+    /// was a PID error-sum clear, since all four share one physical selector; `0xFF` otherwise.
     pub safe_state_first_failed_sub_addr: AtomicU8,
-    /// Board-monotonic millisecond timestamp of the most recent safe-state
-    /// restore pass. Diagnostic only: wraps every ~49 days.
+    /// Board-monotonic ms timestamp of the most recent restore pass; diagnostic only, wraps every
+    /// ~49 days.
     pub safe_state_failure_timestamp_ms: AtomicU32,
-    /// Total number of completed safe-state restore passes, whether clean
-    /// or not. Saturates rather than wraps. Never reset by a clean pass —
-    /// only by [`TmcChannelState::reset`].
+    /// Completed restore passes, clean or not; saturating, cleared only by
+    /// [`TmcChannelState::reset`].
     pub safe_state_pass_count: AtomicU16,
-    /// Whether firmware established the fixed Q8.8-P/Q4.12-I representation.
     pi_representation_established: AtomicBool,
-    /// Configured mechanical ABN encoder pulses per revolution.
     pub encoder_ppr: AtomicU32,
     encoder_counts_per_rev: AtomicU32,
     tmc_grid: AtomicU32,
     step_width: AtomicU32,
     motion_scale_configured: AtomicBool,
-    /// Bitmask indicating which pending configuration items must be applied.
+    /// Bitmask of `PENDING_*` configuration items the TMC task must apply on its next control tick.
     ///
-    /// Bits are: voltage limit, filters, current, encoder direction,
-    /// inner gains, outer gains (see `PENDING_*` constants).
-    ///
-    /// Config-time setters are pure state writes: they do not need to be
-    /// ordered SPI transactions, so they record their value here instead of
-    /// enqueueing a request. The TMC task drains these bits on its periodic
-    /// control tick and applies the recorded state.
-    ///
-    /// This keeps the connect-time configuration burst entirely off the
-    /// bounded TMC request channel. That burst can exceed `TMC_CHANNEL_SIZE`,
-    /// and a dropped `#[klipper_command]` is an MCU shutdown.
+    /// Config-time setters record state here instead of enqueueing requests, keeping the
+    /// connect-time
+    /// burst off the bounded TMC request channel (a dropped `#[klipper_command]` is an MCU
+    /// shutdown).
     pub config_apply_pending: AtomicU8,
-    /// Polled STATUS pin level, stored by the board loop on every wake.
     pub status_pin_asserted: AtomicBool,
-    /// Optional velocity biquad filter cutoff frequency in Hz.
     pub velocity_filter_hz: AtomicOptionalFilterHz,
-    /// Optional torque biquad filter cutoff frequency in Hz.
     pub torque_filter_hz: AtomicOptionalFilterHz,
-    /// Optional position target biquad filter cutoff frequency in Hz.
     pub position_filter_hz: AtomicOptionalFilterHz,
-    /// Optional flux biquad filter cutoff frequency in Hz.
     pub flux_filter_hz: AtomicOptionalFilterHz,
-    /// Velocity feedforward enable flag.
     pub velocity_feedforward: AtomicBool,
     /// Runtime gain in permille applied to the RPM-domain velocity feedforward
     /// offset (1000 = unity).
     pub velocity_feedforward_gain_permille: AtomicU16,
-    /// Acceleration feedforward enable flag.
     pub accel_feedforward: AtomicBool,
     /// Runtime gain in permille while step intervals shrink.
     pub accel_feedforward_accel_gain_permille: AtomicU16,
@@ -229,107 +182,65 @@ pub struct TmcChannelState {
     pub feedforward_reset: AtomicBool,
     /// PID error-sum clear request after motion drains.
     pub pid_error_sums_clear: AtomicBool,
-    /// Configurable PID velocity limit.
     pub velocity_limit_cfg: AtomicU32,
-    /// Configurable operational PIDOUT_UQ_UD_LIMITS value.
     pub voltage_limit_cfg: AtomicU32,
-    /// Requested RMS run current in milliamps, recorded by `tmc_set_current`
-    /// and applied by the TMC task on its control tick. See
-    /// [`TmcChannelState::config_apply_pending`].
+    /// Requested RMS run current in milliamps, applied on the control tick.
     pub run_current_ma_cfg: AtomicU32,
-    /// Requested encoder-direction invert flag, recorded by
-    /// `tmc_set_encoder_dir` and applied by the TMC task on its control
-    /// tick. See [`AtomicOptionalInvert`] and
-    /// [`TmcChannelState::config_apply_pending`].
+    /// Requested encoder-direction invert flag, applied on the control tick.
     pub encoder_invert_cfg: AtomicOptionalInvert,
-    /// Requested inner-loop flux/torque P and I gains, recorded by
-    /// `tmc_set_pid_gains` and applied by the TMC task on its control tick.
-    /// See [`TmcChannelState::config_apply_pending`].
     pending_inner_gain_flux_p: AtomicU16,
     pending_inner_gain_flux_i: AtomicU16,
     pending_inner_gain_torque_p: AtomicU16,
     pending_inner_gain_torque_i: AtomicU16,
-    /// Requested outer-loop position/velocity P and I gains, recorded by
-    /// `tmc_set_position_gains` and applied by the TMC task on its control
-    /// tick. See [`TmcChannelState::config_apply_pending`].
     pending_outer_gain_position_p: AtomicU16,
     pending_outer_gain_position_i: AtomicU16,
     pending_outer_gain_velocity_p: AtomicU16,
     pending_outer_gain_velocity_i: AtomicU16,
-    /// Cached ADC_VM mode-5 startup offset.
     adc_vm_offset_raw: AtomicU16,
-    /// Number of samples folded into the cached ADC_VM offset.
     adc_vm_offset_sample_count: AtomicU8,
-    /// Whether the encoder direction is reversed.
     pub encoder_reversed: AtomicBool,
-    /// Guard for single-in-flight commissioning on this channel.
     pub commission_in_flight: AtomicBool,
-    /// Operator-requested cancel for this channel's in-flight commissioning
-    /// run. Set by `foci_commission_cancel` (P2), observed by the
-    /// commissioning engine's existing bounded wait checkpoints and by the
-    /// mid-phase cancel synthesis path (P1). A fresh run start always resets
-    /// this to `false` before the engine begins polling, closing the race
-    /// where a stale write from a just-finished run's tail could otherwise
-    /// cancel the next run (see `commission_dispatch/mod.rs`'s run-admission
-    /// call sites).
+    /// Operator-requested cancel of this channel's in-flight commissioning run. Set by
+    /// `foci_commission_cancel` (P2); reset to `false` at every run start so a stale write cannot
+    /// cancel the next run.
     pub cancel_requested: AtomicBool,
-    /// A commissioning phase is driving the step queue and wants the
-    /// planner-referenced control paths (feedforward, fast control period)
-    /// live exactly as production runs them. Set and
-    /// cleared only by the stimulus facet; read by the control tick.
+    /// A commissioning phase is driving the step queue and wants the planner-referenced control
+    /// paths
+    /// (feedforward, fast control period) live. Set and cleared only by the stimulus facet.
     pub commission_stimulus_active: AtomicBool,
-    /// Mirror written by the control tick after every pass: true when no
-    /// feedforward surface is left applied on the chip.
-    /// A stimulus phase polls this after clearing the opt-in.
+    /// Written by the control tick every pass: true when no feedforward surface is left applied on
+    /// the chip.
     pub feedforward_surfaces_idle: AtomicBool,
     /// `motor_armed` as it was when a commissioning stimulus armed the step
     /// timer; `stimulus_stop` puts it back. Owned by the stimulus facet.
     pub stimulus_prior_motor_armed: AtomicBool,
-    /// Whether `stimulus_prior_motor_armed` already holds this stimulus
-    /// session's captured value. Guards `stimulus_save_motor_armed`
-    /// against a second `commission_stimulus_arm` call (no intervening
-    /// `commission_stimulus_stop`) clobbering the real pre-session value
-    /// with whatever `motor_armed` reads back after the first call armed
-    /// it. Cleared by `stimulus_restore_motor_armed` at session end.
+    /// Whether `stimulus_prior_motor_armed` holds this session's captured value; guards against a
+    /// second
+    /// arm call clobbering the real pre-session value. Cleared by `stimulus_restore_motor_armed`.
     stimulus_prior_motor_armed_captured: AtomicBool,
     /// Host-controlled gate for raw-enable auto-calibration.
     pub auto_calibrate_on_enable_allowed: AtomicBool,
-    /// Position P gain for cross-priority access (Q8.8).
     position_p_value: AtomicU16,
-    /// Position I gain for cross-priority access (Q4.12).
     position_i_value: AtomicU16,
-    /// Velocity P gain for cross-priority access (Q8.8).
     velocity_p_value: AtomicU16,
-    /// Velocity I gain for cross-priority access (Q4.12).
     velocity_i_value: AtomicU16,
-    /// Set once the velocity feedforward RPM-domain clamp has engaged, and
-    /// stays set until the next `reset()`.
     velocity_ff_clamp_latched: AtomicBool,
-    /// Saturating count of velocity feedforward clamp engagements since the
-    /// last `reset()`.
     velocity_ff_clamp_count: AtomicU32,
     /// Homing-move current clamp in mA RMS; 0 disables the clamp and detector.
     pub homing_current_ma: AtomicU32,
-    /// Unconditional stall-detector ceiling in TMC position units (65536 per
-    /// revolution) — the loose backstop, always active regardless of
-    /// baseline state.
+    /// Unconditional stall-detector ceiling in TMC position units (65536 per revolution); always
+    /// active.
     pub stall_ceiling_units: AtomicU32,
-    /// Baseline-relative stall-detector margin in TMC position units — the
-    /// tight, primary detection threshold, active once the detector's EMA
-    /// baseline has warmed up.
+    /// Baseline-relative stall-detector margin in TMC position units; active once the EMA baseline
+    /// has warmed up.
     pub stall_margin_units: AtomicU32,
     /// Consecutive control ticks over threshold before either check's latch
     /// sets.
     pub stall_persistence: AtomicU8,
-    /// An endstop on this channel is configured on the virtual STALL pin.
     pub stall_endstop_configured: AtomicBool,
-    /// Live stall latch read by the endstop sample slot while homing.
     pub stall_latched: AtomicBool,
-    /// The homing clamp currently overrides the run-current limit.
     pub homing_clamp_active: AtomicBool,
-    /// Latch outcome of the most recent completed homing mode.
     pub stall_result_latched: AtomicBool,
-    /// Peak following error of the most recent completed homing mode.
     pub stall_peak_error_units: AtomicU32,
     /// Detector tick at which the most recent latch set, 0 if none.
     pub stall_trigger_tick: AtomicU32,
@@ -475,11 +386,6 @@ impl TmcChannelState {
         self.pending_outer_gain_position_i.store(0, Relaxed);
         self.pending_outer_gain_velocity_p.store(0, Relaxed);
         self.pending_outer_gain_velocity_i.store(0, Relaxed);
-        // Must follow every value the bits point at -- the filter cutoffs and
-        // limits above, and the eight gain atomics directly above. A bit
-        // outliving its value would make the next drain push a reset default
-        // to the chip as if the host had asked for it, and this runs at P1
-        // against handlers that record at P2.
         self.config_apply_pending.store(0, Relaxed);
         self.encoder_reversed.store(false, Relaxed);
         self.commission_in_flight.store(false, Relaxed);
@@ -523,13 +429,11 @@ impl TmcChannelState {
         self.pi_representation_established.load(Ordering::Acquire)
     }
 
-    /// Clear the representation invariant after chip reset or state loss.
     pub(crate) fn clear_pi_representation_established(&self) {
         self.pi_representation_established
             .store(false, Ordering::Release);
     }
 
-    /// Publish successful exact representation readback.
     pub(crate) fn mark_pi_representation_established(&self) {
         self.pi_representation_established
             .store(true, Ordering::Release);
@@ -619,8 +523,9 @@ impl TmcChannelState {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::motion_scale::MotionScaleError`] without changing any
-    /// mirror when either encoder or planner resolution is invalid.
+    /// Returns [`crate::motion_scale::MotionScaleError`] without changing any mirror when encoder
+    /// or
+    /// planner resolution is invalid.
     pub fn configure_motion_scale(
         &self,
         stepper_state: &crate::state::stepper::StepperChannelState,
@@ -744,18 +649,11 @@ impl TmcChannelState {
         self.velocity_ff_clamp_count.load(Ordering::Relaxed)
     }
 
-    /// Capture the current `motor_armed` into `stimulus_prior_motor_armed`,
-    /// once per stimulus session. Returns `true` on the first call (a
-    /// genuine capture), `false` on every subsequent call until
-    /// [`Self::stimulus_restore_motor_armed`] closes the session -- callers
-    /// use the return value only to decide whether to log/trace a fresh
-    /// capture; the captured value is correct either way.
+    /// Capture `motor_armed` into `stimulus_prior_motor_armed` once per stimulus session.
     ///
-    /// The whole point is that a stimulus session may call this more than
-    /// once (no caller does today, but the hook must not assume it never
-    /// will): only the first call's `motor_armed` reading is the real
-    /// pre-session value, since by the second call `motor_armed` reads back
-    /// whatever the first call itself set.
+    /// Returns `true` on the first call, `false` afterwards until
+    /// [`Self::stimulus_restore_motor_armed`]
+    /// closes the session; only the first reading is the real pre-session value.
     pub fn stimulus_save_motor_armed(&self) -> bool {
         if self
             .stimulus_prior_motor_armed_captured
@@ -769,15 +667,11 @@ impl TmcChannelState {
         }
     }
 
-    /// Restore `motor_armed` to the value `stimulus_save_motor_armed`
-    /// captured, and close the stimulus session so the next
-    /// `stimulus_save_motor_armed` call captures fresh. Idempotent
-    /// and safe to call defensively before any capture has happened this
-    /// session (e.g. the spec's stop-before-first-arm admission step): with
-    /// no session open, `stimulus_prior_motor_armed` holds a stale value
-    /// from whatever session last captured, so this is a true no-op on
-    /// `motor_armed` rather than restoring that stale value over a
-    /// genuinely-armed state set by unrelated production code in between.
+    /// Restore `motor_armed` to the value `stimulus_save_motor_armed` captured and close the
+    /// session.
+    ///
+    /// A no-op when no session is open, so it never overwrites a genuinely armed state with a stale
+    /// value.
     pub fn stimulus_restore_motor_armed(&self) {
         if self
             .stimulus_prior_motor_armed_captured
@@ -850,7 +744,6 @@ mod motion_scale_tests {
 pub struct AdcVmOffsetSnapshot {
     /// Averaged raw ADC_VM count captured in mode 5 (`VDD/2`).
     pub offset_raw: u16,
-    /// Number of samples folded into `offset_raw`.
     pub sample_count: u8,
 }
 
@@ -869,7 +762,7 @@ pub fn tmc_channel(channel: u8) -> Option<&'static TmcChannelState> {
     TMC_CHANNELS.get(channel as usize)
 }
 
-/// Return the OpenFFBoard-compatible channel-0 runtime state.
+/// Runtime state for board-local channel 0.
 pub fn tmc_channel0() -> &'static TmcChannelState {
     &TMC_CHANNELS[0]
 }
@@ -881,9 +774,7 @@ pub fn reset_all_tmc_channels() {
     }
 }
 
-/// Emergency motor disable signal. Set by enter_shutdown(), consumed
-/// by tmc_control. Uses a Signal so tmc_control wakes immediately
-/// even if blocked on an empty channel.
+/// Emergency motor disable signal. Set by enter_shutdown(), consumed by tmc_control.
 pub static TMC_DISABLE_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Signal tmc_control to drain all pending requests. Set by config_reset
@@ -1021,10 +912,6 @@ mod tests {
         );
     }
 
-    /// No-auto-energize invariant: a freshly constructed channel (the boot
-    /// state) must be disarmed and must not permit enable-driven
-    /// auto-calibration. A motor can only be energized after an explicit
-    /// host command flips these fields, never on power-on.
     #[test]
     fn fresh_channel_is_disarmed_and_auto_energize_gated() {
         let channel = TmcChannelState::new();
@@ -1044,9 +931,6 @@ mod tests {
         );
     }
 
-    /// `reset()` (the path config_reset funnels through) must re-close every
-    /// energize gate, so a shutdown/reset cycle can never leave the motor
-    /// armed or auto-calibration enabled.
     #[test]
     fn reset_recloses_auto_energize_gates() {
         let channel = TmcChannelState::new();
@@ -1179,9 +1063,6 @@ mod tests {
         assert!(channel.stimulus_save_motor_armed());
         assert!(!channel.stimulus_prior_motor_armed.load(Relaxed));
 
-        // A caller arms the channel between the first capture and a
-        // redundant second call; the guard must keep the captured value
-        // from being overwritten by the now-armed `motor_armed` reading.
         channel.motor_armed.store(true, Relaxed);
         assert!(!channel.stimulus_save_motor_armed());
         assert!(!channel.stimulus_prior_motor_armed.load(Relaxed));
@@ -1190,9 +1071,6 @@ mod tests {
     #[test]
     fn stimulus_save_motor_armed_captures_a_true_prior_value() {
         let channel = TmcChannelState::new();
-        // A prior commissioning run's ArmPreservePosition post-action, or
-        // any other non-stimulus path, left the channel armed before this
-        // stimulus session ever touches it.
         channel.motor_armed.store(true, Relaxed);
 
         assert!(channel.stimulus_save_motor_armed());
@@ -1212,8 +1090,6 @@ mod tests {
         channel.stimulus_restore_motor_armed();
         assert!(channel.motor_armed.load(Relaxed));
 
-        // The session is closed, so a later stimulus session captures
-        // fresh instead of silently reusing the prior session's value.
         channel.motor_armed.store(false, Relaxed);
         assert!(channel.stimulus_save_motor_armed());
         assert!(!channel.stimulus_prior_motor_armed.load(Relaxed));
@@ -1223,8 +1099,6 @@ mod tests {
     fn stimulus_restore_motor_armed_without_a_capture_leaves_motor_armed_untouched() {
         let channel = TmcChannelState::new();
 
-        // Session N: capture a `false` prior, arm, then close the session.
-        // `stimulus_prior_motor_armed` is left holding that stale `false`.
         channel.motor_armed.store(false, Relaxed);
         assert!(channel.stimulus_save_motor_armed());
         channel.motor_armed.store(true, Relaxed);
@@ -1232,13 +1106,8 @@ mod tests {
         assert!(!channel.motor_armed.load(Relaxed));
         assert!(!channel.stimulus_prior_motor_armed_captured.load(Relaxed));
 
-        // Something outside the stimulus facet -- the normal production
-        // arming path -- legitimately arms the channel with no capture in
-        // between.
         channel.motor_armed.store(true, Relaxed);
 
-        // A fresh session's defensive, idempotent stop-before-first-arm must
-        // not clobber that genuine arm with session N's stale capture.
         channel.stimulus_restore_motor_armed();
         assert!(channel.motor_armed.load(Relaxed));
     }

@@ -1,13 +1,8 @@
 //! Board-agnostic wrapping tick-clock arithmetic.
 
 /// Ticks elapsed from `last` to `now` on a wrapping 32-bit hardware clock.
-///
-/// A `last` timestamp written by a higher-priority task between the caller
-/// sampling `now` and calling this function can be chronologically newer
-/// than `now` itself. A plain `wrapping_sub` reads that as an enormous
-/// unsigned duration instead of the small negative real difference it is;
-/// this treats it as zero elapsed. Correct as long as the true difference
-/// is under half the 32-bit tick range.
+/// A `last` newer than `now` (written by a preempting task) yields zero. Valid while the
+/// true difference is under half the 32-bit range.
 pub fn elapsed_ticks(now: u32, last: u32) -> u32 {
     let raw_diff = now.wrapping_sub(last);
     if (raw_diff as i32) < 0 { 0 } else { raw_diff }

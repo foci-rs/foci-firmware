@@ -1,7 +1,4 @@
-//! Shared trsync/endstop context boundary and policy helpers.
-//!
-//! `TrsyncHost` is the handler-facing trait. The remaining items in this
-//! module are the shared trigger-domain policy surface used by board crates.
+//! Shared trsync/endstop context traits and trigger-domain policy helpers.
 
 use core::sync::atomic::Ordering;
 
@@ -14,17 +11,11 @@ use foci_klipper::trigger::{StopSignal, TriggerResult};
 use crate::diagnostic::StepperEventReason;
 use crate::state::trsync::HOMING_TRIGGERED;
 
-/// Trsync + endstop-trigger subsystem bridge. Each method corresponds
-/// one-to-one to a single handler's `with_trigger_domain(|td| ...)`
-/// closure body: the trait exposes handler-specific coarse methods.
-///
-/// `TriggerDomain` itself stays in the board crate; this trait is the
-/// dyn-safe bridge used from the lifted handlers.
+/// Bridge to the board-owned `TriggerDomain`; each method is one handler's coarse trigger-domain
+/// operation.
 #[allow(clippy::result_unit_err)]
 pub trait TrsyncHost: crate::context::StateAccess {
-    /// Full trigger-domain reset used by `config_reset` to bring
-    /// steppers, trsync, endstops, and scheduler back to power-on
-    /// defaults.
+    /// Full trigger-domain reset used by `config_reset`.
     fn reset_all(&mut self);
 
     /// Allocate a trsync slot for `oid`.
@@ -32,7 +23,6 @@ pub trait TrsyncHost: crate::context::StateAccess {
     /// Returns `Err` if the OID is already registered or no free slot exists.
     fn register_trsync(&mut self, oid: u8) -> Result<(), ()>;
 
-    /// Arm a trsync for synchronized triggering.
     fn trsync_arm(
         &mut self,
         oid: u8,
@@ -41,15 +31,12 @@ pub trait TrsyncHost: crate::context::StateAccess {
         expire_reason: u8,
     ) -> Result<(), ()>;
 
-    /// Update the expiry deadline for a trsync and schedule its expire event.
     fn trsync_set_timeout(&mut self, oid: u8, clock: u32) -> Result<(), ()>;
 
     /// Manually fire a trsync and return the effective trigger reason.
     fn trsync_trigger(&mut self, oid: u8, reason: u8) -> Result<u8, ()>;
 
-    /// Allocate an endstop slot for `oid`.
-    ///
-    /// Returns the allocated index on success.
+    /// Allocate an endstop slot for `oid`, returning its index.
     fn register_endstop(&mut self, oid: u8) -> Result<usize, ()>;
 
     /// Configure an endstop runtime for homing and schedule its first sample.
@@ -86,28 +73,16 @@ pub trait TrsyncHost: crate::context::StateAccess {
 /// Maximum number of stepper stop links tracked by a trigger domain.
 pub const STOP_SIGNAL_CAPACITY: usize = 8;
 
-/// Shared trsync, endstop, scheduler, and stepper-stop data.
-///
-/// The fields are public because
-/// board-local shutdown and stepper code still reads this state directly.
+/// Shared trsync, endstop, scheduler, and stepper-stop data; public because board shutdown code
+/// reads it directly.
 pub struct TriggerDomainState {
-    /// Runtime state for configured trsync objects.
     pub trsync: [foci_klipper::trigger::TrSyncRuntime; NUM_TRSYNC],
-    /// OID-to-runtime-slot map for trsync objects.
     pub trsync_by_oid: heapless::LinearMap<u8, usize, { NUM_TRSYNC }>,
-    /// Stop links consumed on first trsync trigger.
     pub stop_signals: [Option<StopSignal>; STOP_SIGNAL_CAPACITY],
-    /// Per-stepper state used by triggered stops and reset checks.
     pub stepper_stop: [foci_klipper::trigger::StepperStopRuntime; NUM_STEPPERS],
-    /// Discarded host segments in the current needs-reset episode are
-    /// expected (trigger stop) or already logged; cleared by
-    /// `reset_step_clock`.
     pub discard_silenced: [bool; NUM_STEPPERS],
-    /// Runtime state for configured endstops.
     pub endstops: [foci_klipper::endstop::EndstopRuntime; NUM_ENDSTOPS],
-    /// OID-to-runtime-slot map for endstops.
     pub endstop_by_oid: heapless::LinearMap<u8, usize, { NUM_ENDSTOPS }>,
-    /// Unified trigger scheduler.
     pub scheduler: TriggerScheduler,
 }
 
@@ -137,32 +112,20 @@ impl Default for TriggerDomainState {
 /// Exact internal failure reason for shared trsync/endstop policy helpers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum TrsyncPolicyError {
-    /// A trsync OID was registered more than once.
     DuplicateTrsyncOid,
-    /// No trsync runtime slot was available.
     TrsyncCapacity,
-    /// A trsync OID was not registered.
     UnknownTrsyncOid,
-    /// An endstop OID was registered more than once.
     DuplicateEndstopOid,
-    /// No endstop runtime slot was available.
     EndstopCapacity,
-    /// An endstop OID was not registered.
     UnknownEndstopOid,
-    /// Active homing referenced a trsync OID that was not registered.
     MissingTrsyncForHoming,
-    /// A Klipper stepper index did not map to a physical stepper.
     InvalidStepper,
-    /// A physical stepper already had a stop link.
     DuplicateStopSignal,
-    /// No stop-signal slot was available.
     StopSignalCapacity,
 }
 
-/// Board effects required by trigger dispatch.
-///
-/// This hook is intentionally smaller than `TrsyncBoard`: TIM5 ISR callers can
-/// construct it without borrowing `State`.
+/// Board effects required by trigger dispatch; smaller than `TrsyncBoard` so TIM5 ISR callers need
+/// not borrow `State`.
 pub trait TriggerDispatchBoard {
     /// Stop a physical stepper before shared code marks it blocked.
     fn stop_physical_stepper(
@@ -175,7 +138,6 @@ pub trait TriggerDispatchBoard {
     /// Record board-local diagnostics for a trsync stop.
     fn record_trsync_stop(&mut self, stepper_idx: usize, clock: u32, trsync_oid: u8, reason: u8);
 
-    /// Set shared timer-active state and update the board's P1-readable mirror.
     fn set_timer_active(
         &mut self,
         state: &mut TriggerDomainState,
@@ -186,36 +148,23 @@ pub trait TriggerDispatchBoard {
 
 /// Command-path board hooks used by shared `TrsyncHost` policy helpers.
 pub trait TrsyncBoard: TriggerDispatchBoard {
-    /// Physical stepper indexes controlled by this board.
     fn physical_steppers(&self) -> &'static [usize];
 
-    /// Map a Klipper stepper index to a physical stepper index.
     fn map_physical_stepper(&self, klipper_stepper_idx: usize) -> Option<usize>;
 
-    /// Return the configured physical pin for an endstop runtime slot.
     fn endstop_pin_id(&self, endstop_idx: usize) -> u8;
 
-    /// Record the result of a scheduler insertion.
     fn record_schedule_result(&mut self, result: ScheduleResult);
 
-    /// Reprogram the board trigger timer from the shared scheduler.
     fn reprogram_trigger_timer(&mut self, state: &mut TriggerDomainState);
 
-    /// Disarm the board trigger timer using board-correct compare-channel semantics.
     fn disarm_trigger_timer(&mut self, state: &mut TriggerDomainState);
 }
 
 /// Board effects required by shutdown trigger-domain quiesce.
-///
-/// This is narrower than `TrsyncBoard` so new shared shutdown policy does not
-/// depend on command-path-only hooks such as stepper mapping, endstop pin
-/// lookup, scheduler-full diagnostics, or timer reprogramming.
 pub trait TriggerQuiesceBoard: TriggerDispatchBoard {
-    /// Physical stepper indexes controlled by this board.
     fn physical_steppers(&self) -> &'static [usize];
 
-    /// Disarm the board trigger timer using board-correct compare-channel
-    /// semantics.
     fn disarm_trigger_timer(&mut self, state: &mut TriggerDomainState);
 }
 
@@ -229,10 +178,7 @@ impl<T: TrsyncBoard + ?Sized> TriggerQuiesceBoard for T {
     }
 }
 
-/// Quiesce trigger-domain state during shutdown.
-///
-/// This preserves trsync and endstop OID maps while clearing transient runtime
-/// state that could otherwise survive into shutdown recovery.
+/// Quiesce trigger-domain state during shutdown, preserving trsync and endstop OID maps.
 pub fn shutdown_quiesce<B: TriggerQuiesceBoard + ?Sized>(
     state: &mut TriggerDomainState,
     board: &mut B,
@@ -504,9 +450,6 @@ pub fn endstop_query<B: TrsyncBoard + ?Sized>(
 }
 
 /// Link a physical stepper to a trsync stop signal.
-///
-/// Returns the trsync's armed report clock so the caller can record when the
-/// homing move's steps begin.
 pub fn link_stepper_stop<B: TrsyncBoard + ?Sized>(
     state: &mut TriggerDomainState,
     board: &B,
@@ -680,9 +623,6 @@ mod tests {
         HOMING_TRIGGERED.store(0xFF, Ordering::Relaxed);
     }
 
-    // Keep global HOMING_TRIGGERED resets out of fresh_state(); tests run in
-    // parallel and only global-touching tests may reset or assert it while
-    // holding HOMING_TEST_LOCK.
     fn fresh_state() -> TriggerDomainState {
         TriggerDomainState::new()
     }

@@ -1,10 +1,4 @@
-//! SPI command handlers: `config_spi`, `config_spi_without_cs`,
-//! `spi_set_bus`, `config_spi_shutdown`, `spi_send`, `spi_transfer`.
-//!
-//! These are stub handlers: the TMC4671 SPI bus is managed internally by
-//! the firmware, so host-side SPI commands are accepted for protocol
-//! compatibility but forward to no-op helpers in
-//! `foci_klipper::commands::spi`.
+//! SPI command handlers: protocol-compatibility stubs; the TMC4671 SPI bus is managed internally.
 
 use ankyra::prelude::klipper_command;
 
