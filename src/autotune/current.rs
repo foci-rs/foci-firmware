@@ -449,20 +449,25 @@ pub fn current_axis_retry_decision(
     }
 }
 
+const RETRY_LOW_RESPONSE_LAMBDA_PERMILLE: u16 = 750;
+const RETRY_HIGH_RESPONSE_LAMBDA_PERMILLE: u16 = 2000;
+const RETRY_MIN_LAMBDA_OF_PREVIOUS_PERMILLE: u16 = 250;
+const RETRY_MAX_LAMBDA_OF_PREVIOUS_PERMILLE: u16 = 4000;
+
 fn retry_low_response_lambda_permille(_profile: CommissionProfile) -> u16 {
-    750
+    RETRY_LOW_RESPONSE_LAMBDA_PERMILLE
 }
 
 fn retry_high_response_lambda_permille(_profile: CommissionProfile) -> u16 {
-    2000
+    RETRY_HIGH_RESPONSE_LAMBDA_PERMILLE
 }
 
 fn retry_min_lambda_permille(_profile: CommissionProfile) -> u16 {
-    250
+    RETRY_MIN_LAMBDA_OF_PREVIOUS_PERMILLE
 }
 
 fn retry_max_lambda_permille(_profile: CommissionProfile) -> u16 {
-    4000
+    RETRY_MAX_LAMBDA_OF_PREVIOUS_PERMILLE
 }
 
 fn scale_lambda_permille(lambda_us: u32, permille: u16) -> u32 {
