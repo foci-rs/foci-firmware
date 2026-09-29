@@ -78,18 +78,20 @@ pub const fn current_loop_actionable_status_mask(
     }
 }
 
-const CURRENT_AXIS_ENTRY_DEMOTED_STATUS_MASK: u32 = (1 << 8)
-    | (1 << 10)
-    | (1 << 12)
-    | (1 << 14)
-    | (1 << 16)
-    | (1 << 17)
-    | (1 << 18)
-    | (1 << 20)
-    | (1 << 21)
-    | (1 << 22)
-    | (1 << 24)
-    | (1 << 25);
+const CURRENT_AXIS_ENTRY_DEMOTED_STATUS_MASK: u32 = foci_tmc4671::registers::StatusFlags::new()
+    .with_pid_id_target_limit(true)
+    .with_pid_id_errsum_limit(true)
+    .with_pid_iq_target_limit(true)
+    .with_pid_iq_errsum_limit(true)
+    .with_ipark_cirlim_limit_u_d(true)
+    .with_ipark_cirlim_limit_u_q(true)
+    .with_ipark_cirlim_limit_u_r(true)
+    .with_ref_sw_r(true)
+    .with_ref_sw_h(true)
+    .with_ref_sw_l(true)
+    .with_pwm_min(true)
+    .with_pwm_max(true)
+    .into_bits();
 
 /// Actionable status the guard checks at primitive start, before commanding
 /// Narrower than [`current_loop_actionable_status_mask`]: transition/limiter bits left by a
