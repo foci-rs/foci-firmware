@@ -384,48 +384,43 @@ pub(crate) fn fail_inner(phase: &mut InnerPhase, err: CommissionError) -> StepRe
     StepResult::InnerFailed(err)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Mutable state and inputs the inner phases share for one step.
+pub(crate) struct InnerStepContext<'a> {
+    pub(crate) buf: &'a mut TransientBuffer,
+    pub(crate) adc_cal: &'a mut Option<AdcCalResult>,
+    pub(crate) calibrate_entry_gains: Option<crate::commissioning::CalibrateEntryGains>,
+    pub(crate) selftest_results: &'a mut crate::selftest::SelftestResults,
+    pub(crate) diagnostics: &'a mut crate::selftest::CommissionDiagnostics,
+}
+
 pub(crate) async fn step_inner<B: CommissioningBackend>(
     phase: &mut InnerPhase,
-    buf: &mut TransientBuffer,
     profile: CommissionProfile,
     sequence: InnerSequence,
-    adc_cal: &mut Option<AdcCalResult>,
-    calibrate_entry_gains: Option<crate::commissioning::CalibrateEntryGains>,
-    selftest_results: &mut crate::selftest::SelftestResults,
-    diagnostics: &mut crate::selftest::CommissionDiagnostics,
+    context: InnerStepContext<'_>,
     backend: &mut B,
 ) -> StepResult {
-    let result = step_inner_dispatch(
-        phase,
-        buf,
-        profile,
-        sequence,
-        adc_cal,
-        calibrate_entry_gains,
-        selftest_results,
-        diagnostics,
-        backend,
-    )
-    .await;
+    let result = step_inner_dispatch(phase, profile, sequence, context, backend).await;
     if matches!(result, StepResult::InnerFailed(_)) {
         crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
     }
     result
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn step_inner_dispatch<B: CommissioningBackend>(
     phase: &mut InnerPhase,
-    buf: &mut TransientBuffer,
     profile: CommissionProfile,
     sequence: InnerSequence,
-    adc_cal: &mut Option<AdcCalResult>,
-    calibrate_entry_gains: Option<crate::commissioning::CalibrateEntryGains>,
-    selftest_results: &mut crate::selftest::SelftestResults,
-    diagnostics: &mut crate::selftest::CommissionDiagnostics,
+    context: InnerStepContext<'_>,
     backend: &mut B,
 ) -> StepResult {
+    let InnerStepContext {
+        buf,
+        adc_cal,
+        calibrate_entry_gains,
+        selftest_results,
+        diagnostics,
+    } = context;
     match phase {
         InnerPhase::AdcCalibrate(_) => {
             adc::step_adc_calibrate(phase, sequence, adc_cal, selftest_results, backend).await

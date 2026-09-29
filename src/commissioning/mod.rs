@@ -1606,13 +1606,15 @@ impl CommissioningEngine {
                 } => {
                     inner::step_inner(
                         phase,
-                        &mut self.buf,
                         *profile,
                         *sequence,
-                        adc_cal,
-                        *calibrate_entry_gains,
-                        selftest_results,
-                        diagnostics,
+                        inner::InnerStepContext {
+                            buf: &mut self.buf,
+                            adc_cal,
+                            calibrate_entry_gains: *calibrate_entry_gains,
+                            selftest_results,
+                            diagnostics,
+                        },
                         backend,
                     )
                     .await
@@ -1711,13 +1713,15 @@ mod tests {
                 calibrate_entry_gains,
             } => size_of_val(&inner::step_inner(
                 phase,
-                &mut engine.buf,
                 *profile,
                 *sequence,
-                adc_cal,
-                *calibrate_entry_gains,
-                &mut engine.selftest_results,
-                &mut engine.diagnostics,
+                inner::InnerStepContext {
+                    buf: &mut engine.buf,
+                    adc_cal,
+                    calibrate_entry_gains: *calibrate_entry_gains,
+                    selftest_results: &mut engine.selftest_results,
+                    diagnostics: &mut engine.diagnostics,
+                },
                 &mut backend,
             )),
             EngineMode::Outer { .. } => unreachable!(),

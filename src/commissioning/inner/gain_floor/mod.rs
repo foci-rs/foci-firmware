@@ -1182,13 +1182,15 @@ mod tests {
         while matches!(result, StepResult::At(_)) {
             result = pollster::block_on(super::super::step_inner(
                 phase,
-                &mut buf,
                 CommissionProfile::Balanced,
                 InnerSequence::Commission,
-                &mut adc_cal,
-                None,
-                &mut selftest_results,
-                &mut diagnostics,
+                super::super::InnerStepContext {
+                    buf: &mut buf,
+                    adc_cal: &mut adc_cal,
+                    calibrate_entry_gains: None,
+                    selftest_results: &mut selftest_results,
+                    diagnostics: &mut diagnostics,
+                },
                 backend,
             ));
         }
