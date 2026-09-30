@@ -26,6 +26,8 @@ pub mod stall_detector;
 pub mod state;
 
 #[cfg(test)]
+mod limit_write_sites_tests;
+#[cfg(test)]
 mod pi_representation_tests;
 #[cfg(test)]
 pub(crate) mod test_spi;
