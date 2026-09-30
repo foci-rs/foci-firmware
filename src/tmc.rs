@@ -1381,4 +1381,125 @@ mod tests {
             compute_planner_accel_torque_offset(scale, 84_000_000, 2800, -90, false, 1000, 1200);
         assert_eq!(offset, 1200);
     }
+
+    #[test]
+    fn action_codes_and_invalid_values_are_exact() {
+        use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder;
+        use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
+        use crate::commissioning::outer::velocity::workflow_plan::{
+            CommissioningWorkflowPlan, VelocityAutotuneWorkflowKind,
+        };
+
+        assert_eq!(AutotuneAction::FixedGainAmplitudeAscending as u8, 1);
+        assert_eq!(AutotuneAction::FixedGainAmplitudeDescending as u8, 2);
+        assert_eq!(AutotuneAction::BreakawaySeeded as u8, 7);
+        assert_eq!(AutotuneAction::IntegralResume as u8, 8);
+        for byte in [0u8, 3, 4, 5, 6, 11] {
+            assert_eq!(AutotuneAction::from_u8(byte), None);
+        }
+        assert_eq!(
+            AutotuneAction::from_u8(1),
+            Some(AutotuneAction::FixedGainAmplitudeAscending)
+        );
+        assert_eq!(
+            AutotuneAction::from_u8(2),
+            Some(AutotuneAction::FixedGainAmplitudeDescending)
+        );
+        assert_eq!(
+            AutotuneAction::from_u8(7),
+            Some(AutotuneAction::BreakawaySeeded)
+        );
+        assert_eq!(
+            AutotuneAction::from_u8(8),
+            Some(AutotuneAction::IntegralResume)
+        );
+        assert_eq!(
+            AutotuneAction::from_u8(9),
+            Some(AutotuneAction::RobustnessReversal)
+        );
+        assert_eq!(AutotuneAction::RobustnessReversal as u8, 9);
+        assert_eq!(
+            AutotuneAction::RobustnessReversal.slot_order(),
+            IntegralSlotOrder::ForwardFirst
+        );
+        assert_eq!(AutotuneAction::RobustnessReversal.amplitude_order(), None);
+        assert_eq!(
+            AutotuneAction::RobustnessReversal.amplitude_slot_order(),
+            None
+        );
+        assert_eq!(
+            AutotuneAction::from_u8(10),
+            Some(AutotuneAction::PositionTune)
+        );
+        assert_eq!(AutotuneAction::PositionTune as u8, 10);
+        assert_eq!(
+            AutotuneAction::PositionTune.slot_order(),
+            IntegralSlotOrder::ForwardFirst
+        );
+        assert_eq!(AutotuneAction::PositionTune.amplitude_order(), None);
+        assert_eq!(AutotuneAction::PositionTune.amplitude_slot_order(), None);
+        assert_eq!(
+            AutotuneAction::BreakawaySeeded.slot_order(),
+            IntegralSlotOrder::ForwardFirst
+        );
+        assert_eq!(AutotuneAction::BreakawaySeeded.amplitude_order(), None);
+        assert_eq!(AutotuneAction::BreakawaySeeded.amplitude_slot_order(), None);
+
+        for (action, slot_order) in [
+            (
+                AutotuneAction::FixedGainAmplitudeAscending,
+                IntegralSlotOrder::ForwardFirst,
+            ),
+            (
+                AutotuneAction::FixedGainAmplitudeDescending,
+                IntegralSlotOrder::ForwardFirst,
+            ),
+        ] {
+            assert_eq!(action.slot_order(), slot_order, "{action:?}");
+        }
+
+        for (action, order, slot_order) in [
+            (
+                AutotuneAction::FixedGainAmplitudeAscending,
+                FixedGainAmplitudeOrder::Ascending,
+                IntegralSlotOrder::ForwardFirst,
+            ),
+            (
+                AutotuneAction::FixedGainAmplitudeDescending,
+                FixedGainAmplitudeOrder::Descending,
+                IntegralSlotOrder::ForwardFirst,
+            ),
+        ] {
+            assert_eq!(action.amplitude_order(), Some(order), "{action:?} order");
+            assert_eq!(
+                action.amplitude_slot_order(),
+                Some(slot_order),
+                "{action:?} slot order"
+            );
+        }
+        assert_eq!(AutotuneAction::IntegralResume.amplitude_order(), None);
+        assert_eq!(AutotuneAction::IntegralResume.amplitude_slot_order(), None);
+        let ascending = CommissioningWorkflowPlan::new_fixed_gain_amplitude(
+            1,
+            FixedGainAmplitudeOrder::Ascending,
+            63_041,
+            66_456,
+        )
+        .unwrap();
+        let descending = CommissioningWorkflowPlan::new_fixed_gain_amplitude(
+            2,
+            FixedGainAmplitudeOrder::Descending,
+            63_041,
+            66_456,
+        )
+        .unwrap();
+        assert_eq!(
+            ascending.shape,
+            VelocityAutotuneWorkflowKind::FixedGainAmplitudeAscending
+        );
+        assert_eq!(
+            descending.shape,
+            VelocityAutotuneWorkflowKind::FixedGainAmplitudeDescending
+        );
+    }
 }

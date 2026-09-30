@@ -2830,7 +2830,7 @@ mod tests {
         runtime.set_calibrated_for_test(true);
         let mut integral = IntegralRetentionSlot::new();
         integral.install_acceptance_point(
-            crate::commission_dispatch::fixed_gain_amplitude::test_acceptance_point(
+            crate::commission_dispatch::test_support::test_acceptance_point(
                 velocity_sweep_request(),
                 FixedGainAmplitudeProgress::ReadyAscending,
             ),
@@ -2888,7 +2888,7 @@ mod tests {
         runtime.set_calibrated_for_test(true);
         let mut integral = IntegralRetentionSlot::new();
         integral.install_acceptance_point(
-            crate::commission_dispatch::fixed_gain_amplitude::test_acceptance_point(
+            crate::commission_dispatch::test_support::test_acceptance_point(
                 velocity_sweep_request(),
                 FixedGainAmplitudeProgress::ReadyAscending,
             ),
@@ -3305,7 +3305,7 @@ mod tests {
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
         let mut integral = IntegralRetentionSlot::new();
-        let point = crate::commission_dispatch::fixed_gain_amplitude::test_acceptance_point(
+        let point = crate::commission_dispatch::test_support::test_acceptance_point(
             velocity_sweep_request(),
             FixedGainAmplitudeProgress::ReadyDescending,
         );
