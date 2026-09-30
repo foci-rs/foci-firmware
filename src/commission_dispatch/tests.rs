@@ -1709,6 +1709,63 @@ async fn commission_done_failed_inner_status_skips_persist_and_arm() {
     );
 }
 
+async fn commission_done_limit_writes(reserved: bool) -> std::vec::Vec<u32> {
+    use core::sync::atomic::Ordering;
+    let mut backend = MockBackend::new();
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(CommissioningEngine::new_commission(
+        6,
+        CommissionProfile::Balanced,
+    ));
+    seed_motor_sentinel(&mut backend).await;
+    backend.spi_log.clear();
+    tmc_state().store_current_limit(test_support::current_limit(2557), Ordering::Relaxed);
+    tmc_state().set_offset_headroom_reserved(reserved, Ordering::Relaxed);
+
+    let _ = drive_commission_result(
+        StepResult::CommissionDone(sample_commission_result()),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+    )
+    .await;
+
+    clear_motor_sentinel();
+    backend
+        .spi_log
+        .iter()
+        .filter_map(|op| match op {
+            SpiOp::Write(addr, value)
+                if *addr == foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr() =>
+            {
+                Some(*value)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[fixture_test]
+async fn commission_restore_writes_the_reserved_limit_while_the_reservation_is_set() {
+    let writes = commission_done_limit_writes(true).await;
+
+    assert!(!writes.is_empty());
+    assert!(
+        writes.iter().all(|&value| value == 2557 - 1278),
+        "{writes:?}"
+    );
+}
+
+#[fixture_test]
+async fn commission_restore_writes_the_committed_limit_while_the_reservation_is_clear() {
+    let writes = commission_done_limit_writes(false).await;
+
+    assert!(!writes.is_empty());
+    assert!(writes.iter().all(|&value| value == 2557), "{writes:?}");
+}
+
 #[fixture_test]
 async fn commission_done_current_limit_restore_failure_disarms() {
     use core::sync::atomic::Ordering;

@@ -198,9 +198,11 @@ impl CalibrateGainsRestoreStep {
                 None
             }
             Self::WriteCurrentLimit => {
-                let current_limit = tmc_state.load_current_limit(Relaxed);
                 if backend
-                    .write_register(PID_TORQUE_FLUX_LIMITS, current_limit.register_value())
+                    .write_register(
+                        PID_TORQUE_FLUX_LIMITS,
+                        crate::tmc_control::current_limit::operational_limit_register(tmc_state),
+                    )
                     .await
                     .is_err()
                 {
@@ -909,6 +911,45 @@ mod tests {
             foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
             Relaxed,
         );
+    }
+
+    async fn gains_restore_limit_writes(reserved: bool) -> std::vec::Vec<u32> {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
+        let mut backend = MockBackend::new();
+        tmc_state().store_outer_gains(crate::pid::test_outer_gains(377, 55, 211, 33), Relaxed);
+        tmc_state().store_current_limit(
+            crate::commission_dispatch::test_support::current_limit(2557),
+            Relaxed,
+        );
+        tmc_state().set_offset_headroom_reserved(reserved, Relaxed);
+        let mut step = CalibrateGainsRestoreStep::start(None);
+
+        let result = loop {
+            if let Some(result) = step.advance(&mut backend, tmc_state()).await {
+                break result;
+            }
+        };
+
+        assert!(result.is_ok());
+        write_log(&backend)
+            .iter()
+            .filter(|(addr, _)| *addr == PID_TORQUE_FLUX_LIMITS.addr())
+            .map(|(_, value)| *value)
+            .collect()
+    }
+
+    #[fixture_test]
+    async fn gains_restore_writes_the_reserved_limit_while_the_reservation_is_set() {
+        assert_eq!(
+            gains_restore_limit_writes(true).await,
+            std::vec![2557 - 1278]
+        );
+    }
+
+    #[fixture_test]
+    async fn gains_restore_writes_the_committed_limit_while_the_reservation_is_clear() {
+        assert_eq!(gains_restore_limit_writes(false).await, std::vec![2557]);
     }
 
     #[fixture_test]

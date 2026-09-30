@@ -1405,7 +1405,7 @@ impl TmcControlRuntime {
         HomingMaintenanceResult::ReadyToAdvance
     }
 
-    /// Rewrite the stored run current and publish the stall-detector result.
+    /// Rewrite the operational limit and publish the stall-detector result.
     async fn restore_run_current_after_homing<B>(
         &mut self,
         tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
@@ -1415,9 +1415,11 @@ impl TmcControlRuntime {
         B: embedded_hal_async::spi::SpiDevice<u8>,
     {
         if refs.tmc.homing_clamp_active.load(Relaxed) {
-            let run_limit = refs.tmc.load_current_limit(Relaxed).register_value();
             if tmc_spi
-                .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS, run_limit)
+                .write_register(
+                    foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS,
+                    crate::tmc_control::current_limit::operational_limit_register(refs.tmc),
+                )
                 .await
                 .is_err()
             {

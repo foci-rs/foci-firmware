@@ -29,8 +29,9 @@ pub(crate) async fn settle_closed_loop_hold_before_enable<B: CommissioningBacken
 
 /// Mark the motor electrically energized after verified calibration.
 ///
-/// Drains pending configuration, verifies the calibration sentinel, rewrites
-/// `PID_TORQUE_FLUX_LIMITS` from the stored run-current limit, then raises the enable pin and
+/// Drains pending configuration, verifies the calibration sentinel, zeroes
+/// `PID_TORQUE_FLUX_OFFSET`, rewrites `PID_TORQUE_FLUX_LIMITS` with the operational limit,
+/// then raises the enable pin and
 /// sets `state.motor_enabled`. Does not arm stepping; see [`arm_motor_for_steps`].
 ///
 /// # Panics
@@ -47,7 +48,7 @@ pub(crate) async fn settle_closed_loop_hold_before_enable<B: CommissioningBacken
 /// stored run-current limit is zero (unconfigured).
 /// Returns [`crate::autotune::CommissionError::Spi`] if the pending-config
 /// drain fails (the failed item is named in the log), if the torque-flux
-/// limit rewrite fails, or if configuration was recorded after the drain.
+/// offset clear or limit rewrite fails, or if configuration was recorded after the drain.
 /// Returns [`crate::autotune::CommissionError::FaultInterlock`] if the fault
 /// interlock is tripped when the enable pin would be raised.
 pub async fn arm_motor_electrical<B: CommissioningBackend>(
@@ -234,6 +235,7 @@ pub(crate) enum ArmMotorElectricalStep {
     Drain,
     VerifySentinelReadback,
     VerifyPiRepresentation(crate::tmc_control::pi_representation::PiRepresentationVerifyStep),
+    ClearTorqueOffset,
     WriteCurrentLimit,
     Settle(ClosedLoopHoldSettleStep),
     FinalizeEnable,
@@ -305,11 +307,22 @@ impl ArmMotorElectricalStep {
                 None => None,
                 Some(Ok(())) => {
                     state.tmc.safe_state_incomplete.store(false, Relaxed);
-                    *self = Self::WriteCurrentLimit;
+                    *self = Self::ClearTorqueOffset;
                     None
                 }
                 Some(Err(_)) => Some(Err(CommissionError::ChipResetDetected)),
             },
+            Self::ClearTorqueOffset => {
+                if backend
+                    .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, 0)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(CommissionError::Spi));
+                }
+                *self = Self::WriteCurrentLimit;
+                None
+            }
             Self::WriteCurrentLimit => {
                 let run_limit = state.tmc.load_current_limit(Relaxed);
                 if run_limit.raw() == 0 {
@@ -319,7 +332,7 @@ impl ArmMotorElectricalStep {
                 if backend
                     .write_register(
                         foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS,
-                        run_limit.register_value(),
+                        crate::tmc_control::current_limit::operational_limit_register(state.tmc),
                     )
                     .await
                     .is_err()
@@ -856,6 +869,53 @@ mod tests {
             .store(0, core::sync::atomic::Ordering::Relaxed);
     }
 
+    async fn arm_limit_writes(reserved: bool) -> std::vec::Vec<u32> {
+        let mut backend = MockBackend::new();
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+        tmc_state().store_current_limit(
+            crate::commission_dispatch::test_support::current_limit(2557),
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        tmc_state().set_offset_headroom_reserved(reserved, core::sync::atomic::Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        backend.spi_log.clear();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+
+        assert_eq!(arm_motor_electrical(&mut backend, &mut state).await, Ok(()));
+
+        backend
+            .spi_log
+            .iter()
+            .filter_map(|op| match op {
+                SpiOp::Write(addr, value)
+                    if *addr == foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr() =>
+                {
+                    Some(*value)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[fixture_test]
+    async fn arm_writes_the_reserved_limit_while_the_reservation_is_set() {
+        assert_eq!(arm_limit_writes(true).await, std::vec![2557 - 1278]);
+    }
+
+    #[fixture_test]
+    async fn arm_writes_the_committed_limit_while_the_reservation_is_clear() {
+        assert_eq!(arm_limit_writes(false).await, std::vec![2557]);
+    }
+
     #[fixture_test]
     async fn arm_motor_electrical_clears_stale_stall_latch() {
         use core::sync::atomic::Ordering::Relaxed;
@@ -1266,8 +1326,10 @@ mod tests {
         backend.spi_log
     }
 
-    fn arm_prefix() -> [SpiOp; 6] {
-        use foci_tmc4671::registers::{CONFIG_ADVANCED_PI_REPRESENT, PID_TORQUE_FLUX_LIMITS};
+    fn arm_prefix() -> [SpiOp; 7] {
+        use foci_tmc4671::registers::{
+            CONFIG_ADVANCED_PI_REPRESENT, PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET,
+        };
         [
             SpiOp::DrainPendingConfig,
             SpiOp::Read,
@@ -1276,6 +1338,7 @@ mod tests {
                 u32::from(CONFIG_ADVANCED_PI_REPRESENT.sub_addr),
             ),
             SpiOp::Read,
+            SpiOp::Write(PID_TORQUE_FLUX_OFFSET.addr(), 0),
             SpiOp::Write(PID_TORQUE_FLUX_LIMITS.addr(), 0x1234),
             SpiOp::Read,
         ]
@@ -2021,5 +2084,90 @@ mod tests {
         );
 
         tmc_state.config_apply_pending.store(0, Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_after_a_failed_offset_clear_and_queue_flush_zeroes_the_stale_offset_first() {
+        use crate::commission_dispatch::test_support::current_limit;
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::{
+            MOTOR_TYPE_N_POLE_PAIRS, PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET,
+        };
+        let limit = current_limit(1_000);
+        let held_limit = crate::tmc_control::current_limit::reserved_limit(limit).register_value();
+        let stale_offset = 400u32 << 16;
+        let tmc = crate::state::tmc::tmc_channel0();
+        let stepper = crate::state::stepper::stepper_channel0();
+        tmc.store_current_limit(limit, Relaxed);
+        let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
+        runtime.hold_offset_headroom_for_test(tmc, stale_offset);
+        let mut backend = MockBackend::new();
+        backend.fail_on_write = Some(PID_TORQUE_FLUX_OFFSET.addr());
+
+        apply_shutdown_safe_state(&mut runtime, &mut backend, tmc, stepper).await;
+        assert!(
+            backend
+                .spi_log
+                .contains(&SpiOp::Write(PID_TORQUE_FLUX_OFFSET.addr(), 0)),
+            "safe state attempted the offset clear"
+        );
+        assert_ne!(
+            backend.registers.get(&PID_TORQUE_FLUX_OFFSET.addr()),
+            Some(&0),
+            "the offset clear never reached the chip"
+        );
+        backend.fail_on_write = None;
+        let flushed_at = backend.spi_log.len();
+        runtime.reset_runtime_state();
+        crate::tmc_control::TmcControlRuntime::reset_channel_state(tmc, stepper);
+        tmc.store_current_limit(limit, Relaxed);
+        tmc.motor_sentinel.store(0x0002_0032, Relaxed);
+        let _ = backend
+            .write_register(MOTOR_TYPE_N_POLE_PAIRS, 0x0002_0032)
+            .await;
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+
+        arm_motor_electrical(&mut backend, &mut state)
+            .await
+            .expect("arm succeeds once the offset write succeeds");
+
+        let mut writes = std::vec![
+            (PID_TORQUE_FLUX_LIMITS.addr(), held_limit),
+            (PID_TORQUE_FLUX_OFFSET.addr(), stale_offset),
+        ];
+        writes.extend(
+            backend
+                .spi_log
+                .iter()
+                .enumerate()
+                .filter_map(|(index, op)| match op {
+                    SpiOp::Write(addr, _)
+                        if index < flushed_at && *addr == PID_TORQUE_FLUX_OFFSET.addr() =>
+                    {
+                        None
+                    }
+                    SpiOp::Write(addr, value) => Some((*addr, *value)),
+                    _ => None,
+                }),
+        );
+        let limit_write = writes
+            .iter()
+            .rposition(|(addr, _)| *addr == PID_TORQUE_FLUX_LIMITS.addr())
+            .expect("arm writes the operational limit");
+        assert_eq!(
+            writes[..limit_write]
+                .iter()
+                .rev()
+                .find(|(addr, _)| *addr == PID_TORQUE_FLUX_OFFSET.addr()),
+            Some(&(PID_TORQUE_FLUX_OFFSET.addr(), 0)),
+            "{writes:?}"
+        );
+        crate::tmc_control::test_spi::assert_limit_plus_offset_within(
+            &writes,
+            u32::from(limit.raw()),
+        );
+        tmc.motor_sentinel.store(0, Relaxed);
     }
 }

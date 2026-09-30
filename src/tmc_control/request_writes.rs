@@ -21,8 +21,10 @@ pub enum SetCurrentError {
 /// writes `PID_TORQUE_FLUX_LIMITS`, and stores the register value in channel
 /// current-limit state.
 ///
-/// While `tmc_state.homing_clamp_active` is set, the register write is deferred
-/// and only the stored run current is updated.
+/// While the offset-headroom reservation is set, the limit is recorded as the pending run limit
+/// without being published or written; the reservation release commits and writes it. Otherwise,
+/// while `tmc_state.homing_clamp_active` is set, the register write is deferred and only the
+/// stored run current is updated.
 ///
 /// # Parameters
 ///
@@ -56,6 +58,15 @@ where
         SetCurrentError::InvalidLimit(error)
     })?;
     let register_value = limit.register_value();
+    if tmc_state.offset_headroom_reserved(Relaxed) {
+        tmc_state.store_pending_run_limit(limit);
+        defmt::info!(
+            "TMC4671 current: {}mA RMS -> {} counts (peak), deferred: offset headroom reserved",
+            run_ma,
+            register_value
+        );
+        return Ok(());
+    }
     if tmc_state.homing_clamp_active.load(Relaxed) {
         tmc_state.store_current_limit(limit, Relaxed);
         defmt::info!(
@@ -312,6 +323,24 @@ mod tests {
         tmc_state().store_current_limit(
             foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
             Ordering::Relaxed,
+        );
+    }
+
+    #[fixture_test]
+    async fn set_current_while_reserved_defers_without_publishing() {
+        let committed = crate::commission_dispatch::test_support::current_limit(2557);
+        tmc_state().store_current_limit(committed, Ordering::Relaxed);
+        tmc_state().set_offset_headroom_reserved(true, Ordering::Relaxed);
+
+        let mut tmc = Tmc4671Spi::new(MockRawSpi::default());
+        let result = apply_set_current(&mut tmc, tmc_state(), 1500, 1.155).await;
+
+        assert_eq!(result, Ok(()));
+        assert!(tmc.into_inner().writes.is_empty());
+        assert_eq!(tmc_state().load_current_limit(Ordering::Relaxed), committed);
+        assert_eq!(
+            tmc_state().take_pending_run_limit(),
+            Some(current_limit_from_run_ma(1500, 1.155).unwrap())
         );
     }
 

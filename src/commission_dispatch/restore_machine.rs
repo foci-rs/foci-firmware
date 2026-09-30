@@ -641,11 +641,12 @@ impl TerminalRestoreMachine {
                     }
                 }
                 RestoreCursor::CommissionWriteCurrentLimit(gains) => {
-                    let current_limit = state.tmc.load_current_limit(Relaxed).register_value();
                     if backend
                         .write_register(
                             foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS,
-                            current_limit,
+                            crate::tmc_control::current_limit::operational_limit_register(
+                                state.tmc,
+                            ),
                         )
                         .await
                         .is_err()

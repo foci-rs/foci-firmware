@@ -1297,6 +1297,51 @@ fn homing_channel_tick_preserves_openffboard_ungated_restore() {
     });
 }
 
+fn post_homing_restore_limit_writes(reserved: bool) -> std::vec::Vec<u32> {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        tmc_state.store_outer_gains(crate::pid::test_outer_gains(7, 9, 1152, 0), Relaxed);
+        tmc_state.store_current_limit(current_limit(2557), Relaxed);
+        tmc_state.homing_clamp_active.store(true, Relaxed);
+        tmc_state.set_offset_headroom_reserved(reserved, Relaxed);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = runtime
+            .apply_homing_channel_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &commissioning_runtime_config(),
+                3,
+                due_homing_window(),
+            )
+            .await;
+
+        assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
+        assert!(!tmc_state.homing_clamp_active.load(Relaxed));
+        tmc.into_inner()
+            .writes
+            .iter()
+            .filter(|(addr, _)| *addr == PID_TORQUE_FLUX_LIMITS.addr())
+            .map(|(_, value)| *value)
+            .collect()
+    })
+}
+
+#[test]
+fn post_homing_restore_writes_the_reserved_limit_while_the_reservation_is_set() {
+    assert_eq!(
+        post_homing_restore_limit_writes(true),
+        std::vec![2557 - 1278]
+    );
+}
+
+#[test]
+fn post_homing_restore_writes_the_committed_limit_while_the_reservation_is_clear() {
+    assert_eq!(post_homing_restore_limit_writes(false), std::vec![2557]);
+}
+
 #[test]
 fn homing_state_1_outer_gain_failure_retries_twice_then_fails_closed() {
     pollster::block_on(async {
@@ -5003,6 +5048,119 @@ fn failed_pending_limit_write_keeps_the_request() {
         assert_eq!(rig.committed(), 1_200);
         assert_eq!(applied_pair(&rig.log, 1_000), (1_200, 0));
         assert!(!rig.tmc_state.has_pending_run_limit());
+        rig.assert_observed_invariant();
+    });
+}
+
+impl ReservationRig {
+    async fn drain_set_current(
+        &mut self,
+        run_ma: u32,
+    ) -> Result<(), crate::tmc_control::pending_config::PendingConfigItem> {
+        self.tmc_state.run_current_ma_cfg.store(run_ma, Relaxed);
+        self.tmc_state
+            .config_apply_pending
+            .fetch_or(crate::state::tmc::PENDING_CURRENT, Relaxed);
+        let mut stored_inner_gains = None;
+        let mut tmc = Tmc4671Spi::new(self.observed(RuntimeMockSpi::default()));
+        let result = crate::tmc_control::pending_config::drain_pending_config(
+            &mut tmc,
+            self.tmc_state,
+            self.config.tmc,
+            crate::tmc_control::pending_config::PendingConfigSink {
+                stored_inner_gains: &mut stored_inner_gains,
+            },
+        )
+        .await;
+        self.record(tmc.into_inner());
+        result
+    }
+
+    fn run_limit_for(&self, run_ma: u32) -> u32 {
+        crate::tmc_control::current_limit::current_limit_from_run_ma(
+            run_ma,
+            self.config.tmc.current_scale_ma_per_lsb,
+        )
+        .expect("current must be representable")
+        .register_value()
+    }
+}
+
+fn drained_set_current_while_held_converges(run_ma: u32) {
+    pollster::block_on(async {
+        let mut rig = held_rig(1_000);
+        let requested = rig.run_limit_for(run_ma);
+        let drain_start = rig.log.len();
+
+        assert_eq!(rig.drain_set_current(run_ma).await, Ok(()));
+
+        assert!(limit_offset_writes(&rig.log[drain_start..]).is_empty());
+        assert_eq!(rig.committed(), 1_000);
+        assert_eq!(
+            rig.tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_CURRENT,
+            0
+        );
+        assert_eq!(
+            rig.tmc_state
+                .peek_pending_run_limit()
+                .map(|limit| limit.register_value()),
+            Some(requested)
+        );
+        let release_start = rig.log.len();
+
+        rig.tick().await.unwrap();
+
+        assert_eq!(
+            limit_offset_writes(&rig.log[release_start..]),
+            std::vec![
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+                (PID_TORQUE_FLUX_LIMITS.addr(), requested)
+            ]
+        );
+        let write = release_start
+            + rig.log[release_start..]
+                .iter()
+                .position(|entry| *entry == (PID_TORQUE_FLUX_LIMITS.addr(), requested))
+                .expect("the release writes the requested limit");
+        let committed_at_write = rig.committed_at_write.borrow()[write];
+        if requested < 1_000 {
+            assert_eq!(committed_at_write, 1_000);
+        } else {
+            assert_eq!(committed_at_write, requested);
+        }
+        assert_eq!(rig.committed(), requested);
+        assert!(!rig.tmc_state.has_pending_run_limit());
+        assert!(!rig.tmc_state.offset_headroom_reserved(Relaxed));
+        rig.assert_observed_invariant();
+    });
+}
+
+#[test]
+fn firmware_defers_a_lower_set_current_drained_while_held() {
+    drained_set_current_while_held_converges(400);
+}
+
+#[test]
+fn firmware_defers_a_higher_set_current_drained_while_held() {
+    drained_set_current_while_held_converges(1_000);
+}
+
+#[test]
+fn set_current_while_held_keeps_the_committed_limit_until_the_release_commits_it() {
+    pollster::block_on(async {
+        let mut rig = held_rig(1_000);
+
+        assert_eq!(rig.drain_set_current(400).await, Ok(()));
+        assert_eq!(rig.committed(), 1_000);
+        for _ in 0..3 {
+            let failing = RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_OFFSET.addr());
+            let _ = rig.tick_on(failing, false, false).await;
+            assert_eq!(rig.committed(), 1_000);
+        }
+
+        rig.tick().await.unwrap();
+
+        assert_eq!(rig.committed(), rig.run_limit_for(400));
         rig.assert_observed_invariant();
     });
 }
