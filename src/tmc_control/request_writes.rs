@@ -339,7 +339,7 @@ mod tests {
         assert!(tmc.into_inner().writes.is_empty());
         assert_eq!(tmc_state().load_current_limit(Ordering::Relaxed), committed);
         assert_eq!(
-            tmc_state().take_pending_run_limit(),
+            tmc_state().peek_pending_run_limit(),
             Some(current_limit_from_run_ma(1500, 1.155).unwrap())
         );
     }

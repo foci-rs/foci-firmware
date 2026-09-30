@@ -4880,7 +4880,7 @@ fn set_current_arriving_during_a_transition_write_is_neither_lost_nor_unsafe() {
 
         assert_eq!(rig.committed(), 800);
         assert!(!rig.tmc_state.offset_headroom_reserved(Relaxed));
-        assert_eq!(rig.tmc_state.take_pending_run_limit(), None);
+        assert_eq!(rig.tmc_state.peek_pending_run_limit(), None);
         let second_write = position_of(&rig.log, (PID_TORQUE_FLUX_LIMITS.addr(), 800));
         for write in [first_write, second_write] {
             let last_offset = rig.log[..write]

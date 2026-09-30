@@ -482,14 +482,6 @@ impl TmcChannelState {
         );
     }
 
-    /// Take the pending run limit, leaving none pending.
-    pub fn take_pending_run_limit(&self) -> Option<PidTorqueFluxLimit> {
-        decode_pending_run_limit(
-            self.pending_run_limit
-                .swap(NO_PENDING_RUN_LIMIT, Ordering::AcqRel),
-        )
-    }
-
     /// Return whether startup established the fixed PI representation.
     pub fn pi_representation_established(&self) -> bool {
         self.pi_representation_established.load(Ordering::Acquire)
@@ -938,25 +930,6 @@ mod tests {
     }
 
     #[test]
-    fn pending_run_limit_is_taken_once() {
-        let state = TmcChannelState::new();
-
-        assert_eq!(state.take_pending_run_limit(), None);
-        state.store_pending_run_limit(PidTorqueFluxLimit::new(600).unwrap());
-        assert_eq!(
-            state.take_pending_run_limit(),
-            Some(PidTorqueFluxLimit::new(600).unwrap())
-        );
-        assert_eq!(state.take_pending_run_limit(), None);
-
-        state.store_pending_run_limit(PidTorqueFluxLimit::ZERO);
-        assert_eq!(
-            state.take_pending_run_limit(),
-            Some(PidTorqueFluxLimit::ZERO)
-        );
-    }
-
-    #[test]
     fn reset_clears_reservation_and_pending_limit() {
         let state = TmcChannelState::new();
         state.set_offset_headroom_reserved(true, Relaxed);
@@ -965,7 +938,7 @@ mod tests {
         state.reset();
 
         assert!(!state.offset_headroom_reserved(Relaxed));
-        assert_eq!(state.take_pending_run_limit(), None);
+        assert_eq!(state.peek_pending_run_limit(), None);
     }
 
     #[test]
