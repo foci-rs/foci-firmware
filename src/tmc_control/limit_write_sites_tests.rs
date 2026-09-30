@@ -43,6 +43,16 @@ const LIMIT_WRITE_EXEMPTIONS: &[(&str, &str, &str)] = &[
         "restore_operational_limit",
         "commissioning probe restore: runs only after the exclusive-activity release",
     ),
+    (
+        "tmc_diagnostics/torque_sample.rs",
+        "run_position_torque_offset_sample_request",
+        "offset diagnostic: lowers the limit by the offset magnitude before writing the offset",
+    ),
+    (
+        "tmc_diagnostics/torque_sample.rs",
+        "restore_offset_then_limit",
+        "offset diagnostic: restores the committed limit only after the offset clear succeeded",
+    ),
 ];
 
 const LIMIT_REGISTER: &str = "PID_TORQUE_FLUX_LIMITS";

@@ -9,8 +9,8 @@ use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, ABN_DECODER_PPR, ADC_AGPI_A_RAW_ADC_VM_RAW, INTERIM_FOC_IQ_ID,
     INTERIM_FOC_UQ_UD_LIMITED, MODE_RAMP_MODE_MOTION, PID_ERROR_PID_FLUX_ERROR_SUM,
     PID_ERROR_PID_TORQUE_ERROR_SUM, PID_POSITION_ACTUAL, PID_POSITION_TARGET,
-    PID_TORQUE_FLUX_ACTUAL, PID_TORQUE_FLUX_OFFSET, PID_TORQUE_FLUX_TARGET, PIDOUT_UQ_UD_LIMITS,
-    STATUS_FLAGS, UQ_UD_EXT,
+    PID_TORQUE_FLUX_ACTUAL, PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET, PID_TORQUE_FLUX_TARGET,
+    PIDOUT_UQ_UD_LIMITS, STATUS_FLAGS, UQ_UD_EXT,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -35,7 +35,10 @@ struct DiagnosticMockSpi {
     fail_transaction: Option<usize>,
     fail_writes_to: Option<u8>,
     fail_reads_from: Option<u8>,
+    fail_write_when: Option<std::boxed::Box<WriteFailure>>,
 }
+
+type WriteFailure = dyn FnMut(usize, u8, u32) -> bool;
 
 impl DiagnosticMockSpi {
     fn with_read(mut self, value: u32) -> Self {
@@ -45,6 +48,22 @@ impl DiagnosticMockSpi {
 
     fn fail_writes_to(mut self, addr: u8) -> Self {
         self.fail_writes_to = Some(addr);
+        self
+    }
+
+    fn fail_reads_from(mut self, addr: u8) -> Self {
+        self.fail_reads_from = Some(addr);
+        self
+    }
+
+    /// Fail each write for which `fails(attempt_index, addr, value)` returns true.
+    fn fail_write_when(mut self, fails: impl FnMut(usize, u8, u32) -> bool + 'static) -> Self {
+        self.fail_write_when = Some(std::boxed::Box::new(fails));
+        self
+    }
+
+    fn with_register(mut self, register: foci_tmc4671::registers::Register, value: u32) -> Self {
+        self.register_values.insert(register.addr(), value);
         self
     }
 }
@@ -65,8 +84,14 @@ impl embedded_hal_async::spi::SpiDevice<u8> for DiagnosticMockSpi {
                 embedded_hal_async::spi::Operation::Write(buf) if buf.len() == 5 => {
                     let addr = buf[0] & 0x7f;
                     let value = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                    let attempt = self.write_attempts.len();
                     self.write_attempts.push((addr, value));
-                    if fail_this_transaction || self.fail_writes_to == Some(addr) {
+                    let predicate_fails = self
+                        .fail_write_when
+                        .as_mut()
+                        .is_some_and(|fails| fails(attempt, addr, value));
+                    if fail_this_transaction || self.fail_writes_to == Some(addr) || predicate_fails
+                    {
                         return Err(MockSpiError);
                     }
                     self.writes.push((addr, value));
@@ -1006,9 +1031,10 @@ fn current_torque_sample_success_reports_current_torque_sample_kind() {
     });
 }
 
-#[test]
+#[fixture_test]
 fn position_offset_rejects_non_position_mode() {
     pollster::block_on(async {
+        store_channel0_limit(OFFSET_SAMPLE_LIMIT);
         let mut runtime = ready_runtime();
         let mut delay = MockDelay::default();
         let raw_spi = DiagnosticMockSpi::default().with_read(0x8000_0001);
@@ -1047,12 +1073,13 @@ fn position_offset_rejects_non_position_mode() {
     });
 }
 
-#[test]
+#[fixture_test]
 fn position_offset_spi_failure_attempts_offset_restore() {
     pollster::block_on(async {
+        store_channel0_limit(OFFSET_SAMPLE_LIMIT);
         let raw_spi = DiagnosticMockSpi::default()
             .with_read(0x8000_0003)
-            .with_read(0x1234_5678)
+            .with_read(0x0000_5678)
             .fail_writes_to(PIDOUT_UQ_UD_LIMITS.addr());
         let mut tmc = Tmc4671Spi::new(raw_spi);
         let mut runtime = ready_runtime();
@@ -1087,7 +1114,8 @@ fn position_offset_spi_failure_attempts_offset_restore() {
             raw_spi.write_attempts,
             std::vec![
                 (PIDOUT_UQ_UD_LIMITS.addr(), 444),
-                (PID_TORQUE_FLUX_OFFSET.addr(), 0x1234_5678),
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0x0000_5678),
+                (PID_TORQUE_FLUX_LIMITS.addr(), OFFSET_SAMPLE_LIMIT),
                 (PIDOUT_UQ_UD_LIMITS.addr(), 777),
                 (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
             ]
@@ -1095,7 +1123,8 @@ fn position_offset_spi_failure_attempts_offset_restore() {
         assert_eq!(
             raw_spi.writes,
             std::vec![
-                (PID_TORQUE_FLUX_OFFSET.addr(), 0x1234_5678),
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0x0000_5678),
+                (PID_TORQUE_FLUX_LIMITS.addr(), OFFSET_SAMPLE_LIMIT),
                 (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
             ]
         );
@@ -1106,12 +1135,13 @@ fn position_offset_spi_failure_attempts_offset_restore() {
     });
 }
 
-#[test]
+#[fixture_test]
 fn position_torque_offset_sample_invalid_ppr_aborts_before_excitation() {
     pollster::block_on(async {
+        store_channel0_limit(OFFSET_SAMPLE_LIMIT);
         let raw_spi = DiagnosticMockSpi::default()
             .with_read(0x8000_0003)
-            .with_read(0x1234_5678)
+            .with_read(0x0000_5678)
             .with_read(100)
             .with_read(0);
         let mut tmc = Tmc4671Spi::new(raw_spi);
@@ -1152,12 +1182,13 @@ fn position_torque_offset_sample_invalid_ppr_aborts_before_excitation() {
     });
 }
 
-#[test]
+#[fixture_test]
 fn position_torque_offset_sample_exact_half_turn_aborts_via_post_measurement_error() {
     pollster::block_on(async {
+        store_channel0_limit(OFFSET_SAMPLE_LIMIT);
         let raw_spi = DiagnosticMockSpi::default()
             .with_read(0x8000_0003)
-            .with_read(0x1234_5678)
+            .with_read(0x0000_5678)
             .with_read(100)
             .with_read(1000)
             .with_read(0)
@@ -1203,12 +1234,13 @@ fn position_torque_offset_sample_exact_half_turn_aborts_via_post_measurement_err
     });
 }
 
-#[test]
+#[fixture_test]
 fn position_torque_offset_sample_success_reports_position_torque_offset_kind() {
     pollster::block_on(async {
+        store_channel0_limit(OFFSET_SAMPLE_LIMIT);
         let raw_spi = DiagnosticMockSpi::default()
             .with_read(0x8000_0003)
-            .with_read(0x1234_5678)
+            .with_read(0x0000_5678)
             .with_read(100)
             .with_read(1000)
             .with_read(0x0005_0000)
@@ -1323,12 +1355,13 @@ fn current_torque_sample_host_liveness_expiry_reports_dedicated_status_and_resto
     });
 }
 
-#[test]
+#[fixture_test]
 fn position_offset_host_liveness_expiry_reports_dedicated_status_and_restores() {
     pollster::block_on(async {
+        store_channel0_limit(OFFSET_SAMPLE_LIMIT);
         let raw_spi = DiagnosticMockSpi::default()
             .with_read(0x8000_0003)
-            .with_read(0x1234_5678)
+            .with_read(0x0000_5678)
             .with_read(100)
             .with_read(1000)
             .with_read(0);
@@ -1368,11 +1401,12 @@ fn position_offset_host_liveness_expiry_reports_dedicated_status_and_restores() 
         assert_eq!(delay.delays_ms, std::vec![100, 50]);
 
         let raw_spi = tmc.into_inner();
-        let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 3..];
+        let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 4..];
         assert_eq!(
             restore_tail,
             [
-                (PID_TORQUE_FLUX_OFFSET.addr(), 0x1234_5678),
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0x0000_5678),
+                (PID_TORQUE_FLUX_LIMITS.addr(), OFFSET_SAMPLE_LIMIT),
                 (PIDOUT_UQ_UD_LIMITS.addr(), 777),
                 (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
             ]
@@ -1479,12 +1513,13 @@ fn current_torque_sample_post_settle_host_liveness_expiry_reports_dedicated_stat
     });
 }
 
-#[test]
+#[fixture_test]
 fn position_offset_post_settle_host_liveness_expiry_reports_dedicated_status() {
     pollster::block_on(async {
+        store_channel0_limit(OFFSET_SAMPLE_LIMIT);
         let raw_spi = DiagnosticMockSpi::default()
             .with_read(0x8000_0003)
-            .with_read(0x1234_5678)
+            .with_read(0x0000_5678)
             .with_read(100)
             .with_read(1000)
             .with_read(0);
@@ -1524,16 +1559,371 @@ fn position_offset_post_settle_host_liveness_expiry_reports_dedicated_status() {
         assert_eq!(delay.delays_ms, std::vec![20]);
 
         let raw_spi = tmc.into_inner();
-        let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 3..];
+        let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 4..];
         assert_eq!(
             restore_tail,
             [
-                (PID_TORQUE_FLUX_OFFSET.addr(), 0x1234_5678),
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0x0000_5678),
+                (PID_TORQUE_FLUX_LIMITS.addr(), OFFSET_SAMPLE_LIMIT),
                 (PIDOUT_UQ_UD_LIMITS.addr(), 777),
                 (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
             ]
         );
     });
+}
+
+const OFFSET_SAMPLE_LIMIT: u32 = 1_000;
+
+fn store_channel0_limit(raw: u32) {
+    crate::state::tmc::tmc_channel0().store_current_limit(
+        foci_tmc4671::current_limit::PidTorqueFluxLimit::new(raw).expect("valid limit"),
+        core::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+fn offset_sample_spi() -> DiagnosticMockSpi {
+    DiagnosticMockSpi::default()
+        .with_register(
+            MODE_RAMP_MODE_MOTION,
+            crate::tmc_register_values::MOTION_POSITION_ADVANCED_PI,
+        )
+        .with_register(ABN_DECODER_PPR, 1_000)
+}
+
+fn offset_register(target: i16) -> u32 {
+    u32::from(target as u16) << 16
+}
+
+fn limit_and_offset_writes(log: &[(u8, u32)]) -> std::vec::Vec<(u8, u32)> {
+    log.iter()
+        .copied()
+        .filter(|(addr, _)| {
+            *addr == PID_TORQUE_FLUX_LIMITS.addr() || *addr == PID_TORQUE_FLUX_OFFSET.addr()
+        })
+        .collect()
+}
+
+async fn run_offset_sample(
+    tmc: &mut Tmc4671Spi<DiagnosticMockSpi>,
+    runtime: &mut TmcControlRuntime,
+    target: i16,
+) -> CurrentTorqueSampleReport {
+    let mut delay = MockDelay::default();
+    let outcome = run_position_torque_offset_sample_request(
+        tmc_position_torque_offset_sample_test(0, 4, target, 3, 444),
+        DiagnosticContext {
+            host_liveness_expired: None,
+            tmc,
+            runtime,
+            delay: &mut delay,
+            power_stage: &mut MockDiagnosticPowerStage::default(),
+            tmc_config: &TEST_TMC_CONFIG,
+            feedback_config: crate::config::FeedbackConfig::abn_abn(),
+            readiness: DiagnosticReadiness {
+                homing_active: false,
+                stepper_active: false,
+                saved_voltage_limit: 777,
+            },
+        },
+    )
+    .await;
+    let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome else {
+        panic!("expected position offset report");
+    };
+    report
+}
+
+async fn maintenance_tick(
+    tmc: &mut Tmc4671Spi<DiagnosticMockSpi>,
+    runtime: &mut TmcControlRuntime,
+) -> Result<(), ()> {
+    let tmc_config = crate::config::TmcConfig::default_for_test();
+    let config = crate::tmc_control::TmcControlConfig::new(
+        84_000_000,
+        tmc_config.pwm_freq_hz(),
+        0.03125,
+        tmc_config,
+    );
+    let refs = crate::tmc_control::TmcControlStateRefs::new(
+        crate::state::tmc::tmc_channel0(),
+        crate::state::stepper::stepper_channel0(),
+    );
+    runtime
+        .apply_feedforward_tick(tmc, refs, &config, false, false, true)
+        .await
+}
+
+/// Assert the log ends with the offset back at `saved` followed by the full committed limit.
+fn assert_offset_then_limit_restored(log: &[(u8, u32)], saved: u32) {
+    let pairs = limit_and_offset_writes(log);
+    let last_offset = pairs
+        .iter()
+        .rposition(|(addr, _)| *addr == PID_TORQUE_FLUX_OFFSET.addr())
+        .unwrap_or_else(|| panic!("no offset restore in {pairs:?}"));
+    let last_limit = pairs
+        .iter()
+        .rposition(|(addr, _)| *addr == PID_TORQUE_FLUX_LIMITS.addr())
+        .unwrap_or_else(|| panic!("no limit restore in {pairs:?}"));
+    assert_eq!(pairs[last_offset].1, saved, "{pairs:?}");
+    assert_eq!(pairs[last_limit].1, OFFSET_SAMPLE_LIMIT, "{pairs:?}");
+    assert!(last_offset < last_limit, "{pairs:?}");
+}
+
+#[fixture_test]
+async fn offset_diagnostic_lowers_the_limit_before_writing_the_offset() {
+    store_channel0_limit(OFFSET_SAMPLE_LIMIT);
+    let mut runtime = ready_runtime();
+    let mut tmc = Tmc4671Spi::new(offset_sample_spi());
+
+    let report = run_offset_sample(&mut tmc, &mut runtime, 300).await;
+
+    assert_eq!(report.status, 0);
+    let spi = tmc.into_inner();
+    assert_eq!(
+        limit_and_offset_writes(&spi.write_attempts),
+        std::vec![
+            (PID_TORQUE_FLUX_LIMITS.addr(), 700),
+            (PID_TORQUE_FLUX_OFFSET.addr(), offset_register(300)),
+            (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+            (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+            (PID_TORQUE_FLUX_LIMITS.addr(), OFFSET_SAMPLE_LIMIT),
+        ]
+    );
+    crate::tmc_control::test_spi::assert_limit_plus_offset_within(&spi.writes, OFFSET_SAMPLE_LIMIT);
+    assert!(!runtime.offset_headroom_engaged());
+}
+
+#[fixture_test]
+async fn offset_diagnostic_rejects_targets_above_the_limit() {
+    for target in [1_001, -1_001, i16::MIN] {
+        store_channel0_limit(OFFSET_SAMPLE_LIMIT);
+        let mut runtime = ready_runtime();
+        let mut tmc = Tmc4671Spi::new(offset_sample_spi());
+
+        let report = run_offset_sample(&mut tmc, &mut runtime, target).await;
+
+        assert_eq!(
+            report.status, CURRENT_STEP_STATUS_NOT_READY,
+            "target {target}"
+        );
+        let spi = tmc.into_inner();
+        assert!(
+            spi.write_attempts.is_empty(),
+            "target {target}: {:?}",
+            spi.write_attempts
+        );
+    }
+    for target in [1_000, -1_000] {
+        store_channel0_limit(OFFSET_SAMPLE_LIMIT);
+        let mut runtime = ready_runtime();
+        let mut tmc = Tmc4671Spi::new(offset_sample_spi());
+
+        let report = run_offset_sample(&mut tmc, &mut runtime, target).await;
+
+        assert_eq!(report.status, 0, "target {target}");
+        let spi = tmc.into_inner();
+        let pairs = limit_and_offset_writes(&spi.writes);
+        assert_eq!(
+            pairs[..2],
+            [
+                (PID_TORQUE_FLUX_LIMITS.addr(), 0),
+                (PID_TORQUE_FLUX_OFFSET.addr(), offset_register(target)),
+            ],
+            "target {target}"
+        );
+        crate::tmc_control::test_spi::assert_limit_plus_offset_within(
+            &spi.writes,
+            OFFSET_SAMPLE_LIMIT,
+        );
+        assert_offset_then_limit_restored(&spi.writes, 0);
+    }
+}
+
+#[fixture_test]
+async fn offset_diagnostic_restores_on_every_failure_path() {
+    let mut baseline = Tmc4671Spi::new(offset_sample_spi());
+    store_channel0_limit(OFFSET_SAMPLE_LIMIT);
+    let _ = run_offset_sample(&mut baseline, &mut ready_runtime(), 300).await;
+    let baseline_writes = baseline.into_inner().write_attempts;
+
+    let single_failures = (0..baseline_writes.len()).map(|failed| {
+        (
+            std::format!("write {failed} {:?} fails once", baseline_writes[failed]),
+            offset_sample_spi().fail_write_when(move |attempt, _, _| attempt == failed),
+        )
+    });
+    let persistent_failures = baseline_writes.iter().map(|&(addr, _)| {
+        (
+            std::format!("every write to {addr:#04x} fails"),
+            offset_sample_spi().fail_writes_to(addr),
+        )
+    });
+    let read_failure = core::iter::once((
+        std::string::String::from("mid-run STATUS_FLAGS read fails"),
+        offset_sample_spi().fail_reads_from(STATUS_FLAGS.addr()),
+    ));
+
+    for (case, spi) in single_failures
+        .chain(persistent_failures)
+        .chain(read_failure)
+    {
+        crate::state::tmc::reset_all_tmc_channels();
+        store_channel0_limit(OFFSET_SAMPLE_LIMIT);
+        let mut runtime = ready_runtime();
+        let mut tmc = Tmc4671Spi::new(spi);
+
+        let _ = run_offset_sample(&mut tmc, &mut runtime, 300).await;
+
+        let spi = tmc.inner();
+        crate::tmc_control::test_spi::assert_limit_plus_offset_within(
+            &spi.writes,
+            OFFSET_SAMPLE_LIMIT,
+        );
+        let limit_or_offset_blocked = [PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET]
+            .iter()
+            .any(|register| spi.fail_writes_to == Some(register.addr()));
+        if limit_or_offset_blocked {
+            assert!(runtime.offset_headroom_engaged(), "{case}");
+            continue;
+        }
+        if runtime.offset_headroom_engaged() {
+            maintenance_tick(&mut tmc, &mut runtime)
+                .await
+                .unwrap_or_else(|()| panic!("{case}: recovery tick failed"));
+        }
+        let spi = tmc.into_inner();
+        assert_offset_then_limit_restored(&spi.writes, 0);
+        crate::tmc_control::test_spi::assert_limit_plus_offset_within(
+            &spi.writes,
+            OFFSET_SAMPLE_LIMIT,
+        );
+        assert!(!runtime.offset_headroom_engaged(), "{case}");
+    }
+}
+
+#[fixture_test]
+async fn offset_diagnostic_never_restores_the_limit_after_a_failed_offset_clear() {
+    let target_offset = offset_register(300);
+    let lowered = (PID_TORQUE_FLUX_LIMITS.addr(), 700);
+    let target_write = (PID_TORQUE_FLUX_OFFSET.addr(), target_offset);
+    let clear = (PID_TORQUE_FLUX_OFFSET.addr(), 0);
+    let full_limit = (PID_TORQUE_FLUX_LIMITS.addr(), OFFSET_SAMPLE_LIMIT);
+
+    store_channel0_limit(OFFSET_SAMPLE_LIMIT);
+    let mut runtime = ready_runtime();
+    let mut clear_failures = 0;
+    let transient = offset_sample_spi()
+        .fail_reads_from(STATUS_FLAGS.addr())
+        .fail_write_when(move |_, addr, value| {
+            let fails = addr == PID_TORQUE_FLUX_OFFSET.addr() && value == 0 && clear_failures == 0;
+            clear_failures += usize::from(fails);
+            fails
+        });
+    let mut tmc = Tmc4671Spi::new(transient);
+
+    let report = run_offset_sample(&mut tmc, &mut runtime, 300).await;
+
+    assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
+    let spi = tmc.into_inner();
+    assert_eq!(
+        limit_and_offset_writes(&spi.write_attempts),
+        std::vec![lowered, target_write, clear, clear, full_limit]
+    );
+    assert_eq!(
+        limit_and_offset_writes(&spi.writes),
+        std::vec![lowered, target_write, clear, full_limit]
+    );
+    assert!(!runtime.offset_headroom_engaged());
+
+    crate::state::tmc::reset_all_tmc_channels();
+    store_channel0_limit(OFFSET_SAMPLE_LIMIT);
+    let mut runtime = ready_runtime();
+    let clear_blocked = std::rc::Rc::new(core::cell::Cell::new(true));
+    let blocked = clear_blocked.clone();
+    let persistent = offset_sample_spi()
+        .fail_reads_from(STATUS_FLAGS.addr())
+        .fail_write_when(move |_, addr, value| {
+            blocked.get() && addr == PID_TORQUE_FLUX_OFFSET.addr() && value == 0
+        });
+    let mut tmc = Tmc4671Spi::new(persistent);
+
+    let report = run_offset_sample(&mut tmc, &mut runtime, 300).await;
+
+    assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
+    let attempts = limit_and_offset_writes(&tmc.inner().write_attempts);
+    assert_eq!(attempts[..2], [lowered, target_write]);
+    assert!(
+        attempts[2..].iter().all(|write| *write == clear),
+        "{attempts:?}"
+    );
+    assert!(attempts.len() > 3, "the clear is retried: {attempts:?}");
+    assert_eq!(
+        limit_and_offset_writes(&tmc.inner().writes),
+        std::vec![lowered, target_write]
+    );
+    assert!(runtime.offset_headroom_engaged());
+    assert!(
+        crate::state::tmc::tmc_channel0()
+            .offset_headroom_reserved(core::sync::atomic::Ordering::Relaxed)
+    );
+
+    for _ in 0..3 {
+        assert!(maintenance_tick(&mut tmc, &mut runtime).await.is_err());
+    }
+    assert!(!tmc.inner().write_attempts.contains(&full_limit));
+    assert!(runtime.offset_headroom_engaged());
+
+    clear_blocked.set(false);
+    maintenance_tick(&mut tmc, &mut runtime).await.unwrap();
+
+    let spi = tmc.into_inner();
+    assert_eq!(
+        limit_and_offset_writes(&spi.writes),
+        std::vec![lowered, target_write, clear, full_limit]
+    );
+    assert!(!runtime.offset_headroom_engaged());
+    assert!(
+        !crate::state::tmc::tmc_channel0()
+            .offset_headroom_reserved(core::sync::atomic::Ordering::Relaxed)
+    );
+    crate::tmc_control::test_spi::assert_limit_plus_offset_within(&spi.writes, OFFSET_SAMPLE_LIMIT);
+}
+
+#[fixture_test]
+async fn offset_diagnostic_saves_the_released_offset_not_a_live_one() {
+    let live_offset = offset_register(400);
+    store_channel0_limit(OFFSET_SAMPLE_LIMIT);
+    let tmc_state = crate::state::tmc::tmc_channel0();
+    let mut runtime = ready_runtime();
+    runtime.hold_offset_headroom_for_test(tmc_state, live_offset);
+    let mut tmc = Tmc4671Spi::new(
+        offset_sample_spi()
+            .with_register(PID_TORQUE_FLUX_OFFSET, live_offset)
+            .with_register(PID_TORQUE_FLUX_LIMITS, 500),
+    );
+
+    runtime
+        .release_offset_headroom(&mut tmc, tmc_state)
+        .await
+        .expect("request entry releases the reservation");
+    let report = run_offset_sample(&mut tmc, &mut runtime, 300).await;
+
+    assert_eq!(report.status, 0);
+    let spi = tmc.into_inner();
+    let pairs = limit_and_offset_writes(&spi.writes);
+    let target_at = pairs
+        .iter()
+        .position(|write| *write == (PID_TORQUE_FLUX_OFFSET.addr(), offset_register(300)))
+        .expect("target offset written");
+    assert!(
+        pairs[target_at + 1..]
+            .iter()
+            .filter(|(addr, _)| *addr == PID_TORQUE_FLUX_OFFSET.addr())
+            .all(|(_, value)| *value == 0),
+        "{pairs:?}"
+    );
+    assert_offset_then_limit_restored(&spi.writes, 0);
+    crate::tmc_control::test_spi::assert_limit_plus_offset_within(&spi.writes, OFFSET_SAMPLE_LIMIT);
 }
 
 #[test]

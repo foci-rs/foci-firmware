@@ -1,3 +1,5 @@
+use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::tmc::{TmcRequest, TmcRequestKind, TorqueSampleKind};
 use crate::tmc_register_values::{MOTION_POSITION_ADVANCED_PI, MOTION_TORQUE_ADVANCED_PI};
@@ -11,6 +13,7 @@ use super::{
 };
 
 const CURRENT_STEP_SETTLE_MS: u64 = 20;
+const OFFSET_RESTORE_RETRIES: usize = 3;
 
 fn handled_torque_sample(report: CurrentTorqueSampleReport) -> DiagnosticOutcome {
     DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report))
@@ -440,11 +443,12 @@ where
                 },
             ..
         } => {
-            if !runtime.is_motor_enabled()
-                || !runtime.is_calibrated()
-                || readiness.homing_active
-                || readiness.stepper_active
-            {
+            let ready = runtime.is_motor_enabled()
+                && runtime.is_calibrated()
+                && !readiness.homing_active
+                && !readiness.stepper_active;
+            let limit = tmc_state.load_current_limit(core::sync::atomic::Ordering::Relaxed);
+            let Some(lowered_limit) = offset_sample_limit(limit, target).filter(|_| ready) else {
                 return handled_torque_sample(empty_current_torque_sample_report(
                     oid,
                     TorqueSampleKind::PositionTorqueOffset,
@@ -454,7 +458,7 @@ where
                     sample_delay_ms,
                     voltage_limit,
                 ));
-            }
+            };
 
             let saved_mode = match tmc
                 .read_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION)
@@ -541,6 +545,9 @@ where
                     .map_err(|_| RunnerFailure::Other)?;
                 report.torque_before = crate::tmc::decode_signed_upper_half(before);
 
+                tmc.write_register(PID_TORQUE_FLUX_LIMITS, lowered_limit.register_value())
+                    .await
+                    .map_err(|_| RunnerFailure::Other)?;
                 let offset_reg = u32::from(target as u16) << 16;
                 tmc.write_register(PID_TORQUE_FLUX_OFFSET, offset_reg)
                     .await
@@ -695,13 +702,12 @@ where
                 };
             }
 
-            let _ = tmc
-                .write_register(
-                    foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET,
-                    saved_offset,
-                )
-                .await;
+            let restored = restore_offset_then_limit(tmc, saved_offset, limit).await;
             runtime.invalidate_torque_flux_offset_cache();
+            if restored.is_err() {
+                report.status = CURRENT_STEP_STATUS_SPI;
+                runtime.request_offset_headroom_release(tmc_state);
+            }
             let _ = tmc
                 .write_register(
                     foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS,
@@ -716,4 +722,47 @@ where
         }
         req => DiagnosticOutcome::NotDiagnostic(req),
     }
+}
+
+/// Limit to run with while `target` is applied as the torque offset, or `None` when
+/// `|target|` exceeds `limit`.
+fn offset_sample_limit(limit: PidTorqueFluxLimit, target: i16) -> Option<PidTorqueFluxLimit> {
+    let lowered = limit.raw().checked_sub(target.unsigned_abs())?;
+    Some(
+        PidTorqueFluxLimit::new(u32::from(lowered))
+            .expect("a lowered validated limit stays in the limit domain"),
+    )
+}
+
+/// Write the offset back to `saved_offset`, retrying, and only once that write succeeded write
+/// the committed `limit`.
+///
+/// # Errors
+///
+/// Returns `Err(())` when the offset or limit write failed; the lowered limit is then still
+/// applied and the caller must hand recovery to the offset-headroom release path.
+async fn restore_offset_then_limit<B>(
+    tmc: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
+    saved_offset: u32,
+    limit: PidTorqueFluxLimit,
+) -> Result<(), ()>
+where
+    B: embedded_hal_async::spi::SpiDevice<u8>,
+{
+    use foci_tmc4671::registers::{PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET};
+
+    let mut retries = 0;
+    while tmc
+        .write_register(PID_TORQUE_FLUX_OFFSET, saved_offset)
+        .await
+        .is_err()
+    {
+        if retries == OFFSET_RESTORE_RETRIES {
+            return Err(());
+        }
+        retries += 1;
+    }
+    tmc.write_register(PID_TORQUE_FLUX_LIMITS, limit.register_value())
+        .await
+        .map_err(|_| ())
 }
