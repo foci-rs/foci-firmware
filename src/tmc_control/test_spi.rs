@@ -215,7 +215,7 @@ pub(crate) fn assert_limit_plus_offset_within_schedule(
         if addr == PID_TORQUE_FLUX_LIMITS.addr() {
             limit = value & 0xffff;
         } else if addr == PID_TORQUE_FLUX_OFFSET.addr() {
-            offset = u32::from(((value >> 16) as u16 as i16).unsigned_abs());
+            offset = u32::from(crate::tmc::decode_signed_upper_half(value).unsigned_abs());
         } else {
             continue;
         }

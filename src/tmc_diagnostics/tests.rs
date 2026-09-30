@@ -1653,7 +1653,6 @@ async fn maintenance_tick(
         .await
 }
 
-/// Assert the log ends with the offset back at `saved` followed by the full committed limit.
 fn assert_offset_then_limit_restored(log: &[(u8, u32)], saved: u32) {
     let pairs = limit_and_offset_writes(log);
     let last_offset = pairs

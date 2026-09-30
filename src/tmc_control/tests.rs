@@ -8,7 +8,7 @@ use crate::commission_dispatch::{PostActions, ReplyPayload, StepperPostAction};
 use crate::commissioning::CommissioningEngine;
 use crate::config::TmcConfig;
 use crate::pid::InnerLoopGains;
-use crate::tmc::TmcRequestKind;
+use crate::tmc::{TmcRequestKind, decode_signed_upper_half};
 use crate::tmc_control::dispatch::{
     RegisterRequestError, SharedTmcDispatch, apply_shared_tmc_request,
 };
@@ -4218,7 +4218,7 @@ async fn last_accel_offset_written(limit_raw: u32, interval_add: i32) -> Option<
         .iter()
         .rev()
         .find(|(addr, _)| *addr == PID_TORQUE_FLUX_OFFSET.addr())
-        .map(|(_, value)| (value >> 16) as u16 as i16)
+        .map(|(_, value)| decode_signed_upper_half(*value))
 }
 
 #[test]
@@ -4393,7 +4393,10 @@ fn applied_pair(log: &[(u8, u32)], initial_limit: u32) -> (u32, u32) {
             if addr == PID_TORQUE_FLUX_LIMITS.addr() {
                 (value & 0xffff, offset)
             } else if addr == PID_TORQUE_FLUX_OFFSET.addr() {
-                (limit, u32::from(torque_offset_of(value).unsigned_abs()))
+                (
+                    limit,
+                    u32::from(decode_signed_upper_half(value).unsigned_abs()),
+                )
             } else {
                 (limit, offset)
             }
@@ -4409,12 +4412,8 @@ fn limit_offset_writes(log: &[(u8, u32)]) -> std::vec::Vec<(u8, u32)> {
         .collect()
 }
 
-fn torque_offset_of(value: u32) -> i16 {
-    (value >> 16) as u16 as i16
-}
-
 fn is_nonzero_offset(write: &(u8, u32)) -> bool {
-    write.0 == PID_TORQUE_FLUX_OFFSET.addr() && torque_offset_of(write.1) != 0
+    write.0 == PID_TORQUE_FLUX_OFFSET.addr() && decode_signed_upper_half(write.1) != 0
 }
 
 fn position_of(log: &[(u8, u32)], write: (u8, u32)) -> usize {
@@ -4651,7 +4650,7 @@ fn downward_current_change_from_a_full_reservation_stays_within_bounds() {
             rig.log
                 .iter()
                 .any(|write| write.0 == PID_TORQUE_FLUX_OFFSET.addr()
-                    && torque_offset_of(write.1).unsigned_abs() == 500),
+                    && decode_signed_upper_half(write.1).unsigned_abs() == 500),
             "{:?}",
             rig.log
         );
@@ -4683,7 +4682,7 @@ fn downward_current_change_from_a_full_reservation_stays_within_bounds() {
         assert_eq!(
             rig.log
                 .last()
-                .map(|write| torque_offset_of(write.1).unsigned_abs()),
+                .map(|write| decode_signed_upper_half(write.1).unsigned_abs()),
             Some(300)
         );
         rig.assert_observed_invariant();

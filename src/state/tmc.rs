@@ -121,6 +121,16 @@ impl AtomicOptionalInvert {
 /// Sentinel above the `0..=0x7fff` limit domain meaning no run limit is pending.
 const NO_PENDING_RUN_LIMIT: u16 = u16::MAX;
 
+fn decode_pending_run_limit(raw: u16) -> Option<PidTorqueFluxLimit> {
+    if raw == NO_PENDING_RUN_LIMIT {
+        return None;
+    }
+    Some(
+        PidTorqueFluxLimit::new(u32::from(raw))
+            .expect("pending run limit storage accepts only validated values"),
+    )
+}
+
 /// Runtime state for one board-local TMC4671 channel.
 pub struct TmcChannelState {
     current_limit_value: AtomicU16,
@@ -459,14 +469,7 @@ impl TmcChannelState {
 
     /// Return the pending run limit without taking it.
     pub fn peek_pending_run_limit(&self) -> Option<PidTorqueFluxLimit> {
-        let raw = self.pending_run_limit.load(Ordering::Acquire);
-        if raw == NO_PENDING_RUN_LIMIT {
-            return None;
-        }
-        Some(
-            PidTorqueFluxLimit::new(u32::from(raw))
-                .expect("pending run limit storage accepts only validated values"),
-        )
+        decode_pending_run_limit(self.pending_run_limit.load(Ordering::Acquire))
     }
 
     /// Clear the pending run limit if it is still `limit`, leaving a newer request in place.
@@ -481,15 +484,9 @@ impl TmcChannelState {
 
     /// Take the pending run limit, leaving none pending.
     pub fn take_pending_run_limit(&self) -> Option<PidTorqueFluxLimit> {
-        let raw = self
-            .pending_run_limit
-            .swap(NO_PENDING_RUN_LIMIT, Ordering::AcqRel);
-        if raw == NO_PENDING_RUN_LIMIT {
-            return None;
-        }
-        Some(
-            PidTorqueFluxLimit::new(u32::from(raw))
-                .expect("pending run limit storage accepts only validated values"),
+        decode_pending_run_limit(
+            self.pending_run_limit
+                .swap(NO_PENDING_RUN_LIMIT, Ordering::AcqRel),
         )
     }
 
