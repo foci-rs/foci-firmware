@@ -178,6 +178,10 @@ pub struct TmcChannelState {
     /// Runtime gain in permille applied to the RPM-domain velocity feedforward
     /// offset (1000 = unity).
     pub velocity_feedforward_gain_permille: AtomicU16,
+    /// Acceleration feedforward enable. While it is on and either gain is non-zero, the limit
+    /// register is held at `L - floor(L / 2)` and the torque offset is capped at `floor(L / 2)`,
+    /// where `L` is the committed run-current limit, so the target limit plus the offset never
+    /// exceeds `L`. Run-current changes are deferred until the reservation is released.
     pub accel_feedforward: AtomicBool,
     /// Runtime gain in permille while step intervals shrink.
     pub accel_feedforward_accel_gain_permille: AtomicU16,
