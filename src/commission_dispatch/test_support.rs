@@ -1249,25 +1249,14 @@ pub(crate) fn test_acceptance_point(
     request: VelocitySweepRequest,
     progress: FixedGainAmplitudeProgress,
 ) -> crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
-    use crate::autotune::velocity_measurement::VelocityDirection;
     use crate::commissioning::outer::OuterMotionBudget;
-    use crate::commissioning::outer::velocity::band_confirmation::{
-        ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
-        plan_band_confirmation,
-    };
-    use crate::commissioning::outer::velocity::integral_plan::bind_breakaway_integral_authority;
     use crate::commissioning::outer::velocity::integral_plan::{
         AcquisitionContext, BreakawayIntegralEvidence, IntegralPlanPhysics,
         plan_retained_breakaway_velocity_integral_response,
     };
     use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
-    use crate::commissioning::outer::velocity::sweep_consensus::{
-        CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
-    };
-    use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
     use crate::commissioning::outer::velocity::sweep_plan::plan_proportional_velocity_sweep;
     use crate::commissioning::outer::velocity::velocity_clamp::derive_probe_limit;
-    use foci_tmc4671::pid::PidPGain;
 
     const ENCODER_COUNTS_PER_REV: u32 = 4_000;
     const TORQUE_LIMIT: u16 = 2_816;
@@ -1287,48 +1276,7 @@ pub(crate) fn test_acceptance_point(
     let operational_limit = PidTorqueFluxLimit::new(u32::from(TORQUE_LIMIT)).unwrap();
     context.usable_torque_limit = derive_probe_limit(operational_limit).unwrap().raw();
 
-    let confirmation_plan =
-        plan_band_confirmation(0x1111_2222_3333_4444, PidPGain::new(512).unwrap()).unwrap();
-    let consensus = DirectionalConsensus {
-        classification: DirectionalConsensusClass::EligibleConsensus,
-        components: [[0, 0]; 2],
-        component_count: 1,
-        collected_mask: 0b1111,
-        eligible_mask: 0b1111,
-        included_mask: 0b1111,
-    };
-    let mean_rate_q: i64 = 750_000;
-    let variance_of_mean_q2: u128 = 58_752_225;
-    let target_rate_q: i64 = 1_000_000;
-    let forward = ConfirmationDirectionalInput {
-        consensus,
-        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-        observations: [Some(DiscoveryObservationAtom {
-            mean_rate_q,
-            variance_of_mean_q2,
-            target_rate_q,
-            direction: VelocityDirection::Forward,
-        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-    };
-    let reverse = ConfirmationDirectionalInput {
-        consensus,
-        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-        observations: [Some(DiscoveryObservationAtom {
-            mean_rate_q: -mean_rate_q,
-            variance_of_mean_q2,
-            target_rate_q,
-            direction: VelocityDirection::Reverse,
-        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-    };
-    let acceptance =
-        evaluate_band_confirmation(confirmation_plan.nominated_p, forward, reverse).unwrap();
-    let held_out_response_intervals_q = acceptance.held_out_response_intervals_q;
-    let token = bind_breakaway_integral_authority(
-        confirmation_plan.plan_digest,
-        confirmation_plan,
-        Ok(acceptance),
-    )
-    .unwrap();
+    let confirmation = breakaway_confirmation_for_test();
 
     let motion_budget = OuterMotionBudget {
         requested_velocity_mrev_s: request.requested_velocity_mrev_s,
@@ -1343,13 +1291,13 @@ pub(crate) fn test_acceptance_point(
         max_accel_mrev_s2: 0,
     };
     let plan = plan_retained_breakaway_velocity_integral_response(
-        token,
-        confirmation_plan.nominated_p.raw(),
+        confirmation.token,
+        confirmation.confirmation_plan.nominated_p.raw(),
         context,
         BreakawayIntegralEvidence {
-            held_out_response_intervals_q,
-            confidence_q: acceptance.confidence_q,
-            band_position_q: acceptance.band_position_q,
+            held_out_response_intervals_q: confirmation.held_out_response_intervals_q,
+            confidence_q: confirmation.confidence_q,
+            band_position_q: confirmation.band_position_q,
         },
         IntegralPlanPhysics {
             motion_budget,
@@ -1374,7 +1322,7 @@ pub(crate) fn test_acceptance_point(
         confidence_q: plan.authority.confidence_q,
         band_position_q: plan.authority.band_position_q,
         qualifier_bits: 0,
-        token: Some(token),
+        token: Some(confirmation.token),
         progress,
     }
 }
