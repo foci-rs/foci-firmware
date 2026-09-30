@@ -133,8 +133,7 @@ pub struct VelocityIntegralPlan {
     /// Number of valid positive-I entries.
     pub positive_rung_count: u8,
     /// Largest native positive-I ladder cap the half-octave rung was derived
-    /// from, for a `Breakaway`-sourced plan; `0` (not applicable) for
-    /// amplitude-sourced plans, which never regenerate one.
+    /// from, for a `Breakaway`-sourced plan; `0` when no ladder cap applies.
     pub i_top_cap: u16,
     /// Family-wise observation count per direction.
     pub family_size: u16,
@@ -284,7 +283,6 @@ impl VelocityIntegralPlan {
             hard_torque_limit: self.hard_torque_limit,
             usable_torque_limit: self.usable_torque_limit,
             limit_evidence_capability: self.limit_evidence_capability,
-            acquisition_kind: VelocityIntegralAcquisitionKind::ResponseLadder,
             acceptance_source: AcceptanceSource::Breakaway,
             amplitude_targets_rpm: [0; 5],
             selected_response_intervals_q,
@@ -348,14 +346,6 @@ impl IntegralSlotOrder {
     }
 }
 
-/// Compact acquisition shape interpreted by the shared velocity-integral engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-#[repr(u8)]
-pub enum VelocityIntegralAcquisitionKind {
-    /// Historical opening-anchor, positive-I response ladder, and bookend.
-    ResponseLadder = 0,
-}
-
 /// Which acquisition authorized one Integral execution plan; drives
 /// [`VelocityIntegralExecutionPlan::records_target_terminus`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -373,11 +363,10 @@ pub enum AcceptanceSource {
 pub struct VelocityIntegralExecutionPlan {
     /// Exact complete-plan digest.
     pub plan_digest: u64,
-    /// Acceptance-plan identity digest for an amplitude-sourced plan; `0` off the amplitude path.
+    /// Acceptance-plan identity digest; always `0` for the response ladder.
     pub acceptance_plan_digest: u64,
-    /// Packed operating-point, model-validity, and evidence-quality qualifiers for an
-    /// amplitude-sourced plan, frozen at the original breakaway-acceptance install; `0` off the
-    /// amplitude path.
+    /// Packed operating-point, model-validity, and evidence-quality qualifiers; always `0` for
+    /// the response ladder.
     pub qualifier_bits: u16,
     /// Fixed proportional gain.
     pub fixed_p: u16,
@@ -394,8 +383,7 @@ pub struct VelocityIntegralExecutionPlan {
     /// Number of valid positive-I entries.
     pub positive_rung_count: u8,
     /// Largest native positive-I ladder cap the half-octave rung was derived
-    /// from, for a `Breakaway`-sourced plan; `0` (not applicable) for
-    /// amplitude-sourced plans, which never regenerate one.
+    /// from, for a `Breakaway`-sourced plan; `0` when no ladder cap applies.
     pub i_top_cap: u16,
     /// Family-wise observation count per direction.
     pub family_size: u16,
@@ -420,15 +408,14 @@ pub struct VelocityIntegralExecutionPlan {
     /// Inclusive usable torque-target boundary.
     pub usable_torque_limit: u16,
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
-    /// Acquisition shape the shared engine runs.
-    pub acquisition_kind: VelocityIntegralAcquisitionKind,
     /// Which acquisition category authorized this plan; see [`Self::records_target_terminus`].
     pub acceptance_source: AcceptanceSource,
-    /// Exact fixed targets for an amplitude acquisition; zero for response ladders.
+    /// Fixed per-rung targets; always zero for the response ladder.
     pub amplitude_targets_rpm: [i16; 5],
-    /// Selected Proportional response intervals; zero for an amplitude acquisition.
+    /// Selected Proportional response intervals.
     pub selected_response_intervals_q: [[i32; 2]; 2],
-    /// Conservative top-point settled-rate bounds used only for amplitude recovery deadlines.
+    /// Settled-rate recovery bounds; always zero for the response ladder, which derives its
+    /// recovery bound from the opening anchor.
     pub recovery_lower_rate_q: [u64; 2],
     /// One opposite-sign meter quantum can contact the probe clamp during recovery.
     pub recovery_quantization_exposed: bool,

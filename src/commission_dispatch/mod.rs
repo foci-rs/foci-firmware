@@ -78,7 +78,6 @@ impl<'a> DispatchState<'a> {
 }
 
 /// What the board should do after the dispatch returns.
-#[allow(clippy::large_enum_variant)]
 pub enum CommissionOutcome {
     Continue,
     PhaseChanged {

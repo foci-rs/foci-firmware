@@ -37,7 +37,6 @@ use crate::commissioning::outer::state::{
 use crate::commissioning::outer::velocity::integral_evidence::{
     ExactRateInterval, IntegralRungKind,
 };
-use crate::commissioning::outer::velocity::integral_plan::VelocityIntegralAcquisitionKind;
 use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
 use crate::commissioning::outer::{
     OuterMotionBudget, OuterPhase, OuterSafetyLimits, VelocityIntegralRuntime,
@@ -89,7 +88,6 @@ fn plan() -> VelocityIntegralExecutionPlan {
         hard_torque_limit: 2_816,
         usable_torque_limit: 2_534,
         limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
-        acquisition_kind: super::integral_plan::VelocityIntegralAcquisitionKind::ResponseLadder,
         acceptance_source: super::integral_plan::AcceptanceSource::NonBreakaway,
         amplitude_targets_rpm: [0; 5],
         selected_response_intervals_q: [[0; 2]; 2],
@@ -2129,7 +2127,6 @@ fn slot_advance_reprograms_i_without_resetting_prior_evidence() {
     data.slot = 0;
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
     data.rung_intervals = [ExactRateInterval::new(10, 20).unwrap(); 8];
-    data.rung_blocking_levels = 0x1234_1234;
     *state = VelocityIntegralState::Advance;
     let mut backend = MockBackend::new();
 
@@ -2159,7 +2156,6 @@ fn slot_advance_reprograms_i_without_resetting_prior_evidence() {
             data.rung_intervals,
             [ExactRateInterval::new(10, 20).unwrap(); 8]
         );
-        assert_eq!(data.rung_blocking_levels, 0x1234_1234);
         *state = VelocityIntegralState::Advance;
     }
 }
@@ -2174,7 +2170,6 @@ fn rung_reset_clears_only_per_rung_observation_state() {
     data.rung_index = 1;
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
     data.rung_intervals = [ExactRateInterval::new(10, 20).unwrap(); 8];
-    data.rung_blocking_levels = 0x1234_1234;
     data.eligible_masks = [0b101; 2];
     *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
     let mut backend = MockBackend::new();
@@ -2191,7 +2186,6 @@ fn rung_reset_clears_only_per_rung_observation_state() {
         [VelocityObservationClass::InvalidEvidenceFault; 8]
     );
     assert_eq!(data.rung_intervals, [ExactRateInterval::EMPTY; 8]);
-    assert_eq!(data.rung_blocking_levels, 0);
     assert_eq!(data.eligible_masks, [0b101; 2]);
 }
 
@@ -2810,7 +2804,6 @@ fn integral_i_at_response_ladder_returns_the_half_octave_rung() {
     test_plan.i_top_cap = 1_310;
     test_plan.positive_rung_count = 13;
     test_plan.acceptance_source = AcceptanceSource::NonBreakaway;
-    test_plan.acquisition_kind = VelocityIntegralAcquisitionKind::ResponseLadder;
     for (positive_index, expected) in [1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1_024]
         .iter()
         .enumerate()
@@ -2828,7 +2821,6 @@ fn integral_i_at_breakaway_response_ladder_never_returns_724() {
     test_plan.acceptance_source = AcceptanceSource::Breakaway;
     test_plan.i_top_cap = 0;
     test_plan.positive_rung_count = 12;
-    test_plan.acquisition_kind = VelocityIntegralAcquisitionKind::ResponseLadder;
     let total = integral_rung_count(test_plan).unwrap();
     for index in 0..total {
         assert_ne!(integral_i_at(test_plan, index), Some(724));

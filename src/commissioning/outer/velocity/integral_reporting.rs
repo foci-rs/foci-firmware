@@ -1081,8 +1081,6 @@ mod tests {
             usable_torque_limit: 2_534,
             limit_evidence_capability:
                 super::super::velocity_clamp::VelocityLimitEvidenceCapability::BestEffortPolling,
-            acquisition_kind:
-                super::super::integral_plan::VelocityIntegralAcquisitionKind::ResponseLadder,
             acceptance_source: super::super::integral_plan::AcceptanceSource::NonBreakaway,
             amplitude_targets_rpm: [0; 5],
             selected_response_intervals_q: [[0; 2]; 2],

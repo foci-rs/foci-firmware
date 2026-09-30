@@ -320,7 +320,6 @@ pub(crate) struct VelocityIntegralRuntime {
     pub(crate) analysis: StationarityWork,
     pub(crate) rung_classes: [VelocityObservationClass; 8],
     pub(crate) rung_intervals: [ExactRateInterval; 8],
-    pub(crate) rung_blocking_levels: u32,
     pub(crate) eligible_masks: [u32; 2],
     pub(crate) bookend_available_mask: u8,
     pub(crate) current_terminus: Option<u8>,
@@ -361,7 +360,6 @@ impl VelocityIntegralRuntime {
             analysis: StationarityWork::new(),
             rung_classes: [VelocityObservationClass::InvalidEvidenceFault; 8],
             rung_intervals: [ExactRateInterval::EMPTY; 8],
-            rung_blocking_levels: 0,
             eligible_masks: [0; 2],
             bookend_available_mask: 0,
             current_terminus: None,
@@ -451,8 +449,7 @@ mod tests {
 
     use crate::commissioning::outer::OuterSafetyLimits;
     use crate::commissioning::outer::velocity::integral_plan::{
-        AcceptanceSource, IntegralSlotOrder, VelocityIntegralAcquisitionKind,
-        VelocityIntegralExecutionPlan,
+        AcceptanceSource, IntegralSlotOrder, VelocityIntegralExecutionPlan,
     };
     use crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability;
 
@@ -490,7 +487,6 @@ mod tests {
             hard_torque_limit: 2_816,
             usable_torque_limit: 2_534,
             limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
-            acquisition_kind: VelocityIntegralAcquisitionKind::ResponseLadder,
             acceptance_source: AcceptanceSource::NonBreakaway,
             amplitude_targets_rpm: [0; 5],
             selected_response_intervals_q: [[0; 2]; 2],
@@ -509,9 +505,8 @@ mod tests {
         );
     }
 
-    fn velocity_integral_phase(acquisition_kind: VelocityIntegralAcquisitionKind) -> OuterPhase {
-        let mut plan = minimal_velocity_integral_plan();
-        plan.acquisition_kind = acquisition_kind;
+    fn velocity_integral_phase() -> OuterPhase {
+        let plan = minimal_velocity_integral_plan();
         OuterPhase::VelocityIntegral {
             state: VelocityIntegralState::Setup,
             data: VelocityIntegralRuntime::new(0, plan),
@@ -525,8 +520,7 @@ mod tests {
     #[test]
     fn outer_phase_id_maps_active_and_failed_phases() {
         assert_eq!(
-            velocity_integral_phase(VelocityIntegralAcquisitionKind::ResponseLadder)
-                .current_phase_id(),
+            velocity_integral_phase().current_phase_id(),
             Some(CommissionPhase::IntegralGainResponseCharacterization)
         );
         assert_eq!(

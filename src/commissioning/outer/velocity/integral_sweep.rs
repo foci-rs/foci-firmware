@@ -275,21 +275,6 @@ fn reset_rung(data: &mut VelocityIntegralRuntime) {
     data.slot = 0;
     data.rung_classes = [VelocityObservationClass::InvalidEvidenceFault; 8];
     data.rung_intervals = [ExactRateInterval::EMPTY; 8];
-    data.rung_blocking_levels = 0;
-}
-
-fn set_rung_blocking_level(
-    data: &mut VelocityIntegralRuntime,
-    slot: u8,
-    level: u8,
-) -> Result<(), CommissionError> {
-    if slot >= INTEGRAL_SLOT_COUNT || level > 0x0f {
-        return Err(CommissionError::RungIndexOutOfRange);
-    }
-    let shift = u32::from(slot) * 4;
-    data.rung_blocking_levels =
-        (data.rung_blocking_levels & !(0x0f << shift)) | (u32::from(level) << shift);
-    Ok(())
 }
 
 fn transition_elapsed_us(started_us: u64, finished_us: u64) -> Result<u32, CommissionError> {
@@ -1416,11 +1401,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     Ok(None) => return StepResult::ReadyNow,
                     Err(error) => return fail_integral(phase, backend, error).await,
                 };
-            if let StationarityResult::Usable(suffix) = stationarity
-                && let Err(error) = set_rung_blocking_level(data, data.slot, suffix.selection.level)
-            {
-                return fail_integral(phase, backend, error).await;
-            }
             if let Err(error) = retain_analyzed_observation(data, summary) {
                 return fail_integral(phase, backend, error).await;
             }
@@ -2169,8 +2149,7 @@ mod tests {
         integral_slot_direction, integral_target_rpm_at, load_interval,
         map_integral_evidence_error, materialize_run_evidence, moving_analysis,
         plan_integral_recovery, record_integral_target_if_reached, resolve_analyzed_directions,
-        retain_analyzed_observation, set_rung_blocking_level, store_interval,
-        transition_elapsed_us,
+        retain_analyzed_observation, store_interval, transition_elapsed_us,
     };
     use crate::commission_dispatch::test_support::current_limit;
     use crate::commissioning::outer::velocity::integral_evidence::{
@@ -2178,8 +2157,7 @@ mod tests {
         IntegralRungEvidence, IntegralRungKind,
     };
     use crate::commissioning::outer::velocity::integral_plan::{
-        AcceptanceSource, IntegralSlotOrder, VelocityIntegralAcquisitionKind,
-        VelocityIntegralExecutionPlan,
+        AcceptanceSource, IntegralSlotOrder, VelocityIntegralExecutionPlan,
     };
     use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability;
@@ -2214,7 +2192,6 @@ mod tests {
             hard_torque_limit: 2_816,
             usable_torque_limit: 2_534,
             limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
-            acquisition_kind: VelocityIntegralAcquisitionKind::ResponseLadder,
             acceptance_source: AcceptanceSource::NonBreakaway,
             amplitude_targets_rpm: [0; 5],
             selected_response_intervals_q: [[0; 2]; 2],
@@ -2245,17 +2222,6 @@ mod tests {
         let result = record_integral_target_if_reached(&mut data, intervals);
 
         assert_eq!(result, Err(CommissionError::MalformedInterval));
-    }
-
-    #[test]
-    fn set_rung_blocking_level_rejects_out_of_range_slot_or_level() {
-        let mut data = VelocityIntegralRuntime::new(1, plan());
-
-        let slot_error = set_rung_blocking_level(&mut data, INTEGRAL_SLOT_COUNT, 0).unwrap_err();
-        assert_eq!(slot_error, CommissionError::RungIndexOutOfRange);
-
-        let level_error = set_rung_blocking_level(&mut data, 0, 0x10).unwrap_err();
-        assert_eq!(level_error, CommissionError::RungIndexOutOfRange);
     }
 
     #[test]
