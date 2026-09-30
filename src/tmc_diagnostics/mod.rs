@@ -240,6 +240,9 @@ pub fn busy_diagnostic_report(
 }
 
 /// Dispatch one active diagnostic request through the shared runner set.
+///
+/// While the offset-headroom reservation is engaged, returns the request's not-ready report
+/// without touching the TMC.
 pub async fn handle_diagnostic_request<B, D>(
     req: crate::tmc::TmcRequest,
     ctx: DiagnosticContext<'_, B, D>,
@@ -248,6 +251,9 @@ where
     B: embedded_hal_async::spi::SpiDevice<u8>,
     D: DiagnosticDelay,
 {
+    if ctx.runtime.offset_headroom_engaged() {
+        return busy_diagnostic_report(req, ctx.tmc_config);
+    }
     match &req.kind {
         crate::tmc::TmcRequestKind::CurrentStepTest { .. }
         | crate::tmc::TmcRequestKind::CurrentVectorStepTest { .. } => {

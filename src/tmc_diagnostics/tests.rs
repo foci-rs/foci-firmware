@@ -1867,6 +1867,61 @@ fn dispatcher_returns_not_diagnostic_for_normal_request() {
     });
 }
 
+#[test]
+fn dispatcher_refuses_every_diagnostic_while_the_limit_reservation_is_engaged() {
+    pollster::block_on(async {
+        let reservation_state = crate::state::tmc::TmcChannelState::new();
+        let requests = [
+            tmc_position_torque_offset_sample_test(0, 4, 33, 3, 444),
+            tmc_current_step_test(0, 7, CurrentStepAxis::Torque, 123, 4, 500),
+        ];
+        for req in requests {
+            let mut runtime = ready_runtime();
+            runtime.hold_offset_headroom_for_test(&reservation_state, 0x0400_0000);
+            let mut delay = MockDelay::default();
+            let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default().with_read(0x8000_0003));
+
+            let outcome = handle_diagnostic_request(
+                req.clone(),
+                DiagnosticContext {
+                    host_liveness_expired: None,
+                    tmc: &mut tmc,
+                    runtime: &mut runtime,
+                    delay: &mut delay,
+                    power_stage: &mut MockDiagnosticPowerStage::default(),
+                    tmc_config: &TEST_TMC_CONFIG,
+                    feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                    readiness: DiagnosticReadiness {
+                        homing_active: false,
+                        stepper_active: false,
+                        saved_voltage_limit: 777,
+                    },
+                },
+            )
+            .await;
+
+            let status = match outcome {
+                DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) => {
+                    assert_eq!(report.kind, TorqueSampleKind::PositionTorqueOffset);
+                    assert_eq!(report.oid, 4);
+                    report.status
+                }
+                DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep { report, .. }) => {
+                    assert_eq!(report.oid, 7);
+                    report.status
+                }
+                _ => panic!("expected a not-ready report for {:?}", req.kind),
+            };
+            assert_eq!(status, CURRENT_STEP_STATUS_NOT_READY);
+            let spi = tmc.into_inner();
+            assert!(spi.write_attempts.is_empty(), "{:?}", spi.write_attempts);
+            assert!(spi.read_requests.is_empty(), "{:?}", spi.read_requests);
+            assert!(delay.delays_ms.is_empty());
+            assert!(runtime.offset_headroom_engaged());
+        }
+    });
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RecordedResistanceEvent {
     Profile { oid: u8 },

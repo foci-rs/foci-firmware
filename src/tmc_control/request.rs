@@ -299,10 +299,6 @@ where
             ..
         } => {
             if enabled {
-                if !pi_representation_available(tmc, board.tmc_state()).await {
-                    defmt::error!("Motor enable rejected: PI representation unavailable");
-                    return TmcControlRequestOutcome::skip_tick_tail();
-                }
                 if !runtime.is_calibrated() {
                     if board.commissioning_blocked(runtime) {
                         defmt::warn!("Auto-calibrate rejected: commissioning already active");
@@ -312,6 +308,20 @@ where
                         defmt::warn!("Auto-calibrate rejected: host gate closed");
                         return TmcControlRequestOutcome::skip_tick_tail();
                     }
+                    if runtime
+                        .release_offset_headroom(tmc, board.tmc_state())
+                        .await
+                        .is_err()
+                    {
+                        defmt::warn!("Auto-calibrate rejected: offset headroom release failed");
+                        return TmcControlRequestOutcome::skip_tick_tail();
+                    }
+                }
+                if !pi_representation_available(tmc, board.tmc_state()).await {
+                    defmt::error!("Motor enable rejected: PI representation unavailable");
+                    return TmcControlRequestOutcome::skip_tick_tail();
+                }
+                if !runtime.is_calibrated() {
                     if board
                         .tmc_state()
                         .commission_in_flight
@@ -394,6 +404,22 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
+            if runtime
+                .release_offset_headroom(tmc, board.tmc_state())
+                .await
+                .is_err()
+            {
+                board
+                    .tmc_state()
+                    .commission_in_flight
+                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                emit_calibrate_failure::<Board, Spi>(
+                    board,
+                    oid,
+                    CalibrationError::SpiError.status_code(),
+                );
+                return TmcControlRequestOutcome::skip_tick_tail();
+            }
             if !pi_representation_available(tmc, board.tmc_state()).await {
                 board
                     .tmc_state()
@@ -427,6 +453,14 @@ where
             kind: TmcRequestKind::Init,
             ..
         } => {
+            if runtime
+                .release_offset_headroom(tmc, board.tmc_state())
+                .await
+                .is_err()
+            {
+                defmt::error!("TMC4671 init rejected: offset headroom release failed");
+                return TmcControlRequestOutcome::skip_tick_tail();
+            }
             defmt::info!("TMC4671 init: starting open-loop stepper config");
             board.run_dev_init(tmc).await;
         }
@@ -435,6 +469,14 @@ where
             kind: TmcRequestKind::TestSpin { revolutions },
             ..
         } => {
+            if runtime
+                .release_offset_headroom(tmc, board.tmc_state())
+                .await
+                .is_err()
+            {
+                defmt::error!("TMC4671 test spin rejected: offset headroom release failed");
+                return TmcControlRequestOutcome::skip_tick_tail();
+            }
             board.run_dev_test_spin(tmc, revolutions).await;
         }
         TmcRequest {
@@ -542,6 +584,22 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
+            if runtime
+                .release_offset_headroom(tmc, board.tmc_state())
+                .await
+                .is_err()
+            {
+                board
+                    .tmc_state()
+                    .commission_in_flight
+                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                emit_commission_phase_failure::<Board, Spi>(
+                    board,
+                    oid,
+                    CommissionError::Spi.status_code(),
+                );
+                return TmcControlRequestOutcome::skip_tick_tail();
+            }
             if !pi_representation_available(tmc, board.tmc_state()).await {
                 board
                     .tmc_state()
@@ -642,6 +700,22 @@ where
                 emit_commission_phase_failure::<Board, Spi>(board, oid, status);
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
+            if runtime
+                .release_offset_headroom(tmc, board.tmc_state())
+                .await
+                .is_err()
+            {
+                board
+                    .tmc_state()
+                    .commission_in_flight
+                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                emit_commission_phase_failure::<Board, Spi>(
+                    board,
+                    oid,
+                    CommissionError::Spi.status_code(),
+                );
+                return TmcControlRequestOutcome::skip_tick_tail();
+            }
             if !pi_representation_available(tmc, board.tmc_state()).await {
                 board
                     .tmc_state()
@@ -717,6 +791,18 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
+            if runtime
+                .release_offset_headroom(tmc, board.tmc_state())
+                .await
+                .is_err()
+            {
+                board
+                    .tmc_state()
+                    .commission_in_flight
+                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                emit_selftest_failure::<Board, Spi>(board, oid, CommissionError::Spi.status_code());
+                return TmcControlRequestOutcome::skip_tick_tail();
+            }
             integral_candidate.invalidate_for_unrelated_commissioning();
             board
                 .tmc_state()
@@ -740,7 +826,13 @@ where
                 | TmcRequestKind::ResistanceTest { .. },
             ..
         } => {
-            if !pi_representation_available(tmc, board.tmc_state()).await {
+            if runtime
+                .release_offset_headroom(tmc, board.tmc_state())
+                .await
+                .is_err()
+            {
+                defmt::error!("Diagnostic refused: offset headroom release failed");
+            } else if !pi_representation_available(tmc, board.tmc_state()).await {
                 defmt::error!("Diagnostic rejected: PI representation unavailable");
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
@@ -1625,6 +1717,8 @@ mod tests {
             std::vec::Vec<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord>,
         busy_diagnostic_requests: std::vec::Vec<TmcRequest>,
         diagnostic_calls: u8,
+        #[cfg(feature = "dev")]
+        dev_calls: u8,
         arm_calls: u8,
         disarm_calls: u8,
         disable_action_count: usize,
@@ -1658,6 +1752,8 @@ mod tests {
                 velocity_sweep_records: std::vec::Vec::new(),
                 busy_diagnostic_requests: std::vec::Vec::new(),
                 diagnostic_calls: 0,
+                #[cfg(feature = "dev")]
+                dev_calls: 0,
                 arm_calls: 0,
                 disarm_calls: 0,
                 disable_action_count: 0,
@@ -1805,7 +1901,9 @@ mod tests {
         }
 
         #[cfg(feature = "dev")]
-        async fn run_dev_init(&mut self, _tmc: &mut Tmc4671Spi<RuntimeMockSpi>) {}
+        async fn run_dev_init(&mut self, _tmc: &mut Tmc4671Spi<RuntimeMockSpi>) {
+            self.dev_calls = self.dev_calls.saturating_add(1);
+        }
 
         #[cfg(feature = "dev")]
         async fn run_dev_test_spin(
@@ -1813,6 +1911,7 @@ mod tests {
             _tmc: &mut Tmc4671Spi<RuntimeMockSpi>,
             _revolutions: u8,
         ) {
+            self.dev_calls = self.dev_calls.saturating_add(1);
         }
     }
 
@@ -2429,7 +2528,11 @@ mod tests {
             CommissionError::ChipResetDetected.status_code(),
         );
         let spi = tmc.into_inner();
-        assert!(spi.write_attempts.is_empty());
+        assert_eq!(
+            spi.write_attempts,
+            std::vec![(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET.addr(), 0)],
+            "only the unknown-offset clear precedes the refusal"
+        );
         assert!(spi.read_requests.is_empty());
     }
 
@@ -3472,6 +3575,209 @@ mod tests {
         assert_eq!(board.diagnostic_calls, 1);
         assert!(board.replies.is_empty());
         assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+    }
+
+    fn held_tune_runtime() -> (TmcControlRuntime, u32) {
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        runtime.hold_offset_headroom_for_test(tmc_channel0(), 0x0400_0000);
+        (runtime, current_limit(2_816).register_value())
+    }
+
+    fn release_writes(limit: u32) -> [(u8, u32); 2] {
+        [
+            (foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET.addr(), 0),
+            (
+                foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr(),
+                limit,
+            ),
+        ]
+    }
+
+    #[fixture_test]
+    async fn request_arms_that_install_an_engine_release_first() {
+        use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
+        let offset_addr = foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET.addr();
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        let (mut runtime, limit) = held_tune_runtime();
+        let mut integral = IntegralRetentionSlot::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        handle_tmc_control_request_with_stages(
+            tune_request_with_action(crate::tmc::AutotuneAction::PositionTune),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut integral,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+        let writes = tmc.into_inner().writes;
+        assert_eq!(writes[..2], release_writes(limit), "{writes:?}");
+        assert!(writes.len() > 2, "the tune arm writes after the release");
+        assert!(runtime.is_commission_active());
+        assert!(!runtime.offset_headroom_engaged());
+        assert!(!tmc_channel0().offset_headroom_reserved(Relaxed));
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        let (mut runtime, _) = held_tune_runtime();
+        tmc_channel0().commission_in_flight.store(true, Relaxed);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(offset_addr));
+        let outcome = handle_tmc_control_request_with_stages(
+            tune_request_with_action(crate::tmc::AutotuneAction::PositionTune),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut integral,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+        let spi = tmc.into_inner();
+        assert_eq!(spi.write_attempts, std::vec![(offset_addr, 0)]);
+        assert!(spi.writes.is_empty());
+        assert!(!runtime.is_commission_active(), "the run must not start");
+        assert!(!tmc_channel0().commission_in_flight.load(Relaxed));
+        assert!(matches!(
+            board.replies.as_slice(),
+            [ReplyPayload::CommissionPhase { oid: 4, status, .. }]
+                if *status == CommissionError::Spi.status_code()
+        ));
+        assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+
+        let mut board = RecordingBoard::fall_through();
+        let (mut runtime, limit) = held_tune_runtime();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        handle_tmc_control_request(
+            crate::tmc::tmc_position_torque_offset_sample_test(0, 5, 100, 10, 1_000),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+        let writes = tmc.into_inner().writes;
+        assert_eq!(writes[..2], release_writes(limit), "{writes:?}");
+        assert_eq!(board.diagnostic_calls, 1);
+        assert!(!runtime.offset_headroom_engaged());
+
+        let mut board = RecordingBoard::fall_through();
+        let (mut runtime, _) = held_tune_runtime();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(offset_addr));
+        let outcome = handle_tmc_control_request(
+            crate::tmc::tmc_position_torque_offset_sample_test(0, 5, 100, 10, 1_000),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+        assert_eq!(tmc.into_inner().write_attempts, std::vec![(offset_addr, 0)]);
+        assert_eq!(
+            board.diagnostic_calls, 1,
+            "the runner still receives the request so it can reply not-ready"
+        );
+        assert!(runtime.offset_headroom_engaged());
+        assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+    }
+
+    #[cfg(feature = "dev")]
+    #[fixture_test]
+    async fn dev_open_loop_requests_release_the_reservation_first() {
+        let offset_addr = foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET.addr();
+        for kind in [
+            TmcRequestKind::Init,
+            TmcRequestKind::TestSpin { revolutions: 1 },
+        ] {
+            let mut board = RecordingBoard::skip_tick_tail();
+            let (mut runtime, limit) = held_tune_runtime();
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+            handle_tmc_control_request(
+                TmcRequest::new(0, kind.clone()),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+            assert_eq!(tmc.into_inner().writes, release_writes(limit), "{kind:?}");
+            assert_eq!(board.dev_calls, 1, "{kind:?}");
+            assert!(!runtime.offset_headroom_engaged());
+
+            let mut board = RecordingBoard::skip_tick_tail();
+            let (mut runtime, _) = held_tune_runtime();
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(offset_addr));
+            let outcome = handle_tmc_control_request(
+                TmcRequest::new(0, kind.clone()),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+            assert_eq!(
+                tmc.into_inner().write_attempts,
+                std::vec![(offset_addr, 0)],
+                "{kind:?}"
+            );
+            assert_eq!(board.dev_calls, 0, "{kind:?}: the dev handler must not run");
+            assert!(runtime.offset_headroom_engaged());
+            assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+        }
+    }
+
+    fn held_auto_calibrate_runtime() -> TmcControlRuntime {
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        set_auto_calibrate_on_enable_allowed(0, true);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.hold_offset_headroom_for_test(tmc_channel0(), 0x0400_0000);
+        runtime
+    }
+
+    #[fixture_test]
+    async fn auto_calibrate_admission_releases_before_any_register_write() {
+        let offset_addr = foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET.addr();
+        let enable = TmcRequest::new(0, TmcRequestKind::SetEnable(true));
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        let mut runtime = held_auto_calibrate_runtime();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        handle_tmc_control_request(
+            enable.clone(),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+        let writes = tmc.into_inner().writes;
+        assert_eq!(
+            writes[..2],
+            release_writes(current_limit(2_816).register_value()),
+            "{writes:?}"
+        );
+        assert!(runtime.is_commission_active());
+        assert!(!runtime.offset_headroom_engaged());
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        let mut runtime = held_auto_calibrate_runtime();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(offset_addr));
+        handle_tmc_control_request(
+            enable,
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+        assert_eq!(tmc.into_inner().write_attempts, std::vec![(offset_addr, 0)]);
+        assert!(!runtime.is_commission_active(), "the run must not start");
+        assert!(!tmc_channel0().commission_in_flight.load(Relaxed));
+        set_auto_calibrate_on_enable_allowed(0, false);
     }
 
     #[fixture_test]

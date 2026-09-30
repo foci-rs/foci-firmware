@@ -5006,3 +5006,53 @@ fn failed_pending_limit_write_keeps_the_request() {
         rig.assert_observed_invariant();
     });
 }
+
+#[test]
+fn release_with_an_unknown_offset_writes_only_the_offset_zero() {
+    pollster::block_on(async {
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        tmc_state.store_current_limit(current_limit(1_000), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        assert_eq!(
+            runtime.release_offset_headroom(&mut tmc, &tmc_state).await,
+            Ok(())
+        );
+        assert_eq!(
+            runtime.release_offset_headroom(&mut tmc, &tmc_state).await,
+            Ok(())
+        );
+
+        assert_eq!(
+            tmc.into_inner().writes,
+            std::vec![(PID_TORQUE_FLUX_OFFSET.addr(), 0)],
+            "an unknown offset is cleared once and the limit is left to its owner"
+        );
+        assert!(!runtime.offset_headroom_engaged());
+        assert!(!tmc_state.offset_headroom_reserved(Relaxed));
+    });
+}
+
+#[test]
+fn failed_unknown_offset_clear_refuses_the_exclusive_activity() {
+    pollster::block_on(async {
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut tmc = Tmc4671Spi::new(
+            RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_OFFSET.addr()),
+        );
+
+        let first = runtime.release_offset_headroom(&mut tmc, &tmc_state).await;
+        let second = runtime.release_offset_headroom(&mut tmc, &tmc_state).await;
+
+        assert_eq!((first, second), (Err(()), Err(())));
+        let spi = tmc.into_inner();
+        assert!(!spi.attempted_write_to(PID_TORQUE_FLUX_LIMITS));
+        assert_eq!(
+            spi.write_attempts,
+            std::vec![(PID_TORQUE_FLUX_OFFSET.addr(), 0); 2],
+            "the unknown offset stays unknown and is retried"
+        );
+    });
+}

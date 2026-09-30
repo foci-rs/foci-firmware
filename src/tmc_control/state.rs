@@ -468,15 +468,57 @@ impl TmcControlRuntime {
             }
             (Engaging | Held, false) | (Releasing, _) => {
                 self.offset_headroom = Releasing;
-                self.release_offset_headroom_step(tmc_spi, refs).await
+                self.release_offset_headroom_step(tmc_spi, refs.tmc).await
             }
         }
+    }
+
+    /// Release the offset-headroom reservation before an exclusive activity writes the TMC.
+    ///
+    /// Runs the feedforward tick's release sequence once: offset zero, the committed (or pending)
+    /// limit, then the flag clear. With the reservation released and the applied offset unknown,
+    /// writes only offset zero and leaves the limit to its current owner. Does nothing when the
+    /// reservation is released and the applied offset is known to be zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(())` when a write failed or the reservation is still not released; the caller
+    /// must not issue its own register writes and may retry later.
+    pub(crate) async fn release_offset_headroom<B>(
+        &mut self,
+        tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
+        tmc_state: &TmcChannelState,
+    ) -> Result<(), ()>
+    where
+        B: embedded_hal_async::spi::SpiDevice<u8>,
+    {
+        if !self.offset_headroom_engaged() {
+            match self.applied_torque_flux_offset {
+                Some(0) => return Ok(()),
+                None => {
+                    tmc_spi
+                        .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, 0)
+                        .await
+                        .map_err(|_| ())?;
+                    self.applied_torque_flux_offset = Some(0);
+                    return Ok(());
+                }
+                Some(_) => {}
+            }
+        }
+        self.request_offset_headroom_release(tmc_state);
+        self.release_offset_headroom_step(tmc_spi, tmc_state)
+            .await?;
+        if self.offset_headroom_engaged() {
+            return Err(());
+        }
+        Ok(())
     }
 
     async fn release_offset_headroom_step<B>(
         &mut self,
         tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
-        refs: TmcControlStateRefs<'_>,
+        tmc_state: &TmcChannelState,
     ) -> Result<(), ()>
     where
         B: embedded_hal_async::spi::SpiDevice<u8>,
@@ -490,11 +532,11 @@ impl TmcControlRuntime {
             self.torque_flux_offset_was_active = false;
             self.clear_accel_trace();
         }
-        let committed = refs.tmc.load_current_limit(Relaxed);
-        let pending = refs.tmc.peek_pending_run_limit();
+        let committed = tmc_state.load_current_limit(Relaxed);
+        let pending = tmc_state.peek_pending_run_limit();
         let target = pending.unwrap_or(committed);
         if target.raw() > committed.raw() {
-            refs.tmc.store_current_limit(target, Relaxed);
+            tmc_state.store_current_limit(target, Relaxed);
         }
         tmc_spi
             .write_register(
@@ -503,14 +545,14 @@ impl TmcControlRuntime {
             )
             .await
             .map_err(|_| ())?;
-        refs.tmc.store_current_limit(target, Relaxed);
+        tmc_state.store_current_limit(target, Relaxed);
         if let Some(limit) = pending {
-            refs.tmc.retire_pending_run_limit(limit);
+            tmc_state.retire_pending_run_limit(limit);
         }
-        if refs.tmc.has_pending_run_limit() {
+        if tmc_state.has_pending_run_limit() {
             return Ok(());
         }
-        refs.tmc.set_offset_headroom_reserved(false, Relaxed);
+        tmc_state.set_offset_headroom_reserved(false, Relaxed);
         self.offset_headroom = OffsetHeadroomPhase::Released;
         Ok(())
     }
@@ -1524,6 +1566,18 @@ impl TmcControlRuntime {
     #[cfg(test)]
     pub(crate) const fn offset_headroom_phase_for_test(&self) -> OffsetHeadroomPhase {
         self.offset_headroom
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_offset_headroom_for_test(
+        &mut self,
+        tmc_state: &TmcChannelState,
+        offset: u32,
+    ) {
+        tmc_state.set_offset_headroom_reserved(true, Relaxed);
+        self.offset_headroom = OffsetHeadroomPhase::Held;
+        self.torque_flux_offset_was_active = true;
+        self.applied_torque_flux_offset = Some(offset);
     }
 
     #[cfg(test)]

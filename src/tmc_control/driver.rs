@@ -481,52 +481,71 @@ impl ChannelDriver {
         let stepper =
             crate::state::stepper::stepper_channel(self.channel()).expect("validated TMC channel");
 
-        if self.runtime.is_restore_pending() {
+        let restore_pending = self.runtime.is_restore_pending();
+        let engine_kind = self.runtime.pending_commission_kind();
+        if !restore_pending && engine_kind.is_none() {
+            return UnitOutcome::Idle;
+        }
+        if restore_pending {
             tmc_state.commission_stimulus_active.store(false, Relaxed);
-            if self.runtime.feedforward_restoration_pending() {
-                self.carry_feedforward_ticks_while_commissioning(backend, &ctx)
-                    .await;
-                if self.runtime.feedforward_restoration_pending() {
-                    self.stimulus_restore_attempts =
-                        self.stimulus_restore_attempts.saturating_add(1);
-                    if self.stimulus_restore_attempts < STIMULUS_RESTORE_ATTEMPT_LIMIT {
-                        return UnitOutcome::Commission {
-                            event: None,
-                            next: CommissionNext::PollNow,
-                        };
-                    }
-                    defmt::error!(
-                        "stimulus surfaces unrestored after retry budget; forcing safe terminal"
-                    );
-                    self.stimulus_restore_attempts = 0;
-                    return match self
-                        .runtime
-                        .force_restore_safe_state_incomplete(backend, tmc_state, stepper)
-                        .await
-                    {
-                        Some(crate::commission_dispatch::CommissionOutcome::Terminal {
-                            reply,
-                            actions,
-                        }) => {
-                            self.poll_driver = CommissionPollDriver::new();
-                            #[cfg(feature = "trace")]
-                            {
-                                self.commission_trace_phase = None;
-                            }
-                            UnitOutcome::CommissionTerminal { reply, actions }
-                        }
-                        other => {
-                            defmt::error!("forced safe terminal produced a nonterminal outcome");
-                            let _ = other;
-                            UnitOutcome::Commission {
-                                event: None,
-                                next: CommissionNext::PollNow,
-                            }
-                        }
-                    };
-                }
+        }
+        let released = self
+            .runtime
+            .release_offset_headroom(backend.tmc_spi(), tmc_state)
+            .await
+            .is_ok();
+        if released && restore_pending && self.runtime.feedforward_restoration_pending() {
+            self.carry_feedforward_ticks_while_commissioning(backend, &ctx)
+                .await;
+        }
+        if !released || (restore_pending && self.runtime.feedforward_restoration_pending()) {
+            self.stimulus_restore_attempts = self.stimulus_restore_attempts.saturating_add(1);
+            if self.stimulus_restore_attempts < STIMULUS_RESTORE_ATTEMPT_LIMIT {
+                return UnitOutcome::Commission {
+                    event: None,
+                    next: CommissionNext::PollNow,
+                };
             }
+            defmt::error!(
+                "offset headroom or stimulus surfaces unrestored after retry budget; \
+                 forcing safe terminal"
+            );
             self.stimulus_restore_attempts = 0;
+            if let (false, Some(kind)) = (restore_pending, engine_kind) {
+                self.runtime.begin_commissioning_terminal(
+                    failed_terminal(kind, crate::autotune::CommissionError::Spi),
+                    ctx.config,
+                );
+            }
+            return match self
+                .runtime
+                .force_restore_safe_state_incomplete(backend, tmc_state, stepper)
+                .await
+            {
+                Some(crate::commission_dispatch::CommissionOutcome::Terminal {
+                    reply,
+                    actions,
+                }) => {
+                    self.poll_driver = CommissionPollDriver::new();
+                    #[cfg(feature = "trace")]
+                    {
+                        self.commission_trace_phase = None;
+                    }
+                    UnitOutcome::CommissionTerminal { reply, actions }
+                }
+                other => {
+                    defmt::error!("forced safe terminal produced a nonterminal outcome");
+                    let _ = other;
+                    UnitOutcome::Commission {
+                        event: None,
+                        next: CommissionNext::PollNow,
+                    }
+                }
+            };
+        }
+        self.stimulus_restore_attempts = 0;
+
+        if restore_pending {
             return match self
                 .runtime
                 .poll_commissioning_terminal(backend, &mut ctx.retention, tmc_state, stepper)
@@ -554,7 +573,7 @@ impl ChannelDriver {
             };
         }
 
-        let Some(engine_kind) = self.runtime.pending_commission_kind() else {
+        let Some(engine_kind) = engine_kind else {
             return UnitOutcome::Idle;
         };
         let Some(mut poll) = self.runtime.step_commissioning_scheduled(backend).await else {
@@ -570,11 +589,7 @@ impl ChannelDriver {
             Ok(action) => action,
             Err(error) => {
                 poll = CommissionPoll::Terminal {
-                    result: if matches!(engine_kind, EngineKind::OuterTune) {
-                        CommissionTerminal::OuterFailed(error)
-                    } else {
-                        CommissionTerminal::InnerFailed(error)
-                    },
+                    result: failed_terminal(engine_kind, error),
                 };
                 PollDriverAction::Terminal
             }
@@ -650,6 +665,17 @@ impl ChannelDriver {
             defmt::warn!("stimulus feedforward tick failed");
         }
         self.runtime.publish_feedforward_surfaces_idle(refs);
+    }
+}
+
+fn failed_terminal(
+    engine_kind: EngineKind,
+    error: crate::autotune::CommissionError,
+) -> CommissionTerminal {
+    if matches!(engine_kind, EngineKind::OuterTune) {
+        CommissionTerminal::OuterFailed(error)
+    } else {
+        CommissionTerminal::InnerFailed(error)
     }
 }
 
@@ -1722,6 +1748,272 @@ mod tests {
         }
         assert!(polls > 1, "restore must take more than one operation");
         assert_eq!(rig.driver.mode(), ChannelMode::Ready);
+    }
+
+    const HELD_OFFSET: u32 = 0x0400_0000;
+
+    fn held_calibrate_rig(spi: RuntimeMockSpi) -> (Rig, u32) {
+        held_rig(
+            spi,
+            crate::commissioning::CommissioningEngine::new_calibrate(0),
+        )
+    }
+
+    fn held_rig(
+        spi: RuntimeMockSpi,
+        engine: crate::commissioning::CommissioningEngine,
+    ) -> (Rig, u32) {
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        tmc_state.store_current_limit(current_limit(10_000), Relaxed);
+        let mut rig = ready_rig(spi);
+        rig.driver.runtime.set_commission_engine(engine);
+        rig.driver
+            .runtime
+            .hold_offset_headroom_for_test(tmc_state, HELD_OFFSET);
+        (rig, current_limit(10_000).register_value())
+    }
+
+    fn assert_released(rig: &Rig) {
+        assert!(!rig.driver.runtime.offset_headroom_engaged());
+        assert!(
+            !crate::state::tmc::tmc_channel0().offset_headroom_reserved(Relaxed),
+            "the reservation flag clears once the committed limit is written"
+        );
+    }
+
+    #[fixture_test]
+    async fn commission_unit_releases_a_held_reservation_before_its_first_write() {
+        use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
+        let (mut rig, limit) = held_calibrate_rig(RuntimeMockSpi::default().echo_writes());
+
+        let outcome = rig.drive(UnitClass::Commission).await;
+
+        assert!(matches!(outcome, UnitOutcome::Commission { .. }));
+        let writes = &rig.spi().writes;
+        assert_eq!(
+            writes[..2],
+            [
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+                (PID_TORQUE_FLUX_LIMITS.addr(), limit)
+            ],
+            "offset zero, then the committed limit, before anything else: {writes:?}"
+        );
+        assert!(
+            writes.len() > 2,
+            "the engine step writes after the release: {writes:?}"
+        );
+        assert_released(&rig);
+    }
+
+    #[fixture_test]
+    async fn restore_unit_releases_a_held_reservation_before_restoring() {
+        use crate::commissioning::schedule::CommissionTerminal;
+        use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
+        let (mut rig, limit) = held_rig(
+            RuntimeMockSpi::default().echo_writes(),
+            crate::commissioning::CommissioningEngine::new_commission(
+                23,
+                crate::autotune::CommissionProfile::Balanced,
+            ),
+        );
+        rig.driver.runtime.begin_commissioning_terminal(
+            CommissionTerminal::CommissionDone(
+                crate::commission_dispatch::test_support::accepted_commission_result(),
+            ),
+            &rig.config,
+        );
+
+        let mut polls = 0;
+        while !matches!(
+            rig.drive(UnitClass::Restore).await,
+            UnitOutcome::CommissionTerminal { .. }
+        ) {
+            polls += 1;
+            assert!(polls < 64, "restore must terminate");
+        }
+
+        let writes = &rig.spi().writes;
+        assert_eq!(
+            writes[..2],
+            [
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0),
+                (PID_TORQUE_FLUX_LIMITS.addr(), limit)
+            ],
+            "the release precedes every restore write: {writes:?}"
+        );
+        assert!(
+            writes[2..].contains(&(PID_TORQUE_FLUX_LIMITS.addr(), limit)),
+            "the restore's own limit write follows the release: {writes:?}"
+        );
+        assert_released(&rig);
+    }
+
+    #[fixture_test]
+    async fn failed_release_stops_the_commission_unit() {
+        use crate::commissioning::schedule::CommissionTerminal;
+        for restore in [false, true] {
+            let (mut rig, _) = held_calibrate_rig(
+                RuntimeMockSpi::default()
+                    .echo_writes()
+                    .fail_writes_to(PID_TORQUE_FLUX_OFFSET.addr()),
+            );
+            if restore {
+                rig.driver.runtime.begin_commissioning_terminal(
+                    CommissionTerminal::InnerFailed(CommissionError::Spi),
+                    &rig.config,
+                );
+            }
+            let class = if restore {
+                UnitClass::Restore
+            } else {
+                UnitClass::Commission
+            };
+
+            for attempt in 1..STIMULUS_RESTORE_ATTEMPT_LIMIT {
+                let outcome = rig.drive(class).await;
+
+                assert!(
+                    matches!(
+                        outcome,
+                        UnitOutcome::Commission {
+                            event: None,
+                            next: CommissionNext::PollNow
+                        }
+                    ),
+                    "restore={restore} attempt {attempt}: the unit must retry, not proceed"
+                );
+                assert!(
+                    rig.spi().writes.is_empty(),
+                    "restore={restore} attempt {attempt}: no write may follow a failed release"
+                );
+                assert!(rig.driver.runtime.offset_headroom_engaged());
+            }
+            assert!(
+                rig.spi()
+                    .write_attempts
+                    .iter()
+                    .all(|(addr, _)| *addr == PID_TORQUE_FLUX_OFFSET.addr()),
+                "restore={restore}: only the offset-zero write was attempted"
+            );
+
+            let outcome = rig.drive(class).await;
+
+            let UnitOutcome::CommissionTerminal { reply, actions } = outcome else {
+                panic!("restore={restore}: the retry budget must force a terminal");
+            };
+            assert!(
+                matches!(
+                    reply,
+                    ReplyPayload::CalibrateResult { status, .. }
+                        if status == crate::calibration::CalibrationError::SafeStateIncomplete
+                            .status_code()
+                ),
+                "restore={restore}: the forced terminal reports safe-state-incomplete"
+            );
+            assert_eq!(actions.stepper, StepperPostAction::Stop);
+            assert!(!rig.driver.runtime.is_restore_pending());
+            assert!(!rig.driver.runtime.is_commission_active());
+            assert_eq!(rig.driver.mode(), ChannelMode::Ready);
+            assert!(
+                rig.driver.runtime.offset_headroom_engaged(),
+                "restore={restore}: the tick keeps retrying the release"
+            );
+            assert!(
+                crate::state::tmc::tmc_channel0().offset_headroom_reserved(Relaxed),
+                "restore={restore}: operational writers stay at the reserved limit"
+            );
+        }
+    }
+
+    #[fixture_test]
+    async fn exclusive_units_zero_an_offset_stranded_by_a_failed_clear_and_queue_flush() {
+        use crate::commissioning::schedule::CommissionTerminal;
+        use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        let stepper_state = crate::state::stepper::stepper_channel0();
+        let limit = current_limit(10_000);
+        let held_limit = crate::tmc_control::current_limit::reserved_limit(limit).register_value();
+        let stale_offset = 4_000u32 << 16;
+        for restore in [false, true] {
+            tmc_state.store_current_limit(limit, Relaxed);
+            let mut rig = ready_rig(RuntimeMockSpi::default().echo_writes());
+            rig.driver
+                .runtime
+                .hold_offset_headroom_for_test(tmc_state, stale_offset);
+            let mut shutdown_tmc = Tmc4671Spi::new(
+                RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_OFFSET.addr()),
+            );
+            let mut shutdown_pin = TestPin::default();
+            let mut shutdown_backend =
+                TestBackend::new(0, &mut shutdown_tmc, &mut shutdown_pin, tmc_state);
+            crate::tmc_control::lifecycle::apply_shutdown_safe_state(
+                &mut rig.driver.runtime,
+                &mut shutdown_backend,
+                tmc_state,
+                stepper_state,
+            )
+            .await;
+            let shutdown_writes = shutdown_tmc.into_inner().writes;
+            assert!(
+                !shutdown_writes
+                    .iter()
+                    .any(|(addr, _)| *addr == PID_TORQUE_FLUX_OFFSET.addr()),
+                "restore={restore}: the offset clear must fail for this scenario"
+            );
+            rig.driver.runtime.reset_runtime_state();
+            TmcControlRuntime::reset_channel_state(tmc_state, stepper_state);
+            tmc_state.store_current_limit(limit, Relaxed);
+            let class = if restore {
+                rig.driver.runtime.set_commission_engine(
+                    crate::commissioning::CommissioningEngine::new_commission(
+                        23,
+                        crate::autotune::CommissionProfile::Balanced,
+                    ),
+                );
+                rig.driver.runtime.begin_commissioning_terminal(
+                    CommissionTerminal::CommissionDone(
+                        crate::commission_dispatch::test_support::accepted_commission_result(),
+                    ),
+                    &rig.config,
+                );
+                UnitClass::Restore
+            } else {
+                rig.driver.runtime.set_commission_engine(
+                    crate::commissioning::CommissioningEngine::new_calibrate(0),
+                );
+                UnitClass::Commission
+            };
+
+            let mut polls = 0;
+            while !matches!(
+                rig.drive(class).await,
+                UnitOutcome::CommissionTerminal { .. }
+            ) && polls < 64
+            {
+                polls += 1;
+            }
+            assert_eq!(
+                rig.spi().attempted_write_to(PID_TORQUE_FLUX_LIMITS),
+                restore,
+                "restore={restore}: only the commission-done restore writes the limit here"
+            );
+
+            let mut writes = std::vec![
+                (PID_TORQUE_FLUX_LIMITS.addr(), held_limit),
+                (PID_TORQUE_FLUX_OFFSET.addr(), stale_offset),
+            ];
+            writes.extend(shutdown_writes);
+            writes.extend(rig.spi().writes.iter().copied());
+            assert_eq!(
+                rig.spi().writes.first(),
+                Some(&(PID_TORQUE_FLUX_OFFSET.addr(), 0)),
+                "restore={restore}: the stale offset is cleared before anything else"
+            );
+            crate::tmc_control::test_spi::assert_limit_plus_offset_within(
+                &writes,
+                u32::from(limit.raw()),
+            );
+        }
     }
 
     #[test]
