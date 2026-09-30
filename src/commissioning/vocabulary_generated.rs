@@ -27,9 +27,6 @@ pub enum CommissionPhase {
     BreakawayProportionalAcquisition,
     /// Integral-phase fixed-P velocity-integral response ladder. Wire code 19.
     IntegralGainResponseCharacterization,
-    /// Integral-phase fixed-P velocity-integral fixed-gain sweep (ascending or
-    /// descending amplitude) against the retained acceptance point. Wire code 20.
-    FixedGainAmplitudeValidation,
     /// Reversal-standstill robustness gate over the retained acceptance point.
     /// Wire code 21.
     ReversalStandstillRobustnessGate,
@@ -78,7 +75,6 @@ impl CommissionPhase {
             Self::InnerDone => 8,
             Self::BreakawayProportionalAcquisition => 18,
             Self::IntegralGainResponseCharacterization => 19,
-            Self::FixedGainAmplitudeValidation => 20,
             Self::ReversalStandstillRobustnessGate => 21,
             Self::EncoderAlign => 16,
             Self::ClosedLoopActivation => 17,
@@ -100,7 +96,6 @@ impl CommissionPhase {
         ("InnerDone", 8),
         ("BreakawayProportionalAcquisition", 18),
         ("IntegralGainResponseCharacterization", 19),
-        ("FixedGainAmplitudeValidation", 20),
         ("ReversalStandstillRobustnessGate", 21),
         ("EncoderAlign", 16),
         ("ClosedLoopActivation", 17),
@@ -137,10 +132,6 @@ impl BreakawayPhase {
 pub enum VelocityAutotuneWorkflowKind {
     /// Resume Integral from retained firmware authority.
     Resume = 0,
-    /// Run the retained fixed-I gain from low to high amplitude.
-    FixedGainAmplitudeAscending = 1,
-    /// Run the retained fixed-I gain from high to low amplitude.
-    FixedGainAmplitudeDescending = 2,
     /// Run the breakaway probe, additive discovery, held-out confirmation, and
     /// the existing Integral continuation as one bounded command.
     BreakawaySeededProportionalThenIntegral = 3,
@@ -159,8 +150,6 @@ impl VelocityAutotuneWorkflowKind {
     #[cfg(test)]
     pub(crate) const DECLARATION_ORDER: &'static [(&'static str, u8)] = &[
         ("Resume", 0),
-        ("FixedGainAmplitudeAscending", 1),
-        ("FixedGainAmplitudeDescending", 2),
         ("BreakawaySeededProportionalThenIntegral", 3),
         ("ReversalStandstillRobustnessGate", 4),
         ("PositionTune", 5),
@@ -171,17 +160,13 @@ impl VelocityAutotuneWorkflowKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum AutotuneAction {
-    /// Run the retained fixed-I gain from lowest to highest amplitude.
-    FixedGainAmplitudeAscending = 1,
-    /// Run the retained fixed-I gain from highest to lowest amplitude.
-    FixedGainAmplitudeDescending = 2,
     /// Run the breakaway probe, additive discovery, held-out confirmation, and
     /// the existing velocity-integral continuation as one bounded command.
     ///
     /// This is the production `Tune` path: a non-trace build routes the request
-    /// through the breakaway/velocity-integral/fixed-gain-amplitude engine just like a
-    /// trace build. The `trace` feature adds only the raw evidence emission on
-    /// top of the same campaign, not the campaign itself.
+    /// through the breakaway/velocity-integral engine just like a trace build. The
+    /// `trace` feature adds only the raw evidence emission on top of the same
+    /// campaign, not the campaign itself.
     BreakawaySeeded = 7,
     /// Re-run the velocity-integral response ladder against retained firmware
     /// authority.
@@ -212,8 +197,6 @@ impl AutotuneAction {
     /// Every variant in declaration order (the defmt::Format index).
     #[cfg(test)]
     pub(crate) const DECLARATION_ORDER: &'static [(&'static str, u8)] = &[
-        ("FixedGainAmplitudeAscending", 1),
-        ("FixedGainAmplitudeDescending", 2),
         ("BreakawaySeeded", 7),
         ("IntegralResume", 8),
         ("RobustnessReversal", 9),
@@ -225,8 +208,6 @@ impl AutotuneAction {
     /// Decode one wire action without assigning behavior to unknown values.
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
-            1 => Some(Self::FixedGainAmplitudeAscending),
-            2 => Some(Self::FixedGainAmplitudeDescending),
             7 => Some(Self::BreakawaySeeded),
             8 => Some(Self::IntegralResume),
             9 => Some(Self::RobustnessReversal),

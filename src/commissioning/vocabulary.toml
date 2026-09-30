@@ -13,12 +13,15 @@
 #
 # [reserved] is machine-read by the validator, not advisory: a wire_code listed
 # here may not appear in that group. Phase reserves 9-15 for the retired
-# mechanical-id (9) plus the pre-renumber block, 22-25 for the retired outer
-# phases PositionTune/FilterTune/Commit/OuterDone (never emitted, never to be
-# reused), and 0 as the host's miss/sentinel value, never a real phase.
+# mechanical-id (9) plus the pre-renumber block, 20 for the retired
+# fixed-gain amplitude validation, 22-25 for the retired outer phases
+# PositionTune/FilterTune/Commit/OuterDone (never emitted, never to be reused),
+# and 0 as the host's miss/sentinel value, never a real phase. Action 1-2 and
+# workflow_shape 1-2 are the retired amplitude_up/amplitude_down acquisitions.
 [reserved]
-phase = [0, 9, 10, 11, 12, 13, 14, 15, 22, 23, 24, 25]
-action = [0, 3, 4, 5, 6]
+phase = [0, 9, 10, 11, 12, 13, 14, 15, 20, 22, 23, 24, 25]
+action = [0, 1, 2, 3, 4, 5, 6]
+workflow_shape = [1, 2]
 
 [[phase]]
 ident = "AdcCalibrate"
@@ -82,14 +85,6 @@ wire_code = 19
 label = "Finding integral gain (velocity)"
 trace_ident = "IntegralGainResponseCharacterization"
 doc = "Integral-phase fixed-P velocity-integral response ladder. Wire code 19."
-[[phase]]
-ident = "FixedGainAmplitudeValidation"
-wire_code = 20
-label = "Fixed-gain amplitude validation"
-trace_ident = "FixedGainAmplitudeValidation"
-doc = """
-Integral-phase fixed-P velocity-integral fixed-gain sweep (ascending or
-descending amplitude) against the retained acceptance point. Wire code 20."""
 [[phase]]
 ident = "ReversalStandstillRobustnessGate"
 wire_code = 21
@@ -165,16 +160,6 @@ wire_code = 0
 const_stem = "SHAPE_RESUME"
 doc = "Resume Integral from retained firmware authority."
 [[workflow_shape]]
-ident = "FixedGainAmplitudeAscending"
-wire_code = 1
-const_stem = "SHAPE_FIXED_GAIN_AMPLITUDE_ASCENDING"
-doc = "Run the retained fixed-I gain from low to high amplitude."
-[[workflow_shape]]
-ident = "FixedGainAmplitudeDescending"
-wire_code = 2
-const_stem = "SHAPE_FIXED_GAIN_AMPLITUDE_DESCENDING"
-doc = "Run the retained fixed-I gain from high to low amplitude."
-[[workflow_shape]]
 ident = "BreakawaySeededProportionalThenIntegral"
 wire_code = 3
 const_stem = "SHAPE_BREAKAWAY_SEEDED"
@@ -199,16 +184,6 @@ Distinct from every acquisition shape so the host arms the extended run
 timeout for the half-octave rung sweep instead of the 5 s plan window."""
 
 [[action]]
-ident = "FixedGainAmplitudeAscending"
-wire_code = 1
-label = "amplitude_up"
-doc = "Run the retained fixed-I gain from lowest to highest amplitude."
-[[action]]
-ident = "FixedGainAmplitudeDescending"
-wire_code = 2
-label = "amplitude_down"
-doc = "Run the retained fixed-I gain from highest to lowest amplitude."
-[[action]]
 ident = "BreakawaySeeded"
 wire_code = 7
 label = "velocity_p_tune"
@@ -217,9 +192,9 @@ Run the breakaway probe, additive discovery, held-out confirmation, and
 the existing velocity-integral continuation as one bounded command.
 
 This is the production `Tune` path: a non-trace build routes the request
-through the breakaway/velocity-integral/fixed-gain-amplitude engine just like a
-trace build. The `trace` feature adds only the raw evidence emission on
-top of the same campaign, not the campaign itself."""
+through the breakaway/velocity-integral engine just like a trace build. The
+`trace` feature adds only the raw evidence emission on top of the same
+campaign, not the campaign itself."""
 [[action]]
 ident = "IntegralResume"
 wire_code = 8

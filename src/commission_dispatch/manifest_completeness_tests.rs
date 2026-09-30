@@ -98,8 +98,8 @@ fn hand_written_region_has_no_default_bodied_methods() {
 fn manifest_has_the_expected_entry_count() {
     let entry_count = TRAIT_SOURCE.matches("entry {").count();
     assert_eq!(
-        entry_count, 26,
-        "expected 26 entries in __commission_reply_manifest! (24 plain + \
+        entry_count, 24,
+        "expected 24 entries in __commission_reply_manifest! (22 plain + \
          foci_robustness_cycle_evidence + foci_commission_timing); found \
          {entry_count}. If you added or removed a manifest entry on \
          purpose, update this count."
@@ -204,8 +204,8 @@ fn manifest_entries_match_their_wire_reply_struct_fields() {
     }
     assert_eq!(
         names.len(),
-        26,
-        "expected 26 manifest entry names; found {}: {names:?}",
+        24,
+        "expected 24 manifest entry names; found {}: {names:?}",
         names.len()
     );
 

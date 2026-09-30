@@ -15,9 +15,7 @@ use crate::commissioning::outer::{
 };
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
-    FixedGainAmplitudeCause, FixedGainAmplitudeEvent, FixedGainAmplitudeEvidence,
-    FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal, IntegralOutcomeCause,
-    OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
+    IntegralOutcomeCause, OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
     OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, RecoveryRestDiagnostic,
     RestSelectionDiagnostic, RestSelectionOwner, RungOriginRecoveryEvidence, StepResult,
     VelocityIntegralEvent, VelocityIntegralObservation, VelocityIntegralOutcome,
@@ -32,11 +30,6 @@ use foci_tmc4671::registers::{
 };
 
 use super::combined_plan::{CombinedRateInterval, integral_deficit_reaches_target};
-use super::fixed_gain_amplitude_evidence::{
-    FIXED_GAIN_AMPLITUDE_COUNT, FixedGainAmplitudeAvailability, FixedGainAmplitudeDirectionInput,
-    FixedGainAmplitudeEvidenceError, FixedGainAmplitudeReport, FixedGainAmplitudeRunMasks,
-    classify_fixed_gain_amplitude, fixed_gain_amplitude_run_sufficient,
-};
 use super::integral_evidence::{
     ExactRateInterval, IntegralEvidenceError, IntegralInconclusiveKind, IntegralRunSufficiency,
     IntegralRungClass, IntegralRungEvidence, IntegralRungKind, analyze_integral_direction,
@@ -44,7 +37,7 @@ use super::integral_evidence::{
 };
 use super::integral_plan::{
     AcceptanceSource, INTEGRAL_MAX_POSITIVE_RUNGS, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US,
-    VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan, integral_gain_at,
+    VelocityIntegralExecutionPlan, integral_gain_at,
 };
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis, RecoveryStage,
@@ -80,14 +73,12 @@ const INTEGRAL_CAUSE_RECOVERY: u8 = 5;
 pub(super) const INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE: u8 = 8;
 pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY: u8 = 9;
 pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY: u8 = 10;
-pub(super) const INTEGRAL_CAUSE_FIXED_GAIN_REST_OWNERSHIP: u8 = 6;
 const INTEGRAL_CAUSE_EVIDENCE_INVALID_INTERVAL: u8 = 7;
 const INTEGRAL_CAUSE_EVIDENCE_MISMATCHED_OBSERVATION: u8 = 11;
 const INTEGRAL_CAUSE_EVIDENCE_CONVERSION: u8 = 14;
 const INTEGRAL_CAUSE_EVIDENCE_MASK_OUT_OF_RANGE: u8 = 15;
 const INTEGRAL_CAUSE_EVIDENCE_DUPLICATE_RUNG: u8 = 16;
 const OPENING_WORD_BASE: usize = 0;
-const AMPLITUDE_MEAN_WORD_BASE: usize = 0;
 const POSITIVE_WORD_BASE: usize = 4;
 const BOOKEND_WORD_BASE: usize = POSITIVE_WORD_BASE + 2 * INTEGRAL_MAX_POSITIVE_RUNGS * 2;
 
@@ -98,23 +89,11 @@ const _: () = assert!(
 );
 
 pub(super) fn integral_rung_count(plan: VelocityIntegralExecutionPlan) -> Option<u8> {
-    match plan.acquisition_kind {
-        VelocityIntegralAcquisitionKind::ResponseLadder => plan.positive_rung_count.checked_add(2),
-        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
-        | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => {
-            u8::try_from(plan.amplitude_targets_rpm.len()).ok()
-        }
-    }
+    plan.positive_rung_count.checked_add(2)
 }
 
 pub(crate) fn integral_i_at(plan: VelocityIntegralExecutionPlan, rung_index: u8) -> Option<u16> {
     let total = integral_rung_count(plan)?;
-    if !matches!(
-        plan.acquisition_kind,
-        VelocityIntegralAcquisitionKind::ResponseLadder
-    ) {
-        return (rung_index < total).then_some(plan.i_start);
-    }
     if rung_index >= total {
         None
     } else if rung_index == 0 || rung_index + 1 == total {
@@ -129,17 +108,7 @@ pub(super) fn integral_target_rpm_at(
     plan: VelocityIntegralExecutionPlan,
     rung_index: u8,
 ) -> Option<i32> {
-    match plan.acquisition_kind {
-        VelocityIntegralAcquisitionKind::ResponseLadder => {
-            (rung_index < integral_rung_count(plan)?).then_some(plan.target_velocity_rpm)
-        }
-        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
-        | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => plan
-            .amplitude_targets_rpm
-            .get(usize::from(rung_index))
-            .copied()
-            .map(i32::from),
-    }
+    (rung_index < integral_rung_count(plan)?).then_some(plan.target_velocity_rpm)
 }
 
 pub(super) const fn integral_slot_direction(order: IntegralSlotOrder, slot: u8) -> Option<i32> {
@@ -162,11 +131,6 @@ pub(super) fn command_target_signed_target(
     target
         .checked_mul(direction)
         .ok_or(CommissionError::TargetRateInvalid)
-}
-
-pub(super) fn fixed_gain_amplitude_bit(rung_index: u8) -> Result<u8, CommissionError> {
-    1_u8.checked_shl(u32::from(rung_index))
-        .ok_or(CommissionError::RungIndexOutOfRange)
 }
 
 pub(super) fn command_target_deadlines(
@@ -198,18 +162,12 @@ pub(super) fn integral_rung_kind(
     rung_index: u8,
 ) -> IntegralRungKind {
     let total = integral_rung_count(plan).unwrap_or(0);
-    match plan.acquisition_kind {
-        VelocityIntegralAcquisitionKind::ResponseLadder if rung_index == 0 => {
-            IntegralRungKind::OpeningAnchor
-        }
-        VelocityIntegralAcquisitionKind::ResponseLadder if rung_index + 1 == total => {
-            IntegralRungKind::ClosingBookend
-        }
-        VelocityIntegralAcquisitionKind::ResponseLadder => IntegralRungKind::Positive,
-        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
-        | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => {
-            IntegralRungKind::FixedGainAmplitude
-        }
+    if rung_index == 0 {
+        IntegralRungKind::OpeningAnchor
+    } else if rung_index + 1 == total {
+        IntegralRungKind::ClosingBookend
+    } else {
+        IntegralRungKind::Positive
     }
 }
 
@@ -217,23 +175,6 @@ pub(super) fn apply_integral_current_headroom(
     state: &mut VelocityIntegralState,
     data: &mut VelocityIntegralRuntime,
 ) {
-    if matches!(
-        data.plan.acquisition_kind,
-        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
-            | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending
-    ) {
-        if data.plan.acquisition_kind
-            == VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending
-        {
-            data.rung_index = data.rung_index.saturating_add(1);
-            if data.rung_index < integral_rung_count(data.plan).unwrap_or(0) {
-                *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
-                return;
-            }
-        }
-        *state = VelocityIntegralState::Terminal;
-        return;
-    }
     if matches!(
         integral_rung_kind(data.plan, data.rung_index),
         IntegralRungKind::Positive
@@ -330,49 +271,11 @@ fn current_guard_error(error: VelocityCurrentGuardError) -> CommissionError {
     }
 }
 
-fn reset_rung(
-    data: &mut VelocityIntegralRuntime,
-    workspace: &mut TransientBuffer,
-) -> Result<(), CommissionError> {
+fn reset_rung(data: &mut VelocityIntegralRuntime) {
     data.slot = 0;
     data.rung_classes = [VelocityObservationClass::InvalidEvidenceFault; 8];
     data.rung_intervals = [ExactRateInterval::EMPTY; 8];
-    if is_fixed_gain_amplitude(data.plan) {
-        for slot in 0..usize::from(INTEGRAL_SLOT_COUNT) {
-            if !workspace.write_workspace_word(AMPLITUDE_MEAN_WORD_BASE + slot, 0) {
-                return Err(CommissionError::EvidenceBufferFull);
-            }
-        }
-    }
     data.rung_blocking_levels = 0;
-    Ok(())
-}
-
-pub(super) fn store_amplitude_rung_mean(
-    workspace: &mut TransientBuffer,
-    slot: usize,
-    value: i32,
-) -> Result<(), CommissionError> {
-    if slot >= usize::from(INTEGRAL_SLOT_COUNT)
-        || !workspace.write_workspace_word(AMPLITUDE_MEAN_WORD_BASE + slot, value as u32)
-    {
-        Err(CommissionError::RungIndexOutOfRange)
-    } else {
-        Ok(())
-    }
-}
-
-pub(super) fn amplitude_rung_mean(
-    workspace: &TransientBuffer,
-    slot: usize,
-) -> Result<i32, CommissionError> {
-    if slot >= usize::from(INTEGRAL_SLOT_COUNT) {
-        return Err(CommissionError::RungIndexOutOfRange);
-    }
-    workspace
-        .workspace_word(AMPLITUDE_MEAN_WORD_BASE + slot)
-        .map(|value| value as i32)
-        .ok_or(CommissionError::MissingCaptureState)
 }
 
 fn set_rung_blocking_level(
@@ -387,224 +290,6 @@ fn set_rung_blocking_level(
     data.rung_blocking_levels =
         (data.rung_blocking_levels & !(0x0f << shift)) | (u32::from(level) << shift);
     Ok(())
-}
-
-fn rung_blocking_level(data: &VelocityIntegralRuntime, slot: usize) -> u8 {
-    ((data.rung_blocking_levels >> (slot * 4)) & 0x0f) as u8
-}
-
-fn fixed_gain_amplitude_attempted_masks(data: &VelocityIntegralRuntime) -> [u8; 2] {
-    [data.opening_direction_mask, data.bookend_available_mask]
-}
-
-fn set_fixed_gain_amplitude_attempted(
-    data: &mut VelocityIntegralRuntime,
-    direction: usize,
-    bit: u8,
-) {
-    if direction == 0 {
-        data.opening_direction_mask |= bit;
-    } else {
-        data.bookend_available_mask |= bit;
-    }
-}
-
-fn fixed_gain_amplitude_current_masks(data: &VelocityIntegralRuntime) -> [u8; 2] {
-    [
-        data.current_terminus.unwrap_or(0),
-        data.target_terminus.unwrap_or(0),
-    ]
-}
-
-fn set_fixed_gain_amplitude_current(data: &mut VelocityIntegralRuntime, direction: usize, bit: u8) {
-    let value = if direction == 0 {
-        &mut data.current_terminus
-    } else {
-        &mut data.target_terminus
-    };
-    *value = Some(value.unwrap_or(0) | bit);
-}
-
-pub(super) fn is_fixed_gain_amplitude(plan: VelocityIntegralExecutionPlan) -> bool {
-    matches!(
-        plan.acquisition_kind,
-        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
-            | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending
-    )
-}
-
-fn fixed_gain_amplitude_target_rate_q(
-    plan: VelocityIntegralExecutionPlan,
-    rung_index: u8,
-) -> Result<i64, CommissionError> {
-    let target_rpm =
-        integral_target_rpm_at(plan, rung_index).ok_or(CommissionError::InvalidSchedule)?;
-    i64::from(target_rpm)
-        .checked_mul(i64::from(plan.encoder_counts_per_rev))
-        .and_then(|value| {
-            value.checked_mul(crate::autotune::velocity_measurement::VELOCITY_RATE_Q_SCALE)
-        })
-        .map(|value| value / 60)
-        .ok_or(CommissionError::InvalidSchedule)
-}
-
-fn acceptance_identity_and_qualifiers(plan: VelocityIntegralExecutionPlan) -> Option<(u64, u16)> {
-    if !is_fixed_gain_amplitude(plan) {
-        return None;
-    }
-    Some((plan.acceptance_plan_digest, plan.qualifier_bits))
-}
-
-pub(super) fn fixed_gain_amplitude_report(
-    data: &mut VelocityIntegralRuntime,
-    workspace: &TransientBuffer,
-) -> Result<FixedGainAmplitudeReport, CommissionError> {
-    let amplitude = usize::from(data.rung_index);
-    let bit = 1_u8
-        .checked_shl(u32::from(data.rung_index))
-        .ok_or(CommissionError::InvalidSchedule)?;
-    let target_rate_q = fixed_gain_amplitude_target_rate_q(data.plan, data.rung_index)?;
-    let precision_floor_candidate = integral_target_rpm_at(data.plan, data.rung_index)
-        == data
-            .plan
-            .amplitude_targets_rpm
-            .iter()
-            .copied()
-            .min()
-            .map(i32::from);
-    let slot_order = data.plan.slot_order;
-    let directions: [Result<_, CommissionError>; 2] = core::array::from_fn(|direction| {
-        let slot = |observation: usize| usize::from(slot_order.slot_for(observation, direction));
-        let classes = core::array::from_fn(|observation| data.rung_classes[slot(observation)]);
-        let intervals = core::array::from_fn(|observation| {
-            (classes[observation] == VelocityObservationClass::Eligible).then(|| {
-                let interval = data.rung_intervals[slot(observation)];
-                [interval.low_q, interval.high_q]
-            })
-        });
-        let means_q: [Result<Option<i32>, CommissionError>; 4] =
-            core::array::from_fn(|observation| {
-                (classes[observation] == VelocityObservationClass::Eligible)
-                    .then(|| amplitude_rung_mean(workspace, slot(observation)))
-                    .transpose()
-            });
-        let means_q = [means_q[0]?, means_q[1]?, means_q[2]?, means_q[3]?];
-        let blocking_levels =
-            core::array::from_fn(|observation| rung_blocking_level(data, slot(observation)));
-        classify_fixed_gain_amplitude(FixedGainAmplitudeDirectionInput {
-            signed_target_rate_q: if direction == 0 {
-                target_rate_q
-            } else {
-                -target_rate_q
-            },
-            collected_mask: 0b1111,
-            classes,
-            intervals,
-            means_q,
-            blocking_levels,
-            precision_floor_candidate,
-        })
-        .map_err(|error| match error {
-            FixedGainAmplitudeEvidenceError::InvalidInterval => CommissionError::MalformedInterval,
-            FixedGainAmplitudeEvidenceError::InvalidMasks => CommissionError::InvalidSchedule,
-        })
-    });
-    let directions = [directions[0]?, directions[1]?];
-    for (direction, evidence) in directions.iter().enumerate() {
-        set_fixed_gain_amplitude_attempted(data, direction, bit);
-        if evidence.availability == FixedGainAmplitudeAvailability::Eligible {
-            data.eligible_masks[direction] |= u32::from(bit);
-        }
-        if evidence.availability == FixedGainAmplitudeAvailability::CurrentHeadroom {
-            set_fixed_gain_amplitude_current(data, direction, bit);
-        }
-    }
-    Ok(FixedGainAmplitudeReport {
-        amplitude_index: u8::try_from(amplitude).map_err(|_| CommissionError::InvalidSchedule)?,
-        target_rpm: i16::try_from(
-            integral_target_rpm_at(data.plan, data.rung_index)
-                .ok_or(CommissionError::InvalidSchedule)?,
-        )
-        .map_err(|_| CommissionError::InvalidSchedule)?,
-        directions,
-    })
-}
-
-pub(super) fn fixed_gain_amplitude_terminal(
-    data: &VelocityIntegralRuntime,
-    faulted: bool,
-    safety_fault: Option<OuterSafetyFault>,
-) -> FixedGainAmplitudeTerminal {
-    let eligible_masks = [
-        u8::try_from(data.eligible_masks[0])
-            .expect("amplitude eligibility is written only through five-bit masks"),
-        u8::try_from(data.eligible_masks[1])
-            .expect("amplitude eligibility is written only through five-bit masks"),
-    ];
-    let full_mask = (1_u8 << FIXED_GAIN_AMPLITUDE_COUNT) - 1;
-    let masks = FixedGainAmplitudeRunMasks {
-        attempted: fixed_gain_amplitude_attempted_masks(data),
-        eligible: eligible_masks,
-        current_terminus: fixed_gain_amplitude_current_masks(data),
-        unattempted: fixed_gain_amplitude_attempted_masks(data).map(|mask| full_mask & !mask),
-    };
-    let identity = acceptance_identity_and_qualifiers(data.plan);
-    let (outcome, cause) = if faulted || identity.is_none() {
-        (
-            FixedGainAmplitudeOutcome::Fault,
-            FixedGainAmplitudeCause::EvidenceIntegrity,
-        )
-    } else {
-        match fixed_gain_amplitude_run_sufficient(masks) {
-            Err(_) => (
-                FixedGainAmplitudeOutcome::Fault,
-                FixedGainAmplitudeCause::InvalidRunMasks,
-            ),
-            Ok(_) if data.rest_unconfirmed => (
-                FixedGainAmplitudeOutcome::Inconclusive,
-                FixedGainAmplitudeCause::VelocityRestNotConfirmed,
-            ),
-            Ok(_) if data.recovery_failure || data.recovery_unavailable => (
-                FixedGainAmplitudeOutcome::Inconclusive,
-                FixedGainAmplitudeCause::RecoveryUnavailable,
-            ),
-            Ok(true) => (
-                FixedGainAmplitudeOutcome::Complete,
-                FixedGainAmplitudeCause::None,
-            ),
-            Ok(false) => (
-                FixedGainAmplitudeOutcome::Inconclusive,
-                FixedGainAmplitudeCause::InsufficientSharedFloor,
-            ),
-        }
-    };
-    let (acceptance_plan_digest, qualifier_bits) = identity.unwrap_or((0, 0));
-    FixedGainAmplitudeTerminal {
-        schema_revision: super::fixed_gain_amplitude_plan::FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
-        run_sequence: data.integrity.run_sequence(),
-        evidence_sequence: data.integrity.next_evidence_sequence(),
-        acceptance_plan_digest,
-        plan_digest: data.plan.plan_digest,
-        digest: data.integrity.digest(),
-        outcome,
-        cause,
-        attempted_masks: masks.attempted,
-        eligible_masks: masks.eligible,
-        current_terminus_masks: masks.current_terminus,
-        unattempted_masks: masks.unattempted,
-        expected_observations: u16::from(INTEGRAL_SLOT_COUNT)
-            * u16::try_from(FIXED_GAIN_AMPLITUDE_COUNT)
-                .expect("fixed amplitude count fits terminal"),
-        emitted_observations: data.emitted_observations,
-        expected_amplitudes: u8::try_from(FIXED_GAIN_AMPLITUDE_COUNT)
-            .expect("fixed amplitude count fits terminal"),
-        emitted_amplitudes: u8::try_from(data.emitted_rungs)
-            .expect("emitted amplitude count cannot exceed the five-rung plan"),
-        qualifier_bits,
-        run_started_us: data.run_started_us,
-        run_completed_us: data.previous_read_us,
-        safety_fault,
-    }
 }
 
 fn transition_elapsed_us(started_us: u64, finished_us: u64) -> Result<u32, CommissionError> {
@@ -719,39 +404,20 @@ pub(super) fn plan_integral_recovery(
     safety: &OuterSafetyLimits,
 ) -> Result<RungOriginRecoveryRuntime, CommissionError> {
     let direction = usize::from(safety.unwrapped_position >= 0);
-    let target_velocity_rpm = if is_fixed_gain_amplitude(data.plan) {
-        data.plan.target_velocity_rpm
-    } else {
-        integral_target_rpm_at(data.plan, data.rung_index)
-            .ok_or(CommissionError::RungIndexOutOfRange)?
-    };
-    let lower_rate_q = match data.plan.acquisition_kind {
-        VelocityIntegralAcquisitionKind::ResponseLadder => opening_recovery_lower_rate_q(
-            workspace,
-            data.opening_direction_mask,
-            data.plan.target_velocity_rpm,
-            safety.counts_per_rev(),
-            direction,
-        )?,
-        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
-        | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => Some(
-            *data
-                .plan
-                .recovery_lower_rate_q
-                .get(direction)
-                .filter(|value| **value != 0)
-                .ok_or(CommissionError::MissingRateTableEntry)?,
-        ),
-    };
-    let planned_velocity_mrev_s = if is_fixed_gain_amplitude(data.plan) {
-        data.plan.planned_velocity_mrev_s
-    } else {
-        u32::try_from(target_velocity_rpm)
-            .ok()
-            .and_then(|target| target.checked_mul(1_000))
-            .map(|target| target / 60)
-            .ok_or(CommissionError::TargetRateInvalid)?
-    };
+    let target_velocity_rpm = integral_target_rpm_at(data.plan, data.rung_index)
+        .ok_or(CommissionError::RungIndexOutOfRange)?;
+    let lower_rate_q = opening_recovery_lower_rate_q(
+        workspace,
+        data.opening_direction_mask,
+        data.plan.target_velocity_rpm,
+        safety.counts_per_rev(),
+        direction,
+    )?;
+    let planned_velocity_mrev_s = u32::try_from(target_velocity_rpm)
+        .ok()
+        .and_then(|target| target.checked_mul(1_000))
+        .map(|target| target / 60)
+        .ok_or(CommissionError::TargetRateInvalid)?;
     let recovery_plan = plan_rung_origin_recovery(
         safety.budget,
         safety.counts_per_rev(),
@@ -812,17 +478,10 @@ pub(super) fn record_integral_recovery_rest(
         current_contact_code: analysis.current_contact_code,
         disposition: analysis.disposition,
     };
-    if is_fixed_gain_amplitude(data.plan) {
-        let event = data
-            .integrity
-            .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::RecoveryRest(diagnostic));
-        StepResult::FixedGainAmplitudeEvent(event)
-    } else {
-        let event = data
-            .integrity
-            .record(VelocityIntegralEvent::RecoveryRest(diagnostic));
-        StepResult::VelocityIntegralEvent(event)
-    }
+    let event = data
+        .integrity
+        .record(VelocityIntegralEvent::RecoveryRest(diagnostic));
+    StepResult::VelocityIntegralEvent(event)
 }
 
 pub(super) fn record_integral_recovery_rest_selection(
@@ -843,28 +502,17 @@ pub(super) fn record_integral_recovery_rest_selection(
         zero_compatible_mask: decision.zero_compatible_mask,
         selected_mask: decision.selected_mask,
         stage,
-        owner: if is_fixed_gain_amplitude(data.plan) {
-            RestSelectionOwner::FixedGainAmplitudeRecovery
-        } else {
-            RestSelectionOwner::IntegralRecovery
-        },
+        owner: RestSelectionOwner::IntegralRecovery,
         rung_index,
         direction: u8::MAX,
         slot: u8::MAX,
         disposition: decision.disposition,
         retained_sample_count: decision.retained_sample_count,
     };
-    if is_fixed_gain_amplitude(data.plan) {
-        let event = data
-            .integrity
-            .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::RestSelection(diagnostic));
-        StepResult::FixedGainAmplitudeEvent(event)
-    } else {
-        let event = data
-            .integrity
-            .record(VelocityIntegralEvent::RestSelection(diagnostic));
-        StepResult::VelocityIntegralEvent(event)
-    }
+    let event = data
+        .integrity
+        .record(VelocityIntegralEvent::RestSelection(diagnostic));
+    StepResult::VelocityIntegralEvent(event)
 }
 
 pub(super) fn record_integral_observation_rest_selection(
@@ -891,17 +539,10 @@ pub(super) fn record_integral_observation_rest_selection(
         disposition: decision.disposition,
         retained_sample_count: decision.retained_sample_count,
     };
-    if is_fixed_gain_amplitude(data.plan) {
-        let event = data
-            .integrity
-            .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::RestSelection(diagnostic));
-        StepResult::FixedGainAmplitudeEvent(event)
-    } else {
-        let event = data
-            .integrity
-            .record(VelocityIntegralEvent::RestSelection(diagnostic));
-        StepResult::VelocityIntegralEvent(event)
-    }
+    let event = data
+        .integrity
+        .record(VelocityIntegralEvent::RestSelection(diagnostic));
+    StepResult::VelocityIntegralEvent(event)
 }
 
 fn materialize_run_evidence(
@@ -994,14 +635,6 @@ pub(crate) fn integral_fault_terminal(
     let OuterPhase::VelocityIntegral { data, .. } = phase else {
         return StepResult::OuterFailed(error);
     };
-    if is_fixed_gain_amplitude(data.plan) {
-        let _ = error;
-        return StepResult::FixedGainAmplitudeTerminal(fixed_gain_amplitude_terminal(
-            data,
-            true,
-            safety_fault,
-        ));
-    }
     terminal_from_data(
         data,
         super::integral_evidence::IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2]),
@@ -1158,7 +791,6 @@ fn retain_rung(
                 }
             }
         }
-        IntegralRungKind::FixedGainAmplitude => {}
     }
     Ok(())
 }
@@ -1183,21 +815,6 @@ fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer
         let sufficient_before_rest_rejection =
             matches!(assessment, Ok(IntegralRunSufficiency::Sufficient { .. }));
         if sufficient_before_rest_rejection {
-            if matches!(
-                data.rest_unconfirmed_owner,
-                Some(RestSelectionOwner::FixedGainAmplitudeObservation)
-                    | Some(RestSelectionOwner::FixedGainAmplitudeRecovery)
-            ) {
-                return terminal_from_data(
-                    data,
-                    evidence,
-                    VelocityIntegralOutcome::Fault,
-                    IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_FIXED_GAIN_REST_OWNERSHIP),
-                    None,
-                    false,
-                    None,
-                );
-            }
             return terminal_from_data(
                 data,
                 evidence,
@@ -1399,16 +1016,9 @@ fn moving_analysis(
 
 fn retain_analyzed_observation(
     data: &mut VelocityIntegralRuntime,
-    workspace: &mut TransientBuffer,
     summary: VelocityObservationSummary,
 ) -> Result<(), CommissionError> {
-    let source_interval = match data.plan.acquisition_kind {
-        VelocityIntegralAcquisitionKind::ResponseLadder => summary.deficit_interval_q,
-        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
-        | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => {
-            summary.settled_rate_interval_q
-        }
-    };
+    let source_interval = summary.deficit_interval_q;
     let interval = ExactRateInterval::new(
         i32::try_from(source_interval[0]).map_err(|_| CommissionError::TargetRateInvalid)?,
         i32::try_from(source_interval[1]).map_err(|_| CommissionError::TargetRateInvalid)?,
@@ -1416,16 +1026,6 @@ fn retain_analyzed_observation(
     .map_err(|_| CommissionError::MalformedInterval)?;
     data.rung_classes[usize::from(data.slot)] = summary.classification;
     data.rung_intervals[usize::from(data.slot)] = interval;
-    if is_fixed_gain_amplitude(data.plan)
-        && summary.classification == VelocityObservationClass::Eligible
-    {
-        store_amplitude_rung_mean(
-            workspace,
-            usize::from(data.slot),
-            i32::try_from(summary.settled_rate_mean_q)
-                .map_err(|_| CommissionError::TargetRateInvalid)?,
-        )?;
-    }
     Ok(())
 }
 
@@ -1546,8 +1146,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     Ok(value) => value,
                     Err(error) => return fail_integral(phase, backend, error).await,
                 };
-            if *should_reset_rung && let Err(error) = reset_rung(data, workspace) {
-                return fail_integral(phase, backend, error).await;
+            if *should_reset_rung {
+                reset_rung(data);
             }
             *state = VelocityIntegralState::CommandTarget {
                 entry_transition_us,
@@ -1566,14 +1166,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 Ok(value) => value,
                 Err(error) => return fail_integral(phase, backend, error).await,
             };
-            if is_fixed_gain_amplitude(data.plan) {
-                let bit = match fixed_gain_amplitude_bit(data.rung_index) {
-                    Ok(value) => value,
-                    Err(error) => return fail_integral(phase, backend, error).await,
-                };
-                let direction = data.plan.slot_order.direction_index(data.slot);
-                set_fixed_gain_amplitude_attempted(data, direction, bit);
-            }
             let mut clamp_session = match VelocityCurrentClampSession::try_new_with_limit(
                 u32::from(data.plan.hard_torque_limit),
                 u32::from(data.plan.usable_torque_limit),
@@ -1829,7 +1421,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             {
                 return fail_integral(phase, backend, error).await;
             }
-            if let Err(error) = retain_analyzed_observation(data, workspace, summary) {
+            if let Err(error) = retain_analyzed_observation(data, summary) {
                 return fail_integral(phase, backend, error).await;
             }
             data.emitted_observations = data.emitted_observations.saturating_add(1);
@@ -1866,17 +1458,10 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             } else {
                 VelocityIntegralState::BeginSettleCapture { settle_deadline_us }
             };
-            if is_fixed_gain_amplitude(data.plan) {
-                let event = data
-                    .integrity
-                    .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::Observation(report));
-                StepResult::FixedGainAmplitudeEvent(event)
-            } else {
-                let event = data
-                    .integrity
-                    .record(VelocityIntegralEvent::Observation(report));
-                StepResult::VelocityIntegralEvent(event)
-            }
+            let event = data
+                .integrity
+                .record(VelocityIntegralEvent::Observation(report));
+            StepResult::VelocityIntegralEvent(event)
         }
         VelocityIntegralState::BeginSettleCapture { settle_deadline_us } => {
             let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
@@ -2056,9 +1641,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                         IntegralRungKind::Positive => {
                             RestSelectionOwner::IntegralPositiveObservation
                         }
-                        IntegralRungKind::FixedGainAmplitude => {
-                            RestSelectionOwner::FixedGainAmplitudeObservation
-                        }
                     };
                     return record_integral_observation_rest_selection(data, decision, owner);
                 }
@@ -2141,33 +1723,13 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                             RestSelectionOwner::IntegralAnchor
                         }
                         IntegralRungKind::Positive => unreachable!(),
-                        IntegralRungKind::FixedGainAmplitude => {
-                            RestSelectionOwner::FixedGainAmplitudeObservation
-                        }
                     });
                 *state = VelocityIntegralState::Terminal;
             } else {
                 safety.end_primitive();
             }
             if data.observation_current_headroom {
-                if is_fixed_gain_amplitude(data.plan) {
-                    let bit = match 1_u8.checked_shl(u32::from(data.rung_index)) {
-                        Some(value) => value,
-                        None => {
-                            return fail_integral(phase, backend, CommissionError::InvalidSchedule)
-                                .await;
-                        }
-                    };
-                    set_fixed_gain_amplitude_current(
-                        data,
-                        data.plan.slot_order.direction_index(data.slot),
-                        bit,
-                    );
-                    match plan_integral_recovery(data, workspace, safety) {
-                        Ok(recovery) => *state = VelocityIntegralState::RecoverRung(recovery),
-                        Err(error) => return fail_integral(phase, backend, error).await,
-                    }
-                } else if matches!(
+                if matches!(
                     integral_rung_kind(data.plan, data.rung_index),
                     IntegralRungKind::Positive
                 ) && positive_directional_floors_exist(data)
@@ -2191,17 +1753,10 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 *state = VelocityIntegralState::AnalyzeRung;
             }
             let report = current_report(data, current_evidence);
-            if is_fixed_gain_amplitude(data.plan) {
-                let event = data
-                    .integrity
-                    .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::Current(report));
-                StepResult::FixedGainAmplitudeEvent(event)
-            } else {
-                let event = data
-                    .integrity
-                    .record(VelocityIntegralEvent::Current(report));
-                StepResult::VelocityIntegralEvent(event)
-            }
+            let event = data
+                .integrity
+                .record(VelocityIntegralEvent::Current(report));
+            StepResult::VelocityIntegralEvent(event)
         }
         VelocityIntegralState::BeginPositiveIRestCleanup => {
             if data.positive_i_rest_boundary.is_none() {
@@ -2453,28 +2008,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         VelocityIntegralState::AnalyzeRung => {
-            if is_fixed_gain_amplitude(data.plan) {
-                let report = match fixed_gain_amplitude_report(data, workspace) {
-                    Ok(report) => report,
-                    Err(error) => return fail_integral(phase, backend, error).await,
-                };
-                data.emitted_rungs = data.emitted_rungs.saturating_add(1);
-                let recovery = match plan_integral_recovery(data, workspace, safety) {
-                    Ok(runtime) => runtime,
-                    Err(error) => return fail_integral(phase, backend, error).await,
-                };
-                *state = VelocityIntegralState::RecoverRung(recovery);
-                let evidence = FixedGainAmplitudeEvidence {
-                    run_sequence: data.integrity.run_sequence(),
-                    evidence_sequence: data.integrity.next_evidence_sequence(),
-                    plan_digest: data.plan.plan_digest,
-                    report,
-                };
-                let event = data
-                    .integrity
-                    .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::Amplitude(evidence));
-                return StepResult::FixedGainAmplitudeEvent(event);
-            }
             let directions = match resolve_analyzed_directions(
                 analyze_rung(data, VelocityDirection::Forward),
                 analyze_rung(data, VelocityDirection::Reverse),
@@ -2503,8 +2036,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 }
                 IntegralRungKind::OpeningAnchor
                 | IntegralRungKind::Positive
-                | IntegralRungKind::ClosingBookend
-                | IntegralRungKind::FixedGainAmplitude => {
+                | IntegralRungKind::ClosingBookend => {
                     let recovery = match plan_integral_recovery(data, workspace, safety) {
                         Ok(runtime) => runtime,
                         Err(error) => return fail_integral(phase, backend, error).await,
@@ -2545,11 +2077,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 }
                 RungOriginRecoveryStep::RestUnconfirmed => {
                     data.rest_unconfirmed = true;
-                    data.rest_unconfirmed_owner = Some(if is_fixed_gain_amplitude(data.plan) {
-                        RestSelectionOwner::FixedGainAmplitudeRecovery
-                    } else {
-                        RestSelectionOwner::IntegralRecovery
-                    });
+                    data.rest_unconfirmed_owner = Some(RestSelectionOwner::IntegralRecovery);
                     *state = VelocityIntegralState::Terminal;
                     StepResult::ReadyNow
                 }
@@ -2572,16 +2100,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             );
             if report.outcome == RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom {
                 data.recovered_with_current_headroom = true;
-                if matches!(
-                    data.plan.acquisition_kind,
-                    VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
-                        | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending
-                ) {
-                    apply_integral_current_headroom(state, data);
-                } else {
-                    data.rung_index = data.plan.positive_rung_count.saturating_add(1);
-                    *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
-                }
+                data.rung_index = data.plan.positive_rung_count.saturating_add(1);
+                *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
             } else if report.outcome == RungOriginRecoveryOutcome::RecoveryCurrentHeadroom {
                 apply_integral_current_headroom(state, data);
             } else {
@@ -2618,23 +2138,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                         data.rung_index = data.rung_index.saturating_add(1);
                         *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
                     }
-                    IntegralRungKind::FixedGainAmplitude if contained => {
-                        data.recovery_failure = true;
-                        *state = VelocityIntegralState::Terminal;
-                    }
-                    IntegralRungKind::FixedGainAmplitude
-                        if fixed_gain_amplitude_current_masks(data) != [0; 2] =>
-                    {
-                        apply_integral_current_headroom(state, data);
-                    }
-                    IntegralRungKind::FixedGainAmplitude => {
-                        data.rung_index = data.rung_index.saturating_add(1);
-                        if data.rung_index >= integral_rung_count(data.plan).unwrap_or(0) {
-                            *state = VelocityIntegralState::Terminal;
-                        } else {
-                            *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
-                        }
-                    }
                 }
             }
             let recovery = RungOriginRecoveryEvidence {
@@ -2642,24 +2145,14 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 evidence_sequence: data.integrity.next_evidence_sequence(),
                 report,
             };
-            if is_fixed_gain_amplitude(data.plan) {
-                let event = data
-                    .integrity
-                    .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::Recovery(recovery));
-                StepResult::FixedGainAmplitudeEvent(event)
-            } else {
-                let event = data
-                    .integrity
-                    .record(VelocityIntegralEvent::Recovery(recovery));
-                StepResult::VelocityIntegralEvent(event)
-            }
+            let event = data
+                .integrity
+                .record(VelocityIntegralEvent::Recovery(recovery));
+            StepResult::VelocityIntegralEvent(event)
         }
         VelocityIntegralState::FaultTerminal { error } => {
             let error = *error;
             fail_integral(phase, backend, error).await
-        }
-        VelocityIntegralState::Terminal if is_fixed_gain_amplitude(data.plan) => {
-            StepResult::FixedGainAmplitudeTerminal(fixed_gain_amplitude_terminal(data, false, None))
         }
         VelocityIntegralState::Terminal => evidence_terminal(data, workspace),
     }
@@ -2672,13 +2165,12 @@ mod tests {
     use super::{
         INTEGRAL_SLOT_COUNT, VelocityDirection, VelocityObservationClass,
         VelocityObservationSummary, analyze_integral_direction, command_target_deadlines,
-        command_target_signed_target, direction_for_slot, fixed_gain_amplitude_bit,
-        fixed_gain_amplitude_report, integral_rung_count, integral_slot_direction,
-        integral_target_rpm_at, load_interval, map_integral_evidence_error,
-        materialize_run_evidence, moving_analysis, plan_integral_recovery,
-        record_integral_target_if_reached, resolve_analyzed_directions,
-        retain_analyzed_observation, set_rung_blocking_level, store_amplitude_rung_mean,
-        store_interval, transition_elapsed_us,
+        command_target_signed_target, direction_for_slot, integral_rung_count,
+        integral_slot_direction, integral_target_rpm_at, load_interval,
+        map_integral_evidence_error, materialize_run_evidence, moving_analysis,
+        plan_integral_recovery, record_integral_target_if_reached, resolve_analyzed_directions,
+        retain_analyzed_observation, set_rung_blocking_level, store_interval,
+        transition_elapsed_us,
     };
     use crate::commission_dispatch::test_support::current_limit;
     use crate::commissioning::outer::velocity::integral_evidence::{
@@ -2753,28 +2245,6 @@ mod tests {
         let result = record_integral_target_if_reached(&mut data, intervals);
 
         assert_eq!(result, Err(CommissionError::MalformedInterval));
-    }
-
-    #[test]
-    fn fixed_gain_amplitude_report_rejects_inverted_interval_distinctly() {
-        let mut data = VelocityIntegralRuntime::new(1, plan());
-        let mut workspace = TransientBuffer::new();
-        for slot in 0..usize::from(INTEGRAL_SLOT_COUNT) {
-            data.rung_classes[slot] = VelocityObservationClass::Eligible;
-            data.rung_intervals[slot] = ExactRateInterval {
-                low_q: 0,
-                high_q: 0,
-            };
-            store_amplitude_rung_mean(&mut workspace, slot, 0).unwrap();
-        }
-        data.rung_intervals[0] = ExactRateInterval {
-            low_q: 10,
-            high_q: 5,
-        };
-
-        let error = fixed_gain_amplitude_report(&mut data, &workspace).unwrap_err();
-
-        assert_eq!(error, CommissionError::MalformedInterval);
     }
 
     #[test]
@@ -2923,12 +2393,6 @@ mod tests {
     }
 
     #[test]
-    fn fixed_gain_amplitude_bit_rejects_out_of_range_rung() {
-        let error = fixed_gain_amplitude_bit(8).unwrap_err();
-        assert_eq!(error, CommissionError::RungIndexOutOfRange);
-    }
-
-    #[test]
     fn command_target_deadlines_rejects_overflowing_next_sample() {
         let error = command_target_deadlines(u64::MAX, 0).unwrap_err();
         assert_eq!(error, CommissionError::ScheduleDeadlineOverflow);
@@ -2974,11 +2438,10 @@ mod tests {
     #[test]
     fn retain_analyzed_observation_reports_target_rate_invalid_for_an_unrepresentable_low_bound() {
         let mut data = VelocityIntegralRuntime::new(1, plan());
-        let mut workspace = TransientBuffer::new();
         let mut summary = observation_summary();
         summary.deficit_interval_q = [i64::from(i32::MAX) + 1, 0];
 
-        let error = retain_analyzed_observation(&mut data, &mut workspace, summary).unwrap_err();
+        let error = retain_analyzed_observation(&mut data, summary).unwrap_err();
 
         assert_eq!(error, CommissionError::TargetRateInvalid);
     }
@@ -2986,11 +2449,10 @@ mod tests {
     #[test]
     fn retain_analyzed_observation_reports_target_rate_invalid_for_an_unrepresentable_high_bound() {
         let mut data = VelocityIntegralRuntime::new(1, plan());
-        let mut workspace = TransientBuffer::new();
         let mut summary = observation_summary();
         summary.deficit_interval_q = [0, i64::from(i32::MAX) + 1];
 
-        let error = retain_analyzed_observation(&mut data, &mut workspace, summary).unwrap_err();
+        let error = retain_analyzed_observation(&mut data, summary).unwrap_err();
 
         assert_eq!(error, CommissionError::TargetRateInvalid);
     }
@@ -2998,29 +2460,12 @@ mod tests {
     #[test]
     fn retain_analyzed_observation_rejects_inverted_interval() {
         let mut data = VelocityIntegralRuntime::new(1, plan());
-        let mut workspace = TransientBuffer::new();
         let mut summary = observation_summary();
         summary.deficit_interval_q = [10, 5];
 
-        let error = retain_analyzed_observation(&mut data, &mut workspace, summary).unwrap_err();
+        let error = retain_analyzed_observation(&mut data, summary).unwrap_err();
 
         assert_eq!(error, CommissionError::MalformedInterval);
-    }
-
-    #[test]
-    fn retain_analyzed_observation_reports_target_rate_invalid_for_an_unrepresentable_mean() {
-        let mut amplitude_plan = plan();
-        amplitude_plan.acquisition_kind =
-            VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-        let mut data = VelocityIntegralRuntime::new(1, amplitude_plan);
-        let mut workspace = TransientBuffer::new();
-        let mut summary = observation_summary();
-        summary.settled_rate_interval_q = [0, 0];
-        summary.settled_rate_mean_q = i64::from(i32::MAX) + 1;
-
-        let error = retain_analyzed_observation(&mut data, &mut workspace, summary).unwrap_err();
-
-        assert_eq!(error, CommissionError::TargetRateInvalid);
     }
 
     #[test]
@@ -3048,25 +2493,8 @@ mod tests {
     }
 
     #[test]
-    fn plan_integral_recovery_rejects_missing_lower_rate_entry() {
-        let mut plan = plan();
-        plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-        plan.recovery_lower_rate_q = [0, 0];
-        let mut data = VelocityIntegralRuntime::new(1, plan);
-        let workspace = TransientBuffer::new();
-        let safety = test_safety();
-
-        let error = plan_integral_recovery(&mut data, &workspace, &safety).unwrap_err();
-
-        assert_eq!(error, CommissionError::MissingRateTableEntry);
-    }
-
-    #[test]
     fn plan_integral_recovery_rejects_a_failed_recovery_plan() {
-        let mut plan = plan();
-        plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-        plan.recovery_lower_rate_q = [1, 1];
-        let mut data = VelocityIntegralRuntime::new(1, plan);
+        let mut data = VelocityIntegralRuntime::new(1, plan());
         let workspace = TransientBuffer::new();
         let mut safety = test_safety();
         safety.budget.settle_travel_reserve_mrev = 0;

@@ -30,9 +30,7 @@ impl CommissioningWorkflowPlan {
     ) -> Result<Self, VelocityIntegralPlanError> {
         let valid = match shape {
             VelocityAutotuneWorkflowKind::Resume => proportional_ms == 0 && integral_ms != 0,
-            VelocityAutotuneWorkflowKind::FixedGainAmplitudeAscending
-            | VelocityAutotuneWorkflowKind::FixedGainAmplitudeDescending
-            | VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral
+            VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral
             | VelocityAutotuneWorkflowKind::ReversalStandstillRobustnessGate
             | VelocityAutotuneWorkflowKind::PositionTune => false,
         };
@@ -46,35 +44,6 @@ impl CommissioningWorkflowPlan {
             run_sequence,
             shape,
             nominal_workflow_ms: maximum_workflow_ms,
-            maximum_workflow_ms,
-        })
-    }
-
-    /// Construct one checked fixed-I fixed-gain-amplitude workflow envelope.
-    pub fn new_fixed_gain_amplitude(
-        run_sequence: u32,
-        order: super::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder,
-        nominal_workflow_ms: u32,
-        maximum_workflow_ms: u32,
-    ) -> Result<Self, VelocityIntegralPlanError> {
-        if nominal_workflow_ms == 0
-            || maximum_workflow_ms == 0
-            || nominal_workflow_ms > maximum_workflow_ms
-        {
-            return Err(VelocityIntegralPlanError::InvalidRequest);
-        }
-        let shape = match order {
-            super::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder::Ascending => {
-                VelocityAutotuneWorkflowKind::FixedGainAmplitudeAscending
-            }
-            super::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder::Descending => {
-                VelocityAutotuneWorkflowKind::FixedGainAmplitudeDescending
-            }
-        };
-        Ok(Self {
-            run_sequence,
-            shape,
-            nominal_workflow_ms,
             maximum_workflow_ms,
         })
     }

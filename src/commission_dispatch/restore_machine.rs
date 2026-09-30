@@ -5,16 +5,15 @@ use core::sync::atomic::Ordering::Relaxed;
 use crate::autotune::CommissionError;
 use crate::commission_dispatch::{
     CommissionOutcome, CommissionRetention, DispatchState, PostActions, ReplyPayload,
-    StepperPostAction, fixed_gain_amplitude, integral, record_restore_summary, restore, robustness,
-    validate_outer_gains, zero_adc_cal_result, zero_commission_result, zero_outer_result,
+    StepperPostAction, integral, record_restore_summary, restore, robustness, validate_outer_gains,
+    zero_adc_cal_result, zero_commission_result, zero_outer_result,
 };
 use crate::commissioning::CommissioningEngine;
 use crate::commissioning::schedule::CommissionTerminal;
 use crate::commissioning::types::{
-    AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, FixedGainAmplitudeCause,
-    FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal, IntegralOutcomeCause, OuterResult,
-    RobustnessOutcome, RobustnessReversalTerminal, StepResult, VelocityIntegralOutcome,
-    VelocityIntegralTerminal,
+    AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, IntegralOutcomeCause,
+    OuterResult, RobustnessOutcome, RobustnessReversalTerminal, StepResult,
+    VelocityIntegralOutcome, VelocityIntegralTerminal,
 };
 use crate::pid::OuterLoopGains;
 use crate::tmc_control::lifecycle::{ArmMotorElectricalStep, LifecycleFlag};
@@ -40,7 +39,6 @@ enum TerminalPayload {
     OuterDone(OuterResult),
     OuterFailed,
     VelocityIntegral(VelocityIntegralTerminal),
-    FixedGainAmplitude(FixedGainAmplitudeTerminal),
     RobustnessReversal(RobustnessReversalTerminal),
 }
 
@@ -113,9 +111,6 @@ enum RestoreCursor {
     OuterFailedFaultDisarm(SafeStateRestoreStep),
     OuterFailedArm(Option<ArmMotorElectricalStep>),
     OuterFailedArmDisarm(SafeStateRestoreStep, u8),
-
-    FixedGainAmplitudeStagedDisarmVelocity(Option<VelocityDisarmStep>),
-    FixedGainAmplitudeDisarm(SafeStateRestoreStep),
 
     RobustnessStagedClassify,
     RobustnessRestoreBaseline(Option<restore::EntrySnapshotRestoreStep>),
@@ -213,10 +208,6 @@ impl TerminalRestoreMachine {
                 TerminalPayload::VelocityIntegral(terminal),
                 RestoreCursor::VelocityDisarmVelocity(None),
             ),
-            StepResult::FixedGainAmplitudeTerminal(terminal) => (
-                TerminalPayload::FixedGainAmplitude(terminal),
-                RestoreCursor::FixedGainAmplitudeDisarm(SafeStateRestoreStep::default()),
-            ),
             StepResult::RobustnessReversalTerminal(terminal) => (
                 TerminalPayload::RobustnessReversal(terminal),
                 RestoreCursor::RobustnessRestoreBaseline(None),
@@ -225,7 +216,6 @@ impl TerminalRestoreMachine {
             | StepResult::At(_)
             | StepResult::PhaseChanged(_)
             | StepResult::VelocityIntegralEvent(_)
-            | StepResult::FixedGainAmplitudeEvent(_)
             | StepResult::BreakawayCampaignEvent(_)
             | StepResult::BreakawayIntegralPlanReady { .. } => {
                 unreachable!("nonterminal step result cannot start a terminal restore")
@@ -243,7 +233,7 @@ impl TerminalRestoreMachine {
     }
 
     /// Begin a staged terminal restore, applying the retained-evidence policy
-    /// the velocity-integral, fixed-gain-amplitude, and robustness terminals carry.
+    /// the velocity-integral and robustness terminals carry.
     pub fn start_staged(result: CommissionTerminal, channel: u8, pwm_maxcnt: u16) -> Self {
         match result {
             CommissionTerminal::VelocityIntegral(terminal) => Self {
@@ -251,15 +241,6 @@ impl TerminalRestoreMachine {
                 pwm_maxcnt,
                 cursor: RestoreCursor::VelocityStagedPrologue,
                 terminal: OwnedTerminalData::new(TerminalPayload::VelocityIntegral(terminal)),
-                engine_consumed: false,
-                #[cfg(test)]
-                entered_single_op_arm_this_poll: false,
-            },
-            CommissionTerminal::FixedGainAmplitude(terminal) => Self {
-                channel,
-                pwm_maxcnt,
-                cursor: RestoreCursor::FixedGainAmplitudeStagedDisarmVelocity(None),
-                terminal: OwnedTerminalData::new(TerminalPayload::FixedGainAmplitude(terminal)),
                 engine_consumed: false,
                 #[cfg(test)]
                 entered_single_op_arm_this_poll: false,
@@ -1050,95 +1031,6 @@ impl TerminalRestoreMachine {
                     ));
                 }
 
-                RestoreCursor::FixedGainAmplitudeStagedDisarmVelocity(step) => {
-                    let retention = retention
-                        .take()
-                        .expect("staged terminal restore requires Integral retention");
-                    let mut step = step.unwrap_or_else(|| VelocityDisarmStep::start(engine));
-                    match poll_velocity_disarm(&mut step, backend, state).await {
-                        None => {
-                            self.cursor =
-                                RestoreCursor::FixedGainAmplitudeStagedDisarmVelocity(Some(step));
-                            return RestoreStep::Pending;
-                        }
-                        Some(restored) => {
-                            let TerminalPayload::FixedGainAmplitude(mut terminal) =
-                                self.terminal.payload.clone()
-                            else {
-                                unreachable!(
-                                    "fixed-gain amplitude cursor without a fixed-gain amplitude payload"
-                                )
-                            };
-                            let amplitude_context = engine.as_ref().and_then(|engine| {
-                                engine
-                                    .fixed_gain_amplitude_order()
-                                    .zip(engine.fixed_gain_amplitude_plan_digest())
-                            });
-                            let no_limit_branch = matches!(step, VelocityDisarmStep::Disarm(_));
-                            if !no_limit_branch {
-                                engine
-                                    .as_mut()
-                                    .expect("velocity workflow disappeared during restoration")
-                                    .mark_velocity_limit_restored();
-                            }
-                            if !restored {
-                                retention.integral.observe_fault();
-                                terminal.outcome = FixedGainAmplitudeOutcome::Fault;
-                                terminal.cause = FixedGainAmplitudeCause::DisarmIncomplete;
-                                terminal.safety_fault = None;
-                            } else if let Some((order, plan_digest)) = amplitude_context {
-                                terminal =
-                                    fixed_gain_amplitude::apply_fixed_gain_amplitude_terminal(
-                                        terminal,
-                                        order,
-                                        plan_digest,
-                                        retention.integral,
-                                    );
-                            } else {
-                                retention.integral.observe_fault();
-                                terminal.outcome = FixedGainAmplitudeOutcome::Fault;
-                                terminal.cause = FixedGainAmplitudeCause::MissingAmplitudeContext;
-                                terminal.safety_fault = None;
-                            }
-                            self.terminal.payload = TerminalPayload::FixedGainAmplitude(terminal);
-                            #[cfg(feature = "trace")]
-                            engine
-                                .as_mut()
-                                .expect("engine slot is None on FixedGainAmplitudeTerminal")
-                                .emit_fixed_gain_amplitude_terminal_trace(backend, terminal);
-                            self.cursor = RestoreCursor::FixedGainAmplitudeDisarm(
-                                SafeStateRestoreStep::default(),
-                            );
-                            return RestoreStep::Pending;
-                        }
-                    }
-                }
-                RestoreCursor::FixedGainAmplitudeDisarm(mut step) => {
-                    if poll_disarm_motor(&mut step, backend, state).await {
-                        self.cursor = RestoreCursor::FixedGainAmplitudeDisarm(step);
-                        return RestoreStep::Pending;
-                    }
-                    let TerminalPayload::FixedGainAmplitude(terminal) =
-                        self.terminal.payload.clone()
-                    else {
-                        unreachable!(
-                            "fixed-gain amplitude cursor without a fixed-gain amplitude payload"
-                        )
-                    };
-                    state.tmc.commission_in_flight.store(false, Relaxed);
-                    let consumed = self.take_engine(engine);
-                    return RestoreStep::Done(CommissionOutcome::Terminal {
-                        reply: ReplyPayload::FixedGainAmplitudeTerminal {
-                            oid: consumed.oid(),
-                            terminal,
-                        },
-                        actions: PostActions {
-                            stop_trace: true,
-                            stepper: StepperPostAction::Stop,
-                        },
-                    });
-                }
-
                 RestoreCursor::RobustnessStagedClassify => {
                     let TerminalPayload::RobustnessReversal(terminal) =
                         self.terminal.payload.clone()
@@ -1693,16 +1585,6 @@ impl TerminalRestoreMachine {
                     reproduction: None,
                     authority: None,
                 }
-            }
-            TerminalPayload::FixedGainAmplitude(mut terminal) => {
-                terminal.outcome = FixedGainAmplitudeOutcome::Fault;
-                terminal.cause = match status_error {
-                    CommissionError::Cancelled => FixedGainAmplitudeCause::Cancelled,
-                    CommissionError::Shutdown => FixedGainAmplitudeCause::Shutdown,
-                    _ => FixedGainAmplitudeCause::EvidenceIntegrity,
-                };
-                terminal.safety_fault = None;
-                ReplyPayload::FixedGainAmplitudeTerminal { oid, terminal }
             }
             TerminalPayload::RobustnessReversal(mut terminal) => {
                 terminal.outcome = RobustnessOutcome::Failed;

@@ -45,10 +45,7 @@ use crate::trace::events::{
     EVENT_COMMISSION_BREAKAWAY_PROBE_RESULT, EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL,
     EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION,
     EVENT_COMMISSION_BREAKAWAY_RECOVERY_ORIGIN_MISMATCH,
-    EVENT_COMMISSION_BREAKAWAY_RECOVERY_REST_REJECTED,
-    EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_AMPLITUDE,
-    EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_OBSERVATION,
-    EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_TERMINAL, EVENT_COMMISSION_OUTER_SAFETY_TIMING,
+    EVENT_COMMISSION_BREAKAWAY_RECOVERY_REST_REJECTED, EVENT_COMMISSION_OUTER_SAFETY_TIMING,
     EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
 };
 use foci_tmc4671::pid::{PidIGain, PidPGain};
@@ -572,32 +569,6 @@ impl CommissioningEngine {
         Self::assemble_outer(scaffold, phase)
     }
 
-    /// Create one direct fixed-I amplitude engine from an exact disclosed plan.
-    pub fn new_outer_for_tmc_with_fixed_gain_amplitude_preflight(
-        oid: u8,
-        tmc_state: &'static TmcChannelState,
-        params: OuterAutotuneInputs,
-        entry_snapshot: OuterGainRollbackSnapshot,
-        preflight: crate::commission_dispatch::fixed_gain_amplitude::FixedGainAmplitudePreflight,
-    ) -> Self {
-        let scaffold = Self::outer_scaffold(
-            oid,
-            tmc_state,
-            params,
-            entry_snapshot,
-            preflight.run_sequence,
-        );
-        let phase = OuterPhase::VelocityIntegral {
-            state: VelocityIntegralState::Setup,
-            data: VelocityIntegralRuntime::new(
-                preflight.run_sequence,
-                preflight.plan.execution_plan(),
-            ),
-            safety: scaffold.safety,
-        };
-        Self::assemble_outer(scaffold, phase)
-    }
-
     /// Create a reversal-standstill robustness engine from a preflighted point.
     ///
     /// # Errors
@@ -669,50 +640,6 @@ impl CommissioningEngine {
             safety: scaffold.safety,
         };
         Self::assemble_outer(scaffold, phase)
-    }
-
-    pub(crate) fn fixed_gain_amplitude_order(
-        &self,
-    ) -> Option<
-        crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder,
-    > {
-        use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder;
-        use crate::commissioning::outer::velocity::integral_plan::VelocityIntegralAcquisitionKind;
-
-        let EngineMode::Outer {
-            phase: OuterPhase::VelocityIntegral { data, .. },
-            ..
-        } = &self.engine_mode
-        else {
-            return None;
-        };
-        match data.plan.acquisition_kind {
-            VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending => {
-                Some(FixedGainAmplitudeOrder::Ascending)
-            }
-            VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => {
-                Some(FixedGainAmplitudeOrder::Descending)
-            }
-            VelocityIntegralAcquisitionKind::ResponseLadder => None,
-        }
-    }
-
-    pub(crate) fn fixed_gain_amplitude_plan_digest(&self) -> Option<u64> {
-        let EngineMode::Outer {
-            phase: OuterPhase::VelocityIntegral { data, .. },
-            ..
-        } = &self.engine_mode
-        else {
-            return None;
-        };
-        matches!(
-            data.plan.acquisition_kind,
-            crate::commissioning::outer::velocity::integral_plan::
-                VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
-                | crate::commissioning::outer::velocity::integral_plan::
-                    VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending
-        )
-        .then_some(data.plan.plan_digest)
     }
 
     /// The OID this engine was started for.
@@ -1198,39 +1125,6 @@ impl CommissioningEngine {
         self.trace_run.terminal = true;
     }
 
-    #[cfg(feature = "trace")]
-    pub(crate) fn emit_fixed_gain_amplitude_terminal_trace<B: CommissioningBackend>(
-        &mut self,
-        backend: &mut B,
-        terminal: crate::commissioning::types::FixedGainAmplitudeTerminal,
-    ) {
-        self.emit_outer_safety_timing_trace(backend, terminal.run_sequence);
-        backend.record_velocity_sweep_trace_record(
-            crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::encode_fixed_gain_amplitude_terminal(
-                &terminal,
-            ),
-        );
-        let level = match terminal.outcome {
-            crate::commissioning::types::FixedGainAmplitudeOutcome::Complete => {
-                TraceEventLevel::Info
-            }
-            crate::commissioning::types::FixedGainAmplitudeOutcome::Inconclusive
-            | crate::commissioning::types::FixedGainAmplitudeOutcome::Failed => {
-                TraceEventLevel::Warn
-            }
-            crate::commissioning::types::FixedGainAmplitudeOutcome::Fault => TraceEventLevel::Error,
-        };
-        self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
-        backend.record_commission_trace_event(CommissionTraceEvent {
-            level,
-            event_id: EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_TERMINAL,
-            engine_kind: EngineKind::OuterTune,
-            payload: [i32::from(terminal.evidence_sequence), 0],
-            payload_count: 1,
-        });
-        self.trace_run.terminal = true;
-    }
-
     fn emit_trace_after_step<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
@@ -1287,65 +1181,6 @@ impl CommissioningEngine {
                 });
             }
             StepResult::VelocityIntegralTerminal(_) => {}
-            #[cfg(feature = "trace")]
-            StepResult::FixedGainAmplitudeEvent(event) => {
-                let (record, event_id, sequence) = match event {
-                    crate::commissioning::types::FixedGainAmplitudeEvent::Observation(report) => (
-                        crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
-                            encode_fixed_gain_amplitude_observation(*report),
-                        EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_OBSERVATION,
-                        report.evidence_sequence,
-                    ),
-                    crate::commissioning::types::FixedGainAmplitudeEvent::Current(report) => (
-                        crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
-                            encode_fixed_gain_amplitude_current(*report),
-                        EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_OBSERVATION,
-                        report.evidence_sequence,
-                    ),
-                    crate::commissioning::types::FixedGainAmplitudeEvent::Recovery(report) => (
-                        crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
-                            encode_fixed_gain_amplitude_recovery(*report),
-                        EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_OBSERVATION,
-                        report.evidence_sequence,
-                    ),
-                    crate::commissioning::types::FixedGainAmplitudeEvent::RecoveryRest(report) => (
-                        crate::commissioning::outer::velocity::sweep_reporting::
-                            encode_recovery_rest(*report),
-                        EVENT_COMMISSION_SELECTED_RECOVERY_REST,
-                        report.evidence_sequence,
-                    ),
-                    crate::commissioning::types::FixedGainAmplitudeEvent::RestSelection(report) => (
-                        crate::commissioning::outer::velocity::sweep_reporting::
-                            encode_rest_selection(*report)
-                            .expect("completed scored-rest diagnostic is coherent"),
-                        EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC,
-                        report.evidence_sequence,
-                    ),
-                    crate::commissioning::types::FixedGainAmplitudeEvent::Amplitude(report) => (
-                        crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
-                            encode_fixed_gain_amplitude_amplitude(
-                                report.run_sequence,
-                                report.evidence_sequence,
-                                report.plan_digest,
-                                report.report,
-                            ),
-                        EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_AMPLITUDE,
-                        report.evidence_sequence,
-                    ),
-                };
-                #[cfg(feature = "trace")]
-                backend.record_velocity_sweep_trace_record(record);
-                backend.record_commission_trace_event(CommissionTraceEvent {
-                    level: TraceEventLevel::Info,
-                    event_id,
-                    engine_kind: EngineKind::OuterTune,
-                    payload: [i32::from(sequence), 0],
-                    payload_count: 1,
-                });
-            }
-            #[cfg(not(feature = "trace"))]
-            StepResult::FixedGainAmplitudeEvent(_) => {}
-            StepResult::FixedGainAmplitudeTerminal(_) => {}
             StepResult::RobustnessReversalTerminal(_) => {}
             #[cfg(not(feature = "trace"))]
             StepResult::BreakawayCampaignEvent(_) => {}
@@ -1761,10 +1596,6 @@ mod tests {
         );
         assert_eq!(
             size_of::<crate::commissioning::types::VelocityIntegralEvent>(),
-            288
-        );
-        assert_eq!(
-            size_of::<crate::commissioning::types::FixedGainAmplitudeEvent>(),
             288
         );
         assert_eq!(

@@ -32,9 +32,6 @@ pub enum TmcPreRequestDisposition {
 
 #[allow(clippy::large_enum_variant)]
 enum TuneRoute {
-    FixedGainAmplitude(
-        crate::commission_dispatch::fixed_gain_amplitude::FixedGainAmplitudePreflight,
-    ),
     Breakaway(crate::commissioning::outer::velocity::breakaway_campaign::BreakawayCampaign),
     IntegralResume(crate::commission_dispatch::integral::IntegralPreflight),
     Robustness(crate::commission_dispatch::robustness::RobustnessPreflight),
@@ -1027,77 +1024,6 @@ where
         max_duration_ms,
     };
     let tune_route = match autotune_action {
-        action @ (crate::tmc::AutotuneAction::FixedGainAmplitudeAscending
-        | crate::tmc::AutotuneAction::FixedGainAmplitudeDescending) => {
-            let amplitude_config = crate::commission_dispatch::integral::IntegralPreflightConfig {
-                encoder_counts_per_rev,
-                torque_limit: current_limit.raw(),
-                limit_evidence_capability: board.velocity_limit_evidence_capability(),
-                channel: board.channel(),
-                pwm_hz: board.pwm_freq_hz(),
-            };
-            let result =
-                crate::commission_dispatch::fixed_gain_amplitude::preflight_fixed_gain_amplitude(
-                    action,
-                    request,
-                    &amplitude_config,
-                    run_sequence,
-                    integral_candidate,
-                );
-            let preflight = match result {
-                Ok(preflight) => preflight,
-                Err(rejection) => {
-                    let terminal = crate::commission_dispatch::fixed_gain_amplitude::
-                                failed_fixed_gain_amplitude_terminal(
-                                    run_sequence,
-                                    rejection,
-                                    integral_candidate,
-                                );
-                    board.record_velocity_sweep_trace_record(
-                                crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
-                                    encode_fixed_gain_amplitude_terminal(&terminal),
-                            );
-                    board.emit_reply(
-                        board.channel(),
-                        ReplyPayload::FixedGainAmplitudeTerminal { oid, terminal },
-                    );
-                    board
-                        .tmc_state()
-                        .commission_in_flight
-                        .store(false, core::sync::atomic::Ordering::Relaxed);
-                    return Err(TmcControlRequestOutcome::skip_tick_tail());
-                }
-            };
-            let workflow = crate::commissioning::outer::velocity::workflow_plan::
-                        CommissioningWorkflowPlan::new_fixed_gain_amplitude(
-                            run_sequence,
-                            preflight.plan.order,
-                            preflight.plan.nominal_workflow_ms,
-                            preflight.plan.maximum_workflow_ms,
-                        )
-                        .expect("a valid amplitude plan has a valid workflow envelope");
-            board.emit_reply(
-                board.channel(),
-                ReplyPayload::CommissioningWorkflowPlan {
-                    oid,
-                    plan: workflow,
-                },
-            );
-            for record in crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
-                        encode_fixed_gain_amplitude_plan(run_sequence, preflight.plan)
-                    {
-                        board.record_velocity_sweep_trace_record(record);
-                    }
-            board.emit_reply(
-                board.channel(),
-                ReplyPayload::FixedGainAmplitudePlan {
-                    oid,
-                    run_sequence,
-                    plan: preflight.plan,
-                },
-            );
-            TuneRoute::FixedGainAmplitude(preflight)
-        }
         crate::tmc::AutotuneAction::IntegralResume => {
             let config = crate::commission_dispatch::integral::IntegralPreflightConfig {
                 encoder_counts_per_rev,
@@ -1397,17 +1323,6 @@ where
         max_accel_mrev_s2,
     };
     match tune_route {
-        TuneRoute::FixedGainAmplitude(preflight) => {
-            runtime.set_commission_engine(
-                CommissioningEngine::new_outer_for_tmc_with_fixed_gain_amplitude_preflight(
-                    oid,
-                    tmc_state,
-                    outer_params,
-                    entry_snapshot,
-                    preflight,
-                ),
-            );
-        }
         TuneRoute::IntegralResume(preflight) => {
             runtime.set_commission_engine(
                 CommissioningEngine::new_outer_for_tmc_with_integral_preflight(
@@ -2768,111 +2683,6 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn amplitude_request_without_acceptance_point_fails_without_motion_writes() {
-        use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
-        use crate::commissioning::types::{FixedGainAmplitudeCause, FixedGainAmplitudeOutcome};
-
-        let mut board = RecordingBoard::skip_tick_tail();
-        tmc_channel0()
-            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-            .expect("valid motion scale");
-        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_calibrated_for_test(true);
-        let mut integral = IntegralRetentionSlot::new();
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-        handle_tmc_control_request_with_stages(
-            tune_request_with_action(crate::tmc::AutotuneAction::FixedGainAmplitudeAscending),
-            TmcPreRequestDisposition::ContinueRequest,
-            &mut runtime,
-            &mut integral,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-
-        assert_eq!(board.replies.len(), 1);
-        assert_eq!(board.reply_channels, std::vec![0]);
-        let ReplyPayload::FixedGainAmplitudeTerminal { terminal, .. } = board.replies[0] else {
-            panic!("missing point must use the amplitude terminal namespace")
-        };
-        assert_eq!(terminal.outcome, FixedGainAmplitudeOutcome::Failed);
-        assert_eq!(
-            terminal.cause,
-            FixedGainAmplitudeCause::MissingAcceptancePoint
-        );
-        assert!(!runtime.is_commission_active());
-        #[cfg(feature = "trace")]
-        assert_eq!(board.velocity_sweep_records.len(), 1);
-        let spi = tmc.into_inner();
-        assert!(spi.write_attempts.iter().all(|(addr, _)| {
-            *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
-                && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
-                && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
-        }));
-    }
-
-    #[fixture_test]
-    async fn admitted_amplitude_discloses_exact_plan_before_engine_execution() {
-        use crate::commissioning::outer::velocity::integral_reproduction::{
-            FixedGainAmplitudeProgress, IntegralRetentionSlot,
-        };
-
-        let mut board = RecordingBoard::skip_tick_tail();
-        tmc_channel0()
-            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-            .expect("valid motion scale");
-        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_calibrated_for_test(true);
-        let mut integral = IntegralRetentionSlot::new();
-        integral.install_acceptance_point(
-            crate::commission_dispatch::test_support::test_acceptance_point(
-                velocity_sweep_request(),
-                FixedGainAmplitudeProgress::ReadyAscending,
-            ),
-        );
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-        handle_tmc_control_request_with_stages(
-            tune_request_with_action(crate::tmc::AutotuneAction::FixedGainAmplitudeAscending),
-            TmcPreRequestDisposition::ContinueRequest,
-            &mut runtime,
-            &mut integral,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-
-        assert_eq!(board.replies.len(), 2);
-        assert_eq!(board.reply_channels, std::vec![0, 0]);
-        let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
-        else {
-            panic!("amplitude workflow envelope must be first")
-        };
-        assert_eq!(
-            workflow.shape,
-            crate::commissioning::outer::velocity::workflow_plan::VelocityAutotuneWorkflowKind::
-                FixedGainAmplitudeAscending
-        );
-        assert_eq!(workflow.maximum_workflow_ms, 66_456);
-        let ReplyPayload::FixedGainAmplitudePlan { plan, .. } = board.replies[1] else {
-            panic!("amplitude plan must be disclosed before execution")
-        };
-        assert_eq!(plan.target_rpm, [16, 33, 66, 132, 263]);
-        #[cfg(feature = "trace")]
-        assert_eq!(board.velocity_sweep_records.len(), 3);
-        assert!(runtime.is_commission_active());
-        assert_eq!(
-            integral.acceptance_point().unwrap().progress,
-            FixedGainAmplitudeProgress::ReadyAscending
-        );
-    }
-
-    #[fixture_test]
     async fn robustness_discloses_worst_case_duration_before_motion() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
             FixedGainAmplitudeProgress, IntegralRetentionSlot,
@@ -3287,56 +3097,6 @@ mod tests {
         assert_ne!(terminal.plan_digest, 0);
         assert!(!runtime.is_commission_active());
         assert_eq!(integral.authority(), Some(retained));
-    }
-
-    #[fixture_test]
-    async fn amplitude_order_mismatch_preserves_point_without_motion() {
-        use crate::commissioning::outer::velocity::integral_reproduction::{
-            FixedGainAmplitudeProgress, IntegralRetentionSlot,
-        };
-        use crate::commissioning::types::FixedGainAmplitudeCause;
-
-        let mut board = RecordingBoard::skip_tick_tail();
-        tmc_channel0()
-            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-            .expect("valid motion scale");
-        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_calibrated_for_test(true);
-        let mut integral = IntegralRetentionSlot::new();
-        let point = crate::commission_dispatch::test_support::test_acceptance_point(
-            velocity_sweep_request(),
-            FixedGainAmplitudeProgress::ReadyDescending,
-        );
-        integral.install_acceptance_point(point);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-        handle_tmc_control_request_with_stages(
-            tune_request_with_action(crate::tmc::AutotuneAction::FixedGainAmplitudeAscending),
-            TmcPreRequestDisposition::ContinueRequest,
-            &mut runtime,
-            &mut integral,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-
-        assert_eq!(board.reply_channels, std::vec![0]);
-        let ReplyPayload::FixedGainAmplitudeTerminal { terminal, .. } = board.replies[0] else {
-            panic!("wrong order must use the amplitude terminal namespace")
-        };
-        assert_eq!(
-            terminal.cause,
-            FixedGainAmplitudeCause::AmplitudeOrderMismatch
-        );
-        assert_eq!(integral.acceptance_point(), Some(point));
-        assert!(!runtime.is_commission_active());
-        assert!(tmc.into_inner().write_attempts.iter().all(|(addr, _)| {
-            *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
-                && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
-                && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
-        }));
     }
 
     #[fixture_test]

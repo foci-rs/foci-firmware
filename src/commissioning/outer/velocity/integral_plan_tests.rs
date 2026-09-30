@@ -522,16 +522,8 @@ fn forward_first_preserves_the_historical_parity_mapping() {
 }
 
 #[test]
-fn workflow_kind_discriminants_are_a_clean_zero_through_five_sequence() {
+fn workflow_kind_discriminants_are_frozen() {
     assert_eq!(VelocityAutotuneWorkflowKind::Resume as u8, 0);
-    assert_eq!(
-        VelocityAutotuneWorkflowKind::FixedGainAmplitudeAscending as u8,
-        1
-    );
-    assert_eq!(
-        VelocityAutotuneWorkflowKind::FixedGainAmplitudeDescending as u8,
-        2
-    );
     assert_eq!(
         VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral as u8,
         3

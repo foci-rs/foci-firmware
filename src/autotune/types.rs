@@ -990,7 +990,7 @@ mod tests {
     }
 
     #[test]
-    fn outer_block_is_contiguous_in_workflow_order() {
+    fn outer_block_wire_codes_are_frozen() {
         assert_eq!(
             CommissionPhase::BreakawayProportionalAcquisition.to_u8(),
             18
@@ -999,7 +999,6 @@ mod tests {
             CommissionPhase::IntegralGainResponseCharacterization.to_u8(),
             19
         );
-        assert_eq!(CommissionPhase::FixedGainAmplitudeValidation.to_u8(), 20);
         assert_eq!(
             CommissionPhase::ReversalStandstillRobustnessGate.to_u8(),
             21
@@ -1025,7 +1024,6 @@ mod tests {
                 ("InnerDone", 8),
                 ("BreakawayProportionalAcquisition", 18),
                 ("IntegralGainResponseCharacterization", 19),
-                ("FixedGainAmplitudeValidation", 20),
                 ("ReversalStandstillRobustnessGate", 21),
                 ("EncoderAlign", 16),
                 ("ClosedLoopActivation", 17),
@@ -1045,8 +1043,6 @@ mod tests {
             VelocityAutotuneWorkflowKind::DECLARATION_ORDER,
             &[
                 ("Resume", 0),
-                ("FixedGainAmplitudeAscending", 1),
-                ("FixedGainAmplitudeDescending", 2),
                 ("BreakawaySeededProportionalThenIntegral", 3),
                 ("ReversalStandstillRobustnessGate", 4),
                 ("PositionTune", 5),
@@ -1055,8 +1051,6 @@ mod tests {
         assert_eq!(
             AutotuneAction::DECLARATION_ORDER,
             &[
-                ("FixedGainAmplitudeAscending", 1),
-                ("FixedGainAmplitudeDescending", 2),
                 ("BreakawaySeeded", 7),
                 ("IntegralResume", 8),
                 ("RobustnessReversal", 9),

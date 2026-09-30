@@ -6,15 +6,14 @@ use crate::ankyra::velocity_sweep_encoding::{
 };
 use crate::autotune::velocity_measurement::{StationarityExclusion, StationarityResult};
 use crate::commissioning::types::{
-    FixedGainAmplitudeEvent, RestSelectionOwner, StationarityRejectionDiagnostic,
-    VelocityIntegralEvent, VelocityIntegralObservation, VelocityIntegralOutcome,
-    VelocityIntegralRungReport, VelocityIntegralTerminal,
+    RestSelectionOwner, StationarityRejectionDiagnostic, VelocityIntegralEvent,
+    VelocityIntegralObservation, VelocityIntegralOutcome, VelocityIntegralRungReport,
+    VelocityIntegralTerminal,
 };
 
 use super::super::state::PositiveIRestBoundary;
 use super::combined_plan::CombinedTargetStatus;
 use super::integral_evidence::{IntegralObservationClass, IntegralRungClass, IntegralRungKind};
-use super::integral_plan::VelocityIntegralAcquisitionKind;
 use super::integral_plan::{VelocityIntegralExecutionPlan, VelocityIntegralPlan};
 use super::reproduction::BUILD_IDENTITY;
 
@@ -157,30 +156,6 @@ impl VelocityIntegralIntegrity {
         }
         self.digest =
             extend_velocity_sweep_digest(self.digest, &encode_velocity_integral_event(event));
-        self.next_evidence_sequence = self.next_evidence_sequence.saturating_add(1);
-        event
-    }
-
-    pub(crate) fn record_fixed_gain_amplitude(
-        &mut self,
-        event: FixedGainAmplitudeEvent,
-    ) -> FixedGainAmplitudeEvent {
-        match event {
-            FixedGainAmplitudeEvent::Observation(_) => {
-                self.emitted_observations = self.emitted_observations.saturating_add(1);
-            }
-            FixedGainAmplitudeEvent::Amplitude(_) => {
-                self.emitted_rungs = self.emitted_rungs.saturating_add(1);
-            }
-            FixedGainAmplitudeEvent::Current(_)
-            | FixedGainAmplitudeEvent::Recovery(_)
-            | FixedGainAmplitudeEvent::RecoveryRest(_)
-            | FixedGainAmplitudeEvent::RestSelection(_) => {}
-        }
-        self.digest = extend_velocity_sweep_digest(
-            self.digest,
-            &super::fixed_gain_amplitude_reporting::encode_fixed_gain_amplitude_event(event),
-        );
         self.next_evidence_sequence = self.next_evidence_sequence.saturating_add(1);
         event
     }
@@ -493,20 +468,6 @@ fn encode_velocity_integral_plan_marker(
     record.push_u8(plan.recovery_slot_count);
     record.push_u16(plan.hard_torque_limit);
     record.push_u16(plan.usable_torque_limit);
-    if matches!(
-        plan.acquisition_kind,
-        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
-            | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending
-    ) {
-        record.push_u8(1);
-        record.push_i32(plan.acceptance_plan_digest as u32 as i32);
-        record.push_i32((plan.acceptance_plan_digest >> 32) as u32 as i32);
-        record.push_i32(i32::from(plan.qualifier_bits));
-        record.push_i32(0);
-        for lower_rate_q in plan.recovery_lower_rate_q {
-            push_u64(&mut record, lower_rate_q);
-        }
-    }
     record
 }
 
@@ -725,7 +686,6 @@ pub(crate) const fn rung_kind_code(kind: IntegralRungKind) -> u8 {
         IntegralRungKind::OpeningAnchor => 0,
         IntegralRungKind::Positive => 1,
         IntegralRungKind::ClosingBookend => 2,
-        IntegralRungKind::FixedGainAmplitude => 3,
     }
 }
 
@@ -1130,28 +1090,6 @@ mod tests {
             recovery_quantization_exposed: true,
             probe_constrained_test_point: false,
         }
-    }
-
-    #[test]
-    fn amplitude_plan_marker_carries_identity_and_recovery_bounds() {
-        let mut plan = plan();
-        plan.acquisition_kind =
-            super::super::integral_plan::VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-        plan.acceptance_plan_digest = 0x1234_5678_89ab_cdef;
-        plan.qualifier_bits = 0x55aa;
-        plan.recovery_lower_rate_q = [13_217_792, 12_827_648];
-
-        let marker = super::encode_velocity_integral_plan_marker(7, plan);
-
-        assert_eq!(marker.as_bytes().len(), 98);
-        let identity_low = 0x89ab_cdef_u32 as i32;
-        let identity_high = 0x1234_5678_u32 as i32;
-        assert_eq!(&marker.as_bytes()[66..70], &identity_low.to_le_bytes());
-        assert_eq!(&marker.as_bytes()[70..74], &identity_high.to_le_bytes());
-        assert_eq!(&marker.as_bytes()[74..78], &0x55aa_i32.to_le_bytes());
-        assert_eq!(&marker.as_bytes()[78..82], &0_i32.to_le_bytes());
-        assert_eq!(&marker.as_bytes()[82..90], &13_217_792_u64.to_le_bytes());
-        assert_eq!(&marker.as_bytes()[90..98], &12_827_648_u64.to_le_bytes());
     }
 
     #[test]

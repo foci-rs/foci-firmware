@@ -6,10 +6,7 @@ use super::*;
 use crate::autotune::CommissionProfile;
 use crate::commissioning::backend::CommissionMotorControl;
 use crate::commissioning::schedule::CommissionTerminal;
-use crate::commissioning::types::{
-    FixedGainAmplitudeCause, FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal,
-    RobustnessOutcome,
-};
+use crate::commissioning::types::RobustnessOutcome;
 use crate::tmc_control::lifecycle::LifecycleFlag;
 use foci_firmware_macros::fixture_test;
 
@@ -57,31 +54,6 @@ fn sample_outer_result() -> crate::commissioning::types::OuterResult {
     }
 }
 
-fn zero_fixed_gain_amplitude_terminal() -> FixedGainAmplitudeTerminal {
-    FixedGainAmplitudeTerminal {
-        schema_revision: 1,
-        run_sequence: 1,
-        evidence_sequence: 0,
-        acceptance_plan_digest: 0,
-        plan_digest: 0,
-        digest: 0,
-        outcome: FixedGainAmplitudeOutcome::Complete,
-        cause: FixedGainAmplitudeCause::None,
-        attempted_masks: [0, 0],
-        eligible_masks: [0, 0],
-        current_terminus_masks: [0, 0],
-        unattempted_masks: [0, 0],
-        expected_observations: 0,
-        emitted_observations: 0,
-        expected_amplitudes: 0,
-        emitted_amplitudes: 0,
-        qualifier_bits: 0,
-        run_started_us: 0,
-        run_completed_us: 0,
-        safety_fault: None,
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutcomeTag {
     Continue,
@@ -118,9 +90,6 @@ fn terminal_shape(reply: &ReplyPayload) -> (Option<u8>, Option<u16>) {
             Some(terminal.outcome as u8),
             Some(integral_cause_code(terminal.cause)),
         ),
-        ReplyPayload::FixedGainAmplitudeTerminal { terminal, .. } => {
-            (Some(terminal.outcome as u8), Some(terminal.cause as u16))
-        }
         ReplyPayload::RobustnessReversalTerminal { terminal, .. } => (
             Some(terminal.outcome as u8),
             Some(u16::from(terminal.cause)),
@@ -830,45 +799,6 @@ async fn robustness_reversal_terminal_restores_baseline_before_disarm_on_reject(
 }
 
 #[fixture_test]
-async fn fixed_gain_amplitude_terminal_disarms_unconditionally() {
-    let mut backend = MockBackend::new();
-    let (_, _, mut gains) = fresh_state_locals();
-    let mut cal = true;
-    let mut en = true;
-    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-    let mut engine = Some(CommissioningEngine::new_commission(
-        0,
-        CommissionProfile::Balanced,
-    ));
-
-    let trace = run_variant(
-        StepResult::FixedGainAmplitudeTerminal(zero_fixed_gain_amplitude_terminal()),
-        &mut engine,
-        &mut backend,
-        &mut state,
-    )
-    .await;
-
-    assert!(trace.engine_consumed);
-    assert_eq!(
-        trace.outcome_tag,
-        OutcomeTag::Terminal {
-            stop_trace: true,
-            stepper: StepperPostAction::Stop,
-            outcome_class: Some(FixedGainAmplitudeOutcome::Complete as u8),
-        }
-    );
-    assert!(contains(
-        &trace.events,
-        SpiOp::Lifecycle {
-            flag: LifecycleFlag::MotorArmed,
-            value: false,
-        },
-    ));
-    assert!(!backend.enable_pin);
-}
-
-#[fixture_test]
 async fn velocity_integral_terminal_without_operational_limit_disarms_directly() {
     let mut backend = MockBackend::new();
     let (_, _, mut gains) = fresh_state_locals();
@@ -1083,7 +1013,7 @@ fn advance_clock_for_stability_check(backend: &mut MockBackend) {
     backend.elapsed_us_value = 25_000;
 }
 
-fn all_terminal_variants() -> [TerminalVariant; 22] {
+fn all_terminal_variants() -> [TerminalVariant; 21] {
     const BASE: TerminalVariant = TerminalVariant {
         name: "",
         result: || StepResult::SelftestDone,
@@ -1247,14 +1177,6 @@ fn all_terminal_variants() -> [TerminalVariant; 22] {
             entry_calibrated: true,
             entry_motor_enabled: true,
             reaches_single_op_arm: true,
-            ..BASE
-        },
-        TerminalVariant {
-            name: "fixed_gain_amplitude_terminal",
-            result: || StepResult::FixedGainAmplitudeTerminal(zero_fixed_gain_amplitude_terminal()),
-            engine: commission_engine,
-            entry_calibrated: true,
-            entry_motor_enabled: true,
             ..BASE
         },
         TerminalVariant {
@@ -1700,20 +1622,6 @@ async fn outer_failed_safety_fault_restore_is_one_op_per_poll() {
 }
 
 #[fixture_test]
-async fn fixed_gain_amplitude_staged_disarm_velocity_phase_is_one_op_per_poll() {
-    assert_staged_disarm_phase_one_op_per_poll(
-        "fixed_gain_amplitude_staged_disarm_velocity",
-        CommissionTerminal::FixedGainAmplitude(zero_fixed_gain_amplitude_terminal()),
-        commission_engine,
-        no_prepare,
-        true,
-        true,
-        no_gains,
-    )
-    .await;
-}
-
-#[fixture_test]
 async fn velocity_staged_disarm_velocity_phase_is_one_op_per_poll() {
     assert!(
         robustness_reversal_engine()
@@ -1847,15 +1755,6 @@ async fn outer_failed_soft_failure_arm_failure_disarm_phase_is_one_op_per_poll()
         .into_iter()
         .find(|v| v.name == "outer_failed_soft_failure_arm_failure")
         .expect("outer_failed_soft_failure_arm_failure variant must exist");
-    assert_disarm_phase_one_op_per_poll(&variant).await;
-}
-
-#[fixture_test]
-async fn fixed_gain_amplitude_terminal_disarm_phase_is_one_op_per_poll() {
-    let variant = all_terminal_variants()
-        .into_iter()
-        .find(|v| v.name == "fixed_gain_amplitude_terminal")
-        .expect("fixed_gain_amplitude_terminal variant must exist");
     assert_disarm_phase_one_op_per_poll(&variant).await;
 }
 

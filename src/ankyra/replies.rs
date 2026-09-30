@@ -1262,21 +1262,6 @@ pub struct FociVelocityIntegralPlanRung {
     pub tau_us: u32,
 }
 
-/// Immutable fixed-I fixed-gain amplitude plan.
-#[klipper_reply]
-pub struct FociFixedGainAmplitudePlan<'a> {
-    pub oid: u8,
-    pub fragment: u8,
-    pub payload: &'a [u8],
-}
-
-/// Compact fixed-I fixed-gain amplitude terminal.
-#[klipper_reply]
-pub struct FociFixedGainAmplitudeTerminal<'a> {
-    pub oid: u8,
-    pub payload: &'a [u8],
-}
-
 /// Compact reversal-standstill robustness-gate terminal.
 #[klipper_reply]
 pub struct FociRobustnessReversalTerminal<'a> {
@@ -1304,10 +1289,6 @@ mod velocity_sweep_reply_tests {
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
 
-    use crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::{
-        FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENT_BYTES, FIXED_GAIN_AMPLITUDE_TERMINAL_REPLY_BYTES,
-    };
-
     const PAYLOAD_WITH_ID_MAX: usize = 59;
     const FRAME_MAX: usize = 64;
     const REPLY_ID_WORST_CASE_BYTES: usize = 3;
@@ -1325,25 +1306,6 @@ mod velocity_sweep_reply_tests {
             payload + FRAME_OVERHEAD_BYTES <= FRAME_MAX,
             "{name} frame is {}",
             payload + FRAME_OVERHEAD_BYTES
-        );
-    }
-
-    #[test]
-    fn fixed_gain_amplitude_replies_fit_one_protocol_frame() {
-        assert_fits(
-            &FociFixedGainAmplitudePlan {
-                oid: u8::MAX,
-                fragment: u8::MAX,
-                payload: &[u8::MAX; FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENT_BYTES],
-            },
-            "fixed-gain amplitude plan fragment",
-        );
-        assert_fits(
-            &FociFixedGainAmplitudeTerminal {
-                oid: u8::MAX,
-                payload: &[u8::MAX; FIXED_GAIN_AMPLITUDE_TERMINAL_REPLY_BYTES],
-            },
-            "fixed-gain amplitude terminal",
         );
     }
 

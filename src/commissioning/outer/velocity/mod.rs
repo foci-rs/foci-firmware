@@ -11,13 +11,6 @@ pub(crate) mod breakaway_trace_reporting;
 pub mod combined_plan;
 #[cfg(test)]
 mod combined_plan_tests;
-pub mod fixed_gain_amplitude_evidence;
-#[cfg(test)]
-mod fixed_gain_amplitude_evidence_tests;
-pub mod fixed_gain_amplitude_plan;
-#[cfg(test)]
-mod fixed_gain_amplitude_plan_tests;
-pub(crate) mod fixed_gain_amplitude_reporting;
 pub mod integral_evidence;
 #[cfg(test)]
 mod integral_evidence_tests;

@@ -3,18 +3,16 @@ use super::integral_plan::{
     AcceptanceSource, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegralExecutionPlan,
 };
 use super::integral_sweep::{
-    INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_FIXED_GAIN_REST_OWNERSHIP,
-    INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
+    INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
-    advance_integral_cursor, amplitude_rung_mean, analyze_rung, apply_integral_current_headroom,
-    combined_slot_transition_us, fixed_gain_amplitude_report, fixed_gain_amplitude_terminal,
-    integral_fault_terminal, integral_i_at, integral_recovery_current_contact_policy,
-    integral_rung_count, integral_rung_kind, integral_slot_direction, integral_target_rpm_at,
-    is_fixed_gain_amplitude, opening_recovery_lower_rate_q, plan_integral_recovery,
-    positive_directional_floors_exist, record_integral_observation_rest_selection,
-    record_integral_recovery_rest, record_integral_recovery_rest_selection,
-    record_integral_target_if_reached, step_velocity_integral_with_trace,
-    store_amplitude_rung_mean,
+    advance_integral_cursor, analyze_rung, apply_integral_current_headroom,
+    combined_slot_transition_us, integral_fault_terminal, integral_i_at,
+    integral_recovery_current_contact_policy, integral_rung_count, integral_rung_kind,
+    integral_slot_direction, integral_target_rpm_at, opening_recovery_lower_rate_q,
+    plan_integral_recovery, positive_directional_floors_exist,
+    record_integral_observation_rest_selection, record_integral_recovery_rest,
+    record_integral_recovery_rest_selection, record_integral_target_if_reached,
+    step_velocity_integral_with_trace,
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
@@ -36,7 +34,6 @@ use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit
 use crate::commissioning::outer::state::{
     PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
 };
-use crate::commissioning::outer::velocity::fixed_gain_amplitude_evidence::FixedGainAmplitudeAvailability;
 use crate::commissioning::outer::velocity::integral_evidence::{
     ExactRateInterval, IntegralRungKind,
 };
@@ -47,7 +44,6 @@ use crate::commissioning::outer::{
     VelocityIntegralState,
 };
 use crate::commissioning::types::{
-    FixedGainAmplitudeCause, FixedGainAmplitudeEvent, FixedGainAmplitudeOutcome,
     IntegralOutcomeCause, RestSelectionOwner, RungOriginRecoveryEvidence, StepResult,
     VelocityIntegralEvent, VelocityIntegralOutcome,
 };
@@ -290,7 +286,7 @@ fn schedule_has_two_anchors_and_the_exact_positive_i_ladder() {
 }
 
 #[test]
-fn response_and_amplitude_plans_expose_distinct_exact_schedules() {
+fn response_plan_exposes_the_exact_ladder_schedule() {
     let response = plan();
     assert_eq!(integral_rung_count(response), Some(7));
     assert_eq!(integral_target_rpm_at(response, 0), Some(176));
@@ -306,38 +302,6 @@ fn response_and_amplitude_plans_expose_distinct_exact_schedules() {
             IntegralRungKind::ClosingBookend,
         ]
     );
-
-    let mut ascending = plan();
-    ascending.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-    ascending.i_start = 1_024;
-    ascending.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-    assert_eq!(integral_rung_count(ascending), Some(5));
-    assert_eq!(
-        core::array::from_fn::<_, 5, _>(|rung| integral_i_at(ascending, rung as u8).unwrap()),
-        [1_024; 5]
-    );
-    assert_eq!(
-        core::array::from_fn::<_, 5, _>(|rung| {
-            integral_target_rpm_at(ascending, rung as u8).unwrap()
-        }),
-        [16, 33, 66, 132, 263]
-    );
-    assert_eq!(
-        core::array::from_fn::<_, 5, _>(|rung| { integral_rung_kind(ascending, rung as u8) }),
-        [IntegralRungKind::FixedGainAmplitude; 5]
-    );
-
-    let mut descending = ascending;
-    descending.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending;
-    descending.amplitude_targets_rpm = [263, 132, 66, 33, 16];
-    assert_eq!(
-        core::array::from_fn::<_, 5, _>(|rung| {
-            integral_target_rpm_at(descending, rung as u8).unwrap()
-        }),
-        [263, 132, 66, 33, 16]
-    );
-    assert_eq!(integral_i_at(descending, 5), None);
-    assert_eq!(integral_target_rpm_at(descending, 5), None);
 }
 
 fn completed_recovery_rest_analysis() -> RecoveryRestAnalysis {
@@ -468,63 +432,7 @@ fn live_integral_schedule_records_one_selector_per_observation() {
 }
 
 #[test]
-fn live_amplitude_schedule_records_one_selector_per_completed_rest_decision() {
-    let mut amplitude_plan = plan();
-    amplitude_plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-    amplitude_plan.i_start = 1_024;
-    amplitude_plan.positive_rung_count = 5;
-    amplitude_plan.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-    let mut data = VelocityIntegralRuntime::new(41, amplitude_plan);
-    let decision = completed_rest_selection();
-
-    for amplitude_index in 0..5 {
-        for slot in 0..INTEGRAL_SLOT_COUNT {
-            data.rung_index = amplitude_index;
-            data.slot = slot;
-            let StepResult::FixedGainAmplitudeEvent(FixedGainAmplitudeEvent::RestSelection(report)) =
-                record_integral_observation_rest_selection(
-                    &mut data,
-                    decision,
-                    RestSelectionOwner::FixedGainAmplitudeObservation,
-                )
-            else {
-                panic!("every amplitude observation rest decision must emit Event 151");
-            };
-            let expected_sequence =
-                1 + u16::from(amplitude_index) * u16::from(INTEGRAL_SLOT_COUNT) + u16::from(slot);
-            assert_eq!(report.evidence_sequence, expected_sequence);
-            assert_eq!(
-                report.owner,
-                RestSelectionOwner::FixedGainAmplitudeObservation
-            );
-            assert_eq!(report.rung_index, amplitude_index);
-            assert_eq!(report.direction, slot % 2);
-            assert_eq!(report.slot, slot);
-        }
-    }
-    assert_eq!(data.integrity.next_evidence_sequence(), 41);
-
-    for amplitude_index in 0..5 {
-        let StepResult::FixedGainAmplitudeEvent(FixedGainAmplitudeEvent::RestSelection(report)) =
-            record_integral_recovery_rest_selection(
-                &mut data,
-                decision,
-                RecoveryStage::Integral,
-                amplitude_index,
-            )
-        else {
-            panic!("every completed amplitude recovery rest decision must emit Event 151");
-        };
-        assert_eq!(report.evidence_sequence, 41 + u16::from(amplitude_index));
-        assert_eq!(report.owner, RestSelectionOwner::FixedGainAmplitudeRecovery);
-        assert_eq!(report.rung_index, amplitude_index);
-        assert_eq!([report.direction, report.slot], [u8::MAX; 2]);
-    }
-    assert_eq!(data.integrity.next_evidence_sequence(), 46);
-}
-
-#[test]
-fn integral_and_amplitude_place_rest_diagnostics_immediately_before_recovery() {
+fn integral_places_rest_diagnostics_immediately_before_recovery() {
     let integral_plan = plan();
     let mut integral = VelocityIntegralRuntime::new(17, integral_plan);
     let before = integral.integrity.digest();
@@ -565,379 +473,6 @@ fn integral_and_amplitude_place_rest_diagnostics_immediately_before_recovery() {
     };
     assert_eq!(recovery.evidence_sequence, diagnostic.evidence_sequence + 1);
     assert_ne!(integral.integrity.digest(), before);
-
-    let mut amplitude_plan = plan();
-    amplitude_plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-    amplitude_plan.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-    let mut amplitude = VelocityIntegralRuntime::new(23, amplitude_plan);
-    let StepResult::FixedGainAmplitudeEvent(FixedGainAmplitudeEvent::RestSelection(selection)) =
-        record_integral_recovery_rest_selection(
-            &mut amplitude,
-            completed_rest_selection(),
-            RecoveryStage::Integral,
-            4,
-        )
-    else {
-        panic!("amplitude must emit its selector diagnostic")
-    };
-    let StepResult::FixedGainAmplitudeEvent(FixedGainAmplitudeEvent::RecoveryRest(diagnostic)) =
-        record_integral_recovery_rest(&mut amplitude, completed_recovery_rest_analysis())
-    else {
-        panic!("amplitude must emit its recovery-rest diagnostic")
-    };
-    assert_eq!(diagnostic.run_sequence, 23);
-    assert_eq!(selection.evidence_sequence, 1);
-    assert_eq!(diagnostic.evidence_sequence, 2);
-    assert_eq!(selection.plan_digest, diagnostic.plan_digest);
-    assert_eq!(selection.stage as u8, diagnostic.stage as u8);
-    assert_eq!(selection.rung_index, diagnostic.rung_index);
-    let recovery = RungOriginRecoveryEvidence {
-        run_sequence: 23,
-        evidence_sequence: amplitude.integrity.next_evidence_sequence(),
-        report: completed_recovery_report(),
-    };
-    let FixedGainAmplitudeEvent::Recovery(recovery) = amplitude
-        .integrity
-        .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::Recovery(recovery))
-    else {
-        unreachable!()
-    };
-    assert_eq!(recovery.evidence_sequence, diagnostic.evidence_sequence + 1);
-}
-
-#[test]
-fn amplitude_fold_retains_exact_consensus_location_and_masks() {
-    let mut amplitude = plan();
-    amplitude.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-    amplitude.i_start = 1_024;
-    amplitude.positive_rung_count = 5;
-    amplitude.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-    let mut data = VelocityIntegralRuntime::new(1, amplitude);
-    data.rung_classes = [VelocityObservationClass::Eligible; 8];
-    data.rung_intervals = [
-        ExactRateInterval::new(100, 110).unwrap(),
-        ExactRateInterval::new(-110, -100).unwrap(),
-        ExactRateInterval::new(102, 112).unwrap(),
-        ExactRateInterval::new(-112, -102).unwrap(),
-        ExactRateInterval::new(103, 113).unwrap(),
-        ExactRateInterval::new(-113, -103).unwrap(),
-        ExactRateInterval::new(104, 114).unwrap(),
-        ExactRateInterval::new(-114, -104).unwrap(),
-    ];
-    let mut workspace = TransientBuffer::new();
-    for (slot, mean) in [100, -100, 102, -102, 104, -104, 106, -106]
-        .into_iter()
-        .enumerate()
-    {
-        store_amplitude_rung_mean(&mut workspace, slot, mean).unwrap();
-    }
-    data.rung_blocking_levels = 0x2244_3322;
-
-    let report = fixed_gain_amplitude_report(&mut data, &workspace).unwrap();
-    assert_eq!(report.amplitude_index, 0);
-    assert_eq!(report.target_rpm, 16);
-    assert_eq!(report.directions[0].response_interval_q, Some([103, 112]));
-    assert_eq!(report.directions[1].response_interval_q, Some([-112, -103]));
-    assert_eq!(report.directions[0].consensus.included_mask, 0b1111);
-    assert_eq!(report.directions[0].excluded_mask, 0);
-    assert_eq!(report.directions[0].robust_location_q, Some(103));
-    assert_eq!(report.directions[1].robust_location_q, Some(-103));
-    assert_eq!(report.directions[0].blocking_levels, [2, 3, 4, 2]);
-    assert_eq!(
-        [data.opening_direction_mask, data.bookend_available_mask],
-        [1; 2]
-    );
-    assert_eq!(data.eligible_masks, [1; 2]);
-}
-
-#[test]
-fn amplitude_fold_emits_a_dedicated_result() {
-    let mut phase = phase();
-    let mut workspace = TransientBuffer::new();
-    let OuterPhase::VelocityIntegral {
-        state,
-        data,
-        safety,
-    } = &mut phase
-    else {
-        unreachable!()
-    };
-    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-    data.plan.i_start = 1_024;
-    data.plan.positive_rung_count = 5;
-    data.plan.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-    data.plan.selected_response_intervals_q = [[0x1234, 0], [0x55aa, 0]];
-    data.rung_classes = [VelocityObservationClass::Eligible; 8];
-    data.rung_intervals = [ExactRateInterval::new(100, 110).unwrap(); 8];
-    for slot in 0..8 {
-        store_amplitude_rung_mean(&mut workspace, slot, 105).unwrap();
-    }
-    safety
-        .configure_velocity_sweep_encoder_resolution(4_000)
-        .unwrap();
-    *state = VelocityIntegralState::AnalyzeRung;
-    let mut backend = MockBackend::new();
-
-    let StepResult::FixedGainAmplitudeEvent(
-        crate::commissioning::types::FixedGainAmplitudeEvent::Amplitude(report),
-    ) = step(&mut phase, &mut workspace, &mut backend)
-    else {
-        panic!("amplitude fold must emit a dedicated amplitude event")
-    };
-    assert_eq!(report.evidence_sequence, 1);
-    assert_eq!(report.report.amplitude_index, 0);
-
-    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
-        unreachable!()
-    };
-    data.opening_direction_mask = 0b11111;
-    data.bookend_available_mask = 0b11111;
-    data.eligible_masks = [0b00111; 2];
-    data.emitted_observations = 40;
-    data.emitted_rungs = 5;
-    *state = VelocityIntegralState::Terminal;
-
-    let StepResult::FixedGainAmplitudeTerminal(terminal) =
-        step(&mut phase, &mut workspace, &mut backend)
-    else {
-        panic!("amplitude completion must emit a dedicated terminal")
-    };
-    assert_eq!(terminal.outcome, FixedGainAmplitudeOutcome::Complete);
-    assert_eq!(terminal.emitted_amplitudes, 5);
-}
-
-#[test]
-fn amplitude_recovery_uses_the_retained_top_point_after_a_low_amplitude_precision_floor() {
-    let mut phase = phase();
-    let mut workspace = TransientBuffer::new();
-    let OuterPhase::VelocityIntegral {
-        state,
-        data,
-        safety,
-    } = &mut phase
-    else {
-        unreachable!()
-    };
-    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-    data.plan.planned_velocity_mrev_s = 4_394;
-    data.plan.target_velocity_rpm = 263;
-    data.plan.i_start = 1_024;
-    data.plan.positive_rung_count = 5;
-    data.plan.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-    data.plan.recovery_lower_rate_q = [13_217_792, 12_827_648];
-    data.rung_classes = core::array::from_fn(|slot| {
-        if slot.is_multiple_of(2) || slot < 4 {
-            VelocityObservationClass::Eligible
-        } else {
-            VelocityObservationClass::StationarityExcluded(StationarityExclusion::NoBlockingPlateau)
-        }
-    });
-    data.rung_intervals = core::array::from_fn(|slot| {
-        if slot.is_multiple_of(2) {
-            ExactRateInterval::new(800_000, 900_000).unwrap()
-        } else if slot < 4 {
-            ExactRateInterval::new(-900_000, -800_000).unwrap()
-        } else {
-            ExactRateInterval::EMPTY
-        }
-    });
-    for slot in 0..8 {
-        store_amplitude_rung_mean(
-            &mut workspace,
-            slot,
-            if slot.is_multiple_of(2) {
-                850_000
-            } else {
-                -850_000
-            },
-        )
-        .unwrap();
-    }
-    *safety = OuterSafetyLimits::new(
-        data.plan.hard_torque_limit,
-        OuterMotionBudget {
-            requested_velocity_mrev_s: 4_394,
-            machine_velocity_ceiling_mrev_s: 10_000,
-            requested_velocity_source: RequestedVelocitySource::Explicit,
-            max_stroke_travel_mrev: 2_500,
-            settle_travel_reserve_mrev: 250,
-            negative_position_headroom_mrev: 50_000,
-            positive_position_headroom_mrev: 50_000,
-            max_duration_ms: 3_000,
-            homing_speed_mrev_s: 4_375,
-            max_accel_mrev_s2: 200_000,
-        },
-    );
-    safety
-        .configure_velocity_sweep_encoder_resolution(4_000)
-        .unwrap();
-    safety.unwrapped_position = -1_834;
-    *state = VelocityIntegralState::AnalyzeRung;
-    let mut backend = MockBackend::new();
-
-    let StepResult::FixedGainAmplitudeEvent(
-        crate::commissioning::types::FixedGainAmplitudeEvent::Amplitude(report),
-    ) = step(&mut phase, &mut workspace, &mut backend)
-    else {
-        panic!("the low-amplitude precision floor must not invalidate recovery authority")
-    };
-    assert_eq!(
-        report.report.directions[1].availability,
-        FixedGainAmplitudeAvailability::BelowPrecisionFloor
-    );
-    assert!(matches!(
-        phase,
-        OuterPhase::VelocityIntegral {
-            state: VelocityIntegralState::RecoverRung(_),
-            ..
-        }
-    ));
-}
-
-#[test]
-fn amplitude_terminals_distinguish_sufficiency_recovery_and_integrity() {
-    let mut amplitude = plan();
-    amplitude.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-    amplitude.acceptance_plan_digest = 0x1234;
-    amplitude.qualifier_bits = 0x55aa;
-    amplitude.positive_rung_count = 5;
-    amplitude.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-    let mut data = VelocityIntegralRuntime::new(1, amplitude);
-    data.opening_direction_mask = 0b11111;
-    data.bookend_available_mask = 0b11111;
-    data.eligible_masks = [0b00111; 2];
-    data.emitted_observations = 40;
-    data.emitted_rungs = 5;
-
-    let complete = fixed_gain_amplitude_terminal(&data, false, None);
-    assert_eq!(complete.outcome, FixedGainAmplitudeOutcome::Complete);
-    assert_eq!(complete.cause, FixedGainAmplitudeCause::None);
-    assert_eq!(complete.acceptance_plan_digest, 0x1234);
-    assert_eq!(complete.qualifier_bits, 0x55aa);
-    assert_eq!(complete.unattempted_masks, [0; 2]);
-
-    data.eligible_masks[1] = 0b00011;
-    let insufficient = fixed_gain_amplitude_terminal(&data, false, None);
-    assert_eq!(
-        insufficient.outcome,
-        FixedGainAmplitudeOutcome::Inconclusive
-    );
-    assert_eq!(
-        insufficient.cause,
-        FixedGainAmplitudeCause::InsufficientSharedFloor
-    );
-
-    data.eligible_masks[1] = 0b00111;
-    data.recovery_unavailable = true;
-    let recovery = fixed_gain_amplitude_terminal(&data, false, None);
-    assert_eq!(recovery.outcome, FixedGainAmplitudeOutcome::Inconclusive);
-    assert_eq!(recovery.cause, FixedGainAmplitudeCause::RecoveryUnavailable);
-
-    data.recovery_unavailable = false;
-    data.rest_unconfirmed = true;
-    let rest_unconfirmed = fixed_gain_amplitude_terminal(&data, false, None);
-    assert_eq!(
-        rest_unconfirmed.outcome,
-        FixedGainAmplitudeOutcome::Inconclusive
-    );
-    assert_eq!(
-        rest_unconfirmed.cause,
-        FixedGainAmplitudeCause::VelocityRestNotConfirmed
-    );
-    assert_eq!(rest_unconfirmed.attempted_masks, [0b1_1111; 2]);
-    assert_eq!(rest_unconfirmed.eligible_masks, [0b00111; 2]);
-
-    let fault = fixed_gain_amplitude_terminal(&data, true, None);
-    assert_eq!(fault.outcome, FixedGainAmplitudeOutcome::Fault);
-    assert_eq!(fault.cause, FixedGainAmplitudeCause::EvidenceIntegrity);
-}
-
-#[test]
-fn non_amplitude_plan_faults_on_evidence_integrity() {
-    let mut data = VelocityIntegralRuntime::new(1, plan());
-    data.opening_direction_mask = 0b11111;
-    data.bookend_available_mask = 0b11111;
-    data.eligible_masks = [0b00111; 2];
-    data.emitted_observations = 40;
-    data.emitted_rungs = 5;
-
-    let terminal = fixed_gain_amplitude_terminal(&data, false, None);
-    assert_eq!(terminal.outcome, FixedGainAmplitudeOutcome::Fault);
-    assert_eq!(terminal.cause, FixedGainAmplitudeCause::EvidenceIntegrity);
-    assert_eq!(terminal.acceptance_plan_digest, 0);
-    assert_eq!(terminal.qualifier_bits, 0);
-}
-
-#[test]
-fn both_amplitude_orders_end_an_observation_rest_rejection_with_cause_53() {
-    for acquisition_kind in [
-        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending,
-        VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending,
-    ] {
-        let mut phase = phase();
-        let mut workspace = TransientBuffer::new();
-        let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
-            unreachable!()
-        };
-        data.plan.acquisition_kind = acquisition_kind;
-        data.plan.i_start = 1_024;
-        data.plan.positive_rung_count = 5;
-        data.plan.amplitude_targets_rpm = match acquisition_kind {
-            VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending => [16, 33, 66, 132, 263],
-            VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => [263, 132, 66, 33, 16],
-            _ => unreachable!(),
-        };
-        data.plan.selected_response_intervals_q = [[0x1234, 0], [0x55aa, 0]];
-        data.current_observer = VelocityCurrentObserver::new(
-            current_limit(u32::from(data.plan.usable_torque_limit)),
-            VelocityLimitEvidenceCapability::BestEffortPolling,
-        );
-        data.settle_min_displacement_counts = 0;
-        data.settle_max_displacement_counts = 2;
-        for _ in 0..256 {
-            data.observations.push(1, 1_000).unwrap();
-        }
-        reset_scored_rest(data);
-        *state = VelocityIntegralState::AnalyzeSettle {
-            analysis_deadline_us: 236_000,
-        };
-        let mut backend = MockBackend::new();
-
-        let mut diagnostic = None;
-        let terminal = loop {
-            match step(&mut phase, &mut workspace, &mut backend) {
-                StepResult::ReadyNow => {}
-                StepResult::FixedGainAmplitudeEvent(FixedGainAmplitudeEvent::RestSelection(
-                    event,
-                )) => {
-                    diagnostic = Some(event);
-                }
-                StepResult::FixedGainAmplitudeEvent(FixedGainAmplitudeEvent::Current(_)) => {}
-                StepResult::FixedGainAmplitudeTerminal(terminal) => break terminal,
-                other => panic!("unexpected amplitude rest result: {other:?}"),
-            }
-        };
-
-        let diagnostic = diagnostic.expect("amplitude rest analysis must emit Event 151");
-        assert_eq!(
-            diagnostic.owner,
-            RestSelectionOwner::FixedGainAmplitudeObservation
-        );
-        assert_eq!(terminal.outcome, FixedGainAmplitudeOutcome::Inconclusive);
-        assert_eq!(
-            terminal.cause,
-            FixedGainAmplitudeCause::VelocityRestNotConfirmed
-        );
-        assert_eq!(terminal.attempted_masks, [0; 2]);
-        assert_eq!(terminal.unattempted_masks, [0b1_1111; 2]);
-        let OuterPhase::VelocityIntegral { data, .. } = &phase else {
-            unreachable!()
-        };
-        assert_eq!(
-            data.rest_unconfirmed_owner,
-            Some(RestSelectionOwner::FixedGainAmplitudeObservation)
-        );
-    }
 }
 
 #[test]
@@ -1243,31 +778,6 @@ fn partial_integral_current_terminus_does_not_schedule_a_bookend() {
 }
 
 #[test]
-fn amplitude_current_continuation_follows_only_remaining_lower_amplitudes() {
-    let mut phase = phase();
-    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
-        unreachable!()
-    };
-    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-    data.plan.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-    data.rung_index = 2;
-    apply_integral_current_headroom(state, data);
-    assert_eq!(data.rung_index, 2);
-    assert!(matches!(state, VelocityIntegralState::Terminal));
-
-    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending;
-    data.plan.amplitude_targets_rpm = [263, 132, 66, 33, 16];
-    data.current_terminus = None;
-    data.rung_index = 2;
-    apply_integral_current_headroom(state, data);
-    assert_eq!(data.rung_index, 3);
-    assert!(matches!(
-        state,
-        VelocityIntegralState::PrepareMovingSlot { reset_rung: true }
-    ));
-}
-
-#[test]
 fn post_sufficiency_current_terminus_restores_origin_before_bookend() {
     let mut phase = phase();
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
@@ -1464,31 +974,6 @@ fn finalize_recovery_resolves_a_contained_outcome_without_a_fault_at_every_rung_
                 if *address == PID_VELOCITY_TARGET.addr() && *value != 0)
         }));
     }
-}
-
-#[test]
-fn finalize_recovery_resolves_a_contained_fixed_gain_amplitude_rung_as_recovery_failure() {
-    let mut phase = phase();
-    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
-        unreachable!()
-    };
-    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-    data.plan.positive_rung_count = 5;
-    data.rung_index = 2;
-    *state = VelocityIntegralState::FinalizeRecovery(contained_report(2));
-    let mut workspace = TransientBuffer::new();
-    let mut backend = MockBackend::new();
-
-    assert!(matches!(
-        step(&mut phase, &mut workspace, &mut backend),
-        StepResult::FixedGainAmplitudeEvent(_)
-    ));
-    let OuterPhase::VelocityIntegral { state, data, .. } = phase else {
-        unreachable!()
-    };
-    assert!(data.recovery_failure);
-    assert!(!data.recovery_unavailable);
-    assert!(matches!(state, VelocityIntegralState::Terminal));
 }
 
 #[test]
@@ -2463,37 +1948,6 @@ fn rest_rejection_before_sufficiency_leaves_the_discriminator_unset() {
     assert_eq!(terminal.rest_rejection_owner, None);
 }
 
-#[test]
-fn amplitude_owner_reaching_evidence_terminal_is_reported_as_integrity_fault() {
-    let mut phase = phase();
-    let mut workspace = TransientBuffer::new();
-    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
-        unreachable!()
-    };
-    seed_sufficient_curve(data, &mut workspace);
-    data.bookend_available_mask = 3;
-    for (index, value) in [100_i32, 200, -200, -100].into_iter().enumerate() {
-        assert!(workspace.write_workspace_word(124 + index, value as u32));
-    }
-    data.rest_unconfirmed = true;
-    data.rest_unconfirmed_owner = Some(RestSelectionOwner::FixedGainAmplitudeRecovery);
-    *state = VelocityIntegralState::Terminal;
-    let mut backend = MockBackend::new();
-
-    let StepResult::VelocityIntegralTerminal(terminal) =
-        step(&mut phase, &mut workspace, &mut backend)
-    else {
-        panic!("an Amplitude owner on this path must still terminate Integral");
-    };
-    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
-    assert_eq!(
-        terminal.cause,
-        IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_FIXED_GAIN_REST_OWNERSHIP)
-    );
-    assert!(!terminal.rest_rejection_after_sufficiency);
-    assert_eq!(terminal.rest_rejection_owner, None);
-}
-
 fn phase() -> OuterPhase {
     let plan = plan();
     OuterPhase::VelocityIntegral {
@@ -2665,57 +2119,6 @@ fn sweep_start_clears_the_velocity_offset() {
 }
 
 #[test]
-fn amplitude_slots_program_fixed_i_and_exact_signed_amplitudes() {
-    for (rung, expected_target) in [16_i32, 33, 66, 132, 263].into_iter().enumerate() {
-        for slot in 0..INTEGRAL_SLOT_COUNT {
-            let mut phase = phase();
-            let mut workspace = TransientBuffer::new();
-            let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
-                unreachable!()
-            };
-            data.plan.acquisition_kind =
-                VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-            data.plan.i_start = 1_024;
-            data.plan.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-            data.plan.positive_rung_count = 5;
-            data.rung_index = rung as u8;
-            data.slot = slot;
-            *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: false };
-            let mut backend = MockBackend::new();
-            backend.current_limit_value = current_limit(2_816);
-
-            assert!(matches!(
-                step(&mut phase, &mut workspace, &mut backend),
-                StepResult::ReadyNow
-            ));
-            assert!(logged_writes(&backend).iter().any(|(address, value)| {
-                *address == PID_VELOCITY_P_VELOCITY_I.addr()
-                    && *value
-                        == PidGainPair::new(
-                            PidPGain::new(1_448).unwrap(),
-                            PidIGain::new(1_024).unwrap(),
-                        )
-                        .register_value()
-            }));
-
-            assert!(matches!(
-                step(&mut phase, &mut workspace, &mut backend),
-                StepResult::At(_)
-            ));
-            let signed_target = if slot.is_multiple_of(2) {
-                expected_target
-            } else {
-                -expected_target
-            };
-            assert!(logged_writes(&backend).iter().any(|(address, value)| {
-                *address == PID_VELOCITY_TARGET.addr()
-                    && *value == u32::from_ne_bytes(signed_target.to_ne_bytes())
-            }));
-        }
-    }
-}
-
-#[test]
 fn slot_advance_reprograms_i_without_resetting_prior_evidence() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
@@ -2768,14 +2171,9 @@ fn rung_reset_clears_only_per_rung_observation_state() {
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
         unreachable!()
     };
-    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-    data.plan.amplitude_targets_rpm = [16, 33, 66, 132, 263];
     data.rung_index = 1;
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
     data.rung_intervals = [ExactRateInterval::new(10, 20).unwrap(); 8];
-    for (slot, mean) in [10, 20, 30, 40, 50, 60, 70, 80].into_iter().enumerate() {
-        store_amplitude_rung_mean(&mut workspace, slot, mean).unwrap();
-    }
     data.rung_blocking_levels = 0x1234_1234;
     data.eligible_masks = [0b101; 2];
     *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
@@ -2793,24 +2191,8 @@ fn rung_reset_clears_only_per_rung_observation_state() {
         [VelocityObservationClass::InvalidEvidenceFault; 8]
     );
     assert_eq!(data.rung_intervals, [ExactRateInterval::EMPTY; 8]);
-    assert_eq!(
-        core::array::from_fn::<_, 8, _>(|slot| amplitude_rung_mean(&workspace, slot).unwrap()),
-        [0; 8]
-    );
     assert_eq!(data.rung_blocking_levels, 0);
     assert_eq!(data.eligible_masks, [0b101; 2]);
-}
-
-#[test]
-fn amplitude_rung_mean_accessors_report_out_of_range_slot() {
-    let mut workspace = TransientBuffer::new();
-
-    let store_error =
-        store_amplitude_rung_mean(&mut workspace, usize::from(INTEGRAL_SLOT_COUNT), 0).unwrap_err();
-    assert_eq!(store_error, CommissionError::RungIndexOutOfRange);
-
-    let read_error = amplitude_rung_mean(&workspace, usize::from(INTEGRAL_SLOT_COUNT)).unwrap_err();
-    assert_eq!(read_error, CommissionError::RungIndexOutOfRange);
 }
 
 #[test]
@@ -3260,25 +2642,6 @@ fn integral_safety_fault_uses_the_dedicated_terminal() {
 }
 
 #[test]
-fn amplitude_safety_fault_uses_the_amplitude_terminal() {
-    let mut phase = phase();
-    let OuterPhase::VelocityIntegral { data, .. } = &mut phase else {
-        unreachable!()
-    };
-    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-    data.plan.positive_rung_count = 5;
-    data.plan.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-
-    let StepResult::FixedGainAmplitudeTerminal(terminal) =
-        integral_fault_terminal(&phase, CommissionError::SafetyEnvelopeViolation, None)
-    else {
-        panic!("amplitude fault must not fall through to the generic terminal")
-    };
-    assert_eq!(terminal.outcome, FixedGainAmplitudeOutcome::Fault);
-    assert_eq!(terminal.cause, FixedGainAmplitudeCause::EvidenceIntegrity);
-}
-
-#[test]
 fn rung_aggregation_follows_the_declared_slot_order() {
     let slot_order = IntegralSlotOrder::ForwardFirst;
     let mut plan = plan();
@@ -3308,7 +2671,7 @@ fn rung_aggregation_follows_the_declared_slot_order() {
 }
 
 #[test]
-fn recovery_rest_rejection_records_the_amplitude_owner() {
+fn recover_rung_rest_unconfirmed_is_attributed_to_integral_recovery() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral {
@@ -3319,106 +2682,6 @@ fn recovery_rest_rejection_records_the_amplitude_owner() {
     else {
         unreachable!()
     };
-    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-    data.rung_index = 1;
-
-    let start_offset_counts = 1_500_i32;
-    safety
-        .configure_velocity_sweep_encoder_resolution(4_000)
-        .unwrap();
-    safety.configure_velocity_envelope(4_394).unwrap();
-    let raw = start_offset_counts.rem_euclid(4_000) as u32;
-    safety.set_encoder_baseline(raw).unwrap();
-    safety.unwrapped_position = start_offset_counts;
-    safety.arm_safety_observation(0).unwrap();
-
-    let recovery_plan =
-        plan_rung_origin_recovery(safety.budget, safety.counts_per_rev(), 4_394).unwrap();
-    let clamp_limit = PidTorqueFluxLimit::new(u32::from(data.plan.usable_torque_limit)).unwrap();
-    data.current_observer
-        .reset(clamp_limit, data.plan.limit_evidence_capability);
-    let runtime = RungOriginRecoveryRuntime::new(
-        RungOriginRecoveryConfig {
-            stage: RecoveryStage::Integral,
-            rung_index: data.rung_index,
-            p: PidPGain::new(data.plan.fixed_p).unwrap(),
-            target_velocity_rpm: TmcMechanicalRpm::from_register(264),
-            planned_velocity_mrev_s: 4_394,
-            start_offset_counts,
-            lower_rate_q: Some(14_000_000),
-            authority_source: RecoveryBindingSource::SettledRate,
-            current_contact_policy: integral_recovery_current_contact_policy(data),
-        },
-        recovery_plan,
-    )
-    .unwrap();
-    *state = VelocityIntegralState::RecoverRung(runtime);
-
-    let mut backend = MockBackend::new();
-    backend.current_limit_value = current_limit(u32::from(data.plan.usable_torque_limit));
-    backend.mechanical_encoder_position_counts_value = raw;
-
-    let mut saw_rest_selection = false;
-    let mut saw_recovery_rest = false;
-    let terminal = loop {
-        match step(&mut phase, &mut workspace, &mut backend) {
-            StepResult::ReadyNow => {}
-            StepResult::At(deadline_us) => {
-                backend.elapsed_us_value = deadline_us;
-                let drift = i32::try_from(deadline_us / 1_000).unwrap_or(i32::MAX);
-                let offset = start_offset_counts.saturating_sub(drift);
-                backend.mechanical_encoder_position_counts_value = offset.rem_euclid(4_000) as u32;
-            }
-            StepResult::VelocityIntegralEvent(_) => {}
-            StepResult::FixedGainAmplitudeEvent(FixedGainAmplitudeEvent::RestSelection(_)) => {
-                assert!(
-                    !saw_recovery_rest,
-                    "RestSelection must be observed before RecoveryRest"
-                );
-                saw_rest_selection = true;
-            }
-            StepResult::FixedGainAmplitudeEvent(FixedGainAmplitudeEvent::RecoveryRest(_)) => {
-                saw_recovery_rest = true;
-            }
-            StepResult::FixedGainAmplitudeEvent(_) => {}
-            StepResult::VelocityIntegralTerminal(terminal) => break Some(terminal),
-            StepResult::FixedGainAmplitudeTerminal(_) => break None,
-            other => panic!("unexpected recovery rest result: {other:?}"),
-        }
-    };
-    assert!(saw_rest_selection, "RestSelection event was never emitted");
-    assert!(saw_recovery_rest, "RecoveryRest event was never emitted");
-
-    let OuterPhase::VelocityIntegral { data, .. } = &phase else {
-        unreachable!()
-    };
-    assert!(data.rest_unconfirmed);
-    assert_eq!(
-        data.rest_unconfirmed_owner,
-        Some(RestSelectionOwner::FixedGainAmplitudeRecovery)
-    );
-    if let Some(terminal) = terminal {
-        assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
-        assert_eq!(
-            terminal.cause,
-            IntegralOutcomeCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
-        );
-    }
-}
-
-#[test]
-fn non_amplitude_recover_rung_rest_unconfirmed_is_attributed_to_integral_not_amplitude() {
-    let mut phase = phase();
-    let mut workspace = TransientBuffer::new();
-    let OuterPhase::VelocityIntegral {
-        state,
-        data,
-        safety,
-    } = &mut phase
-    else {
-        unreachable!()
-    };
-    assert!(!is_fixed_gain_amplitude(data.plan));
     data.rung_index = 1;
 
     let start_offset_counts = 1_500_i32;
@@ -3480,11 +2743,7 @@ fn non_amplitude_recover_rung_rest_unconfirmed_is_attributed_to_integral_not_amp
             }
             StepResult::VelocityIntegralEvent(_) => {}
             StepResult::VelocityIntegralTerminal(terminal) => break terminal,
-            other => {
-                panic!(
-                    "non-amplitude plan must never produce an FixedGainAmplitude result: {other:?}"
-                )
-            }
+            other => panic!("unexpected recovery rest result: {other:?}"),
         }
     };
     assert!(saw_rest_selection, "RestSelection event was never emitted");
@@ -3573,19 +2832,5 @@ fn integral_i_at_breakaway_response_ladder_never_returns_724() {
     let total = integral_rung_count(test_plan).unwrap();
     for index in 0..total {
         assert_ne!(integral_i_at(test_plan, index), Some(724));
-    }
-}
-
-#[test]
-fn integral_i_at_fixed_gain_amplitude_behavior_unchanged_by_i_top_cap_field() {
-    let mut test_plan = plan();
-    test_plan.i_start = 512;
-    test_plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
-    test_plan.i_top_cap = 0;
-    test_plan.positive_rung_count = 5;
-    test_plan.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-    let total = integral_rung_count(test_plan).unwrap();
-    for index in 0..total {
-        assert_eq!(integral_i_at(test_plan, index), Some(test_plan.i_start));
     }
 }

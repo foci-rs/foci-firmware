@@ -279,10 +279,8 @@ mod tests {
                 RestSelectionOwner::IntegralPositiveObservation as u8,
                 RestSelectionOwner::IntegralRecovery as u8,
                 RestSelectionOwner::IntegralCleanup as u8,
-                RestSelectionOwner::FixedGainAmplitudeObservation as u8,
-                RestSelectionOwner::FixedGainAmplitudeRecovery as u8,
             ],
-            [0, 1, 2, 3, 4, 5, 6, 7, 8]
+            [0, 1, 2, 3, 4, 5, 6]
         );
         assert_eq!(
             [
@@ -297,12 +295,7 @@ mod tests {
         let integral = super::super::integral_reporting::encode_velocity_integral_event(
             crate::commissioning::types::VelocityIntegralEvent::RestSelection(report),
         );
-        let amplitude =
-            super::super::fixed_gain_amplitude_reporting::encode_fixed_gain_amplitude_event(
-                crate::commissioning::types::FixedGainAmplitudeEvent::RestSelection(report),
-            );
         assert_eq!(integral.as_bytes(), shared.as_bytes());
-        assert_eq!(amplitude.as_bytes(), shared.as_bytes());
     }
 
     #[test]

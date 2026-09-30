@@ -292,9 +292,7 @@ impl AutotuneAction {
     ) -> crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder {
         use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
         match self {
-            Self::FixedGainAmplitudeAscending
-            | Self::FixedGainAmplitudeDescending
-            | Self::BreakawaySeeded
+            Self::BreakawaySeeded
             | Self::IntegralResume
             | Self::RobustnessReversal
             | Self::PositionTune => IntegralSlotOrder::ForwardFirst,
@@ -946,13 +944,13 @@ mod tests {
 
     #[test]
     fn autotune_action_admission_is_frozen() {
-        for code in [0u8, 3, 4, 5, 6] {
+        for code in [0u8, 1, 2, 3, 4, 5, 6] {
             assert!(
                 AutotuneAction::from_u8(code).is_none(),
                 "reserved {code} decoded"
             );
         }
-        for code in [1u8, 2, 7, 8, 9, 10] {
+        for code in [7u8, 8, 9, 10] {
             assert!(
                 AutotuneAction::from_u8(code).is_some(),
                 "live {code} rejected"
@@ -976,8 +974,6 @@ mod tests {
         );
         assert_eq!(AutotuneAction::from_u8(11), None);
         assert_eq!(AutotuneAction::IntegralResume as u8, 8);
-        assert_eq!(AutotuneAction::IntegralResume.amplitude_order(), None);
-        assert_eq!(AutotuneAction::IntegralResume.amplitude_slot_order(), None);
         assert_eq!(
             AutotuneAction::IntegralResume.slot_order(),
             crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst
@@ -1384,27 +1380,13 @@ mod tests {
 
     #[test]
     fn action_codes_and_invalid_values_are_exact() {
-        use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder;
         use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
-        use crate::commissioning::outer::velocity::workflow_plan::{
-            CommissioningWorkflowPlan, VelocityAutotuneWorkflowKind,
-        };
 
-        assert_eq!(AutotuneAction::FixedGainAmplitudeAscending as u8, 1);
-        assert_eq!(AutotuneAction::FixedGainAmplitudeDescending as u8, 2);
         assert_eq!(AutotuneAction::BreakawaySeeded as u8, 7);
         assert_eq!(AutotuneAction::IntegralResume as u8, 8);
-        for byte in [0u8, 3, 4, 5, 6, 11] {
+        for byte in [0u8, 1, 2, 3, 4, 5, 6, 11] {
             assert_eq!(AutotuneAction::from_u8(byte), None);
         }
-        assert_eq!(
-            AutotuneAction::from_u8(1),
-            Some(AutotuneAction::FixedGainAmplitudeAscending)
-        );
-        assert_eq!(
-            AutotuneAction::from_u8(2),
-            Some(AutotuneAction::FixedGainAmplitudeDescending)
-        );
         assert_eq!(
             AutotuneAction::from_u8(7),
             Some(AutotuneAction::BreakawaySeeded)
@@ -1422,11 +1404,6 @@ mod tests {
             AutotuneAction::RobustnessReversal.slot_order(),
             IntegralSlotOrder::ForwardFirst
         );
-        assert_eq!(AutotuneAction::RobustnessReversal.amplitude_order(), None);
-        assert_eq!(
-            AutotuneAction::RobustnessReversal.amplitude_slot_order(),
-            None
-        );
         assert_eq!(
             AutotuneAction::from_u8(10),
             Some(AutotuneAction::PositionTune)
@@ -1436,70 +1413,9 @@ mod tests {
             AutotuneAction::PositionTune.slot_order(),
             IntegralSlotOrder::ForwardFirst
         );
-        assert_eq!(AutotuneAction::PositionTune.amplitude_order(), None);
-        assert_eq!(AutotuneAction::PositionTune.amplitude_slot_order(), None);
         assert_eq!(
             AutotuneAction::BreakawaySeeded.slot_order(),
             IntegralSlotOrder::ForwardFirst
-        );
-        assert_eq!(AutotuneAction::BreakawaySeeded.amplitude_order(), None);
-        assert_eq!(AutotuneAction::BreakawaySeeded.amplitude_slot_order(), None);
-
-        for (action, slot_order) in [
-            (
-                AutotuneAction::FixedGainAmplitudeAscending,
-                IntegralSlotOrder::ForwardFirst,
-            ),
-            (
-                AutotuneAction::FixedGainAmplitudeDescending,
-                IntegralSlotOrder::ForwardFirst,
-            ),
-        ] {
-            assert_eq!(action.slot_order(), slot_order, "{action:?}");
-        }
-
-        for (action, order, slot_order) in [
-            (
-                AutotuneAction::FixedGainAmplitudeAscending,
-                FixedGainAmplitudeOrder::Ascending,
-                IntegralSlotOrder::ForwardFirst,
-            ),
-            (
-                AutotuneAction::FixedGainAmplitudeDescending,
-                FixedGainAmplitudeOrder::Descending,
-                IntegralSlotOrder::ForwardFirst,
-            ),
-        ] {
-            assert_eq!(action.amplitude_order(), Some(order), "{action:?} order");
-            assert_eq!(
-                action.amplitude_slot_order(),
-                Some(slot_order),
-                "{action:?} slot order"
-            );
-        }
-        assert_eq!(AutotuneAction::IntegralResume.amplitude_order(), None);
-        assert_eq!(AutotuneAction::IntegralResume.amplitude_slot_order(), None);
-        let ascending = CommissioningWorkflowPlan::new_fixed_gain_amplitude(
-            1,
-            FixedGainAmplitudeOrder::Ascending,
-            63_041,
-            66_456,
-        )
-        .unwrap();
-        let descending = CommissioningWorkflowPlan::new_fixed_gain_amplitude(
-            2,
-            FixedGainAmplitudeOrder::Descending,
-            63_041,
-            66_456,
-        )
-        .unwrap();
-        assert_eq!(
-            ascending.shape,
-            VelocityAutotuneWorkflowKind::FixedGainAmplitudeAscending
-        );
-        assert_eq!(
-            descending.shape,
-            VelocityAutotuneWorkflowKind::FixedGainAmplitudeDescending
         );
     }
 }

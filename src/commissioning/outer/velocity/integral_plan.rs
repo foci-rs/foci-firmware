@@ -354,10 +354,6 @@ impl IntegralSlotOrder {
 pub enum VelocityIntegralAcquisitionKind {
     /// Historical opening-anchor, positive-I response ladder, and bookend.
     ResponseLadder = 0,
-    /// Fixed-I fixed-gain amplitudes in ascending order.
-    FixedGainAmplitudeAscending = 1,
-    /// Fixed-I fixed-gain amplitudes in descending order.
-    FixedGainAmplitudeDescending = 2,
 }
 
 /// Which acquisition authorized one Integral execution plan; drives
@@ -424,7 +420,7 @@ pub struct VelocityIntegralExecutionPlan {
     /// Inclusive usable torque-target boundary.
     pub usable_torque_limit: u16,
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
-    /// Response-ladder or fixed-I fixed-gain amplitude acquisition.
+    /// Acquisition shape the shared engine runs.
     pub acquisition_kind: VelocityIntegralAcquisitionKind,
     /// Which acquisition category authorized this plan; see [`Self::records_target_terminus`].
     pub acceptance_source: AcceptanceSource,

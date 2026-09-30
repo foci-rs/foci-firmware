@@ -330,8 +330,6 @@ pub enum RestSelectionOwner {
     IntegralPositiveObservation = 4,
     IntegralRecovery = 5,
     IntegralCleanup = 6,
-    FixedGainAmplitudeObservation = 7,
-    FixedGainAmplitudeRecovery = 8,
 }
 
 /// Exact trace-only evidence for one completed scored-rest selector decision.
@@ -464,97 +462,6 @@ pub enum VelocityIntegralOutcome {
     Fault = 3,
     RejectedPlanMismatch = 4,
     Failed = 5,
-}
-
-/// Firmware-owned terminal outcome for one fixed fixed-gain amplitude validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-#[repr(u8)]
-pub enum FixedGainAmplitudeOutcome {
-    Complete = 0,
-    Inconclusive = 1,
-    Fault = 2,
-    Failed = 3,
-}
-
-/// Amplitude-local terminal cause; never mirrored into generic commissioning status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-#[repr(u8)]
-pub enum FixedGainAmplitudeCause {
-    None = 0,
-    InsufficientSharedFloor = 1,
-    RecoveryUnavailable = 2,
-    MissingAcceptancePoint = 3,
-    AcceptancePointIdentityMismatch = 4,
-    AmplitudeOrderMismatch = 5,
-    EvidenceCapacity = 6,
-    EvidenceIntegrity = 7,
-    /// The active-terminal matrix-progress transition (advance or close) was refused.
-    ProgressTransitionRejected = 8,
-    /// The disarm workflow did not complete during a staged terminal restore. Code 9.
-    DisarmIncomplete = 9,
-    /// The engine's amplitude order or plan digest was unavailable when an active terminal needed
-    /// it. Code 10.
-    MissingAmplitudeContext = 10,
-    /// Operator-requested cancel reached GPIO-first safe-state gracefully during a torn-down
-    /// restore. Code 11.
-    Cancelled = 11,
-    /// Hardware shutdown was requested (M112 / e-stop) during a torn-down restore. Code 12.
-    Shutdown = 12,
-    /// A completed run's attempted/eligible/current-terminus/unattempted masks failed bit-range
-    /// validation. Code 13.
-    InvalidRunMasks = 13,
-    VelocityRestNotConfirmed = 53,
-}
-
-/// One completed amplitude report with canonical amplitude sequencing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct FixedGainAmplitudeEvidence {
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    pub evidence_sequence: u16,
-    /// Exact immutable amplitude-plan digest.
-    pub plan_digest: u64,
-    pub report:
-        crate::commissioning::outer::velocity::fixed_gain_amplitude_evidence::FixedGainAmplitudeReport,
-}
-
-/// Trace-only evidence produced by one fixed-I confidence amplitude.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum FixedGainAmplitudeEvent {
-    Observation(VelocityIntegralObservation),
-    Current(VelocityPrimitiveCurrentEvidence),
-    Recovery(RungOriginRecoveryEvidence),
-    RecoveryRest(RecoveryRestDiagnostic),
-    RestSelection(RestSelectionDiagnostic),
-    Amplitude(FixedGainAmplitudeEvidence),
-}
-
-/// Compact terminal for one fixed-gain-amplitude acquisition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct FixedGainAmplitudeTerminal {
-    pub schema_revision: u16,
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    pub evidence_sequence: u16,
-    pub acceptance_plan_digest: u64,
-    /// Exact amplitude-plan digest.
-    pub plan_digest: u64,
-    /// Rolling canonical amplitude evidence digest.
-    pub digest: u64,
-    pub outcome: FixedGainAmplitudeOutcome,
-    pub cause: FixedGainAmplitudeCause,
-    pub attempted_masks: [u8; 2],
-    pub eligible_masks: [u8; 2],
-    pub current_terminus_masks: [u8; 2],
-    pub unattempted_masks: [u8; 2],
-    pub expected_observations: u16,
-    pub emitted_observations: u16,
-    pub expected_amplitudes: u8,
-    pub emitted_amplitudes: u8,
-    pub qualifier_bits: u16,
-    pub run_started_us: u64,
-    pub run_completed_us: u64,
-    pub safety_fault: Option<OuterSafetyFault>,
 }
 
 /// Firmware-owned terminal outcome for one reversal-robustness gate.
@@ -1083,8 +990,6 @@ pub enum StepResult {
     PhaseChanged(CommissionPhase),
     VelocityIntegralEvent(VelocityIntegralEvent),
     VelocityIntegralTerminal(VelocityIntegralTerminal),
-    FixedGainAmplitudeEvent(FixedGainAmplitudeEvent),
-    FixedGainAmplitudeTerminal(FixedGainAmplitudeTerminal),
     RobustnessReversalTerminal(RobustnessReversalTerminal),
     BreakawayCampaignEvent(BreakawayCampaignEvent),
     BreakawayIntegralPlanReady {
@@ -1608,32 +1513,6 @@ mod commission_timing_tests {
         assert_ne!(packed & (1 << 7), 0);
         assert_eq!((packed >> 8) & 0xff, 0xff);
         assert_eq!(packed >> 16, 0xffff);
-    }
-}
-
-#[cfg(test)]
-mod fixed_gain_amplitude_code_tests {
-    use super::{FixedGainAmplitudeCause, FixedGainAmplitudeOutcome};
-
-    #[test]
-    fn fixed_gain_amplitude_wire_namespace_is_stable() {
-        assert_eq!(FixedGainAmplitudeOutcome::Complete as u8, 0);
-        assert_eq!(FixedGainAmplitudeOutcome::Inconclusive as u8, 1);
-        assert_eq!(FixedGainAmplitudeOutcome::Fault as u8, 2);
-        assert_eq!(FixedGainAmplitudeOutcome::Failed as u8, 3);
-
-        assert_eq!(FixedGainAmplitudeCause::None as u8, 0);
-        assert_eq!(FixedGainAmplitudeCause::InsufficientSharedFloor as u8, 1);
-        assert_eq!(FixedGainAmplitudeCause::RecoveryUnavailable as u8, 2);
-        assert_eq!(FixedGainAmplitudeCause::MissingAcceptancePoint as u8, 3);
-        assert_eq!(
-            FixedGainAmplitudeCause::AcceptancePointIdentityMismatch as u8,
-            4
-        );
-        assert_eq!(FixedGainAmplitudeCause::AmplitudeOrderMismatch as u8, 5);
-        assert_eq!(FixedGainAmplitudeCause::EvidenceCapacity as u8, 6);
-        assert_eq!(FixedGainAmplitudeCause::EvidenceIntegrity as u8, 7);
-        assert_eq!(FixedGainAmplitudeCause::VelocityRestNotConfirmed as u8, 53);
     }
 }
 

@@ -421,21 +421,11 @@ pub(crate) enum OuterPhase {
 
 impl OuterPhase {
     /// Return the stable phase ID for the active non-terminal outer phase.
-    ///
-    /// `VelocityIntegral` dispatches on its plan's `acquisition_kind`.
     pub(crate) fn current_phase_id(&self) -> Option<CommissionPhase> {
-        use super::velocity::integral_plan::VelocityIntegralAcquisitionKind;
-
         match self {
-            Self::VelocityIntegral { data, .. } => Some(match data.plan.acquisition_kind {
-                VelocityIntegralAcquisitionKind::ResponseLadder => {
-                    CommissionPhase::IntegralGainResponseCharacterization
-                }
-                VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
-                | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => {
-                    CommissionPhase::FixedGainAmplitudeValidation
-                }
-            }),
+            Self::VelocityIntegral { .. } => {
+                Some(CommissionPhase::IntegralGainResponseCharacterization)
+            }
             Self::BreakawayCampaign { .. } => {
                 Some(CommissionPhase::BreakawayProportionalAcquisition)
             }
@@ -538,16 +528,6 @@ mod tests {
             velocity_integral_phase(VelocityIntegralAcquisitionKind::ResponseLadder)
                 .current_phase_id(),
             Some(CommissionPhase::IntegralGainResponseCharacterization)
-        );
-        assert_eq!(
-            velocity_integral_phase(VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending)
-                .current_phase_id(),
-            Some(CommissionPhase::FixedGainAmplitudeValidation)
-        );
-        assert_eq!(
-            velocity_integral_phase(VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending)
-                .current_phase_id(),
-            Some(CommissionPhase::FixedGainAmplitudeValidation)
         );
         assert_eq!(
             OuterPhase::Failed(CommissionError::Spi).current_phase_id(),

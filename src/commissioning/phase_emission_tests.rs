@@ -29,7 +29,6 @@ fn is_terminal(result: &StepResult) -> bool {
     matches!(
         result,
         StepResult::VelocityIntegralTerminal(_)
-            | StepResult::FixedGainAmplitudeTerminal(_)
             | StepResult::RobustnessReversalTerminal(_)
             | StepResult::OuterDone(_)
             | StepResult::OuterFailed(_)
@@ -171,56 +170,6 @@ fn response_ladder_engine() -> CommissioningEngine {
     response_ladder_engine_with_params(plan_matched_outer_params())
 }
 
-fn fixed_gain_amplitude_engine() -> CommissioningEngine {
-    use crate::commission_dispatch::fixed_gain_amplitude::FixedGainAmplitudePreflight;
-    use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::{
-        FixedGainAmplitudeOrder, plan_fixed_gain_amplitude,
-    };
-    use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
-    use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptancePoint, FixedGainAmplitudeProgress, IntegralPlanIdentity,
-    };
-    use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
-
-    let current = response_ladder_plan();
-    let point = AcceptancePoint {
-        identity: IntegralPlanIdentity {
-            channel: 0,
-            build_features: BUILD_FEATURES,
-            schema_revision: current.schema_revision,
-            plan_digest: current.digest(),
-        },
-        selected_p: current.fixed_p,
-        selected_i: current.positive_rungs()[0],
-        target_velocity_rpm: current.target_velocity_rpm,
-        selected_response_intervals_q: current.authority.directional_pooled_intervals,
-        confidence_q: 0,
-        band_position_q: 0,
-        qualifier_bits: 0,
-        token: None,
-        progress: FixedGainAmplitudeProgress::ReadyAscending,
-    };
-    let plan = plan_fixed_gain_amplitude(
-        point,
-        plan_request(),
-        FixedGainAmplitudeOrder::Ascending,
-        IntegralSlotOrder::ForwardFirst,
-        current,
-    )
-    .expect("a genuine breakaway point carries amplitude acceptance authority");
-
-    CommissioningEngine::new_outer_for_tmc_with_fixed_gain_amplitude_preflight(
-        0,
-        crate::state::tmc::tmc_channel0(),
-        plan_matched_outer_params(),
-        sample_entry_snapshot(),
-        FixedGainAmplitudePreflight {
-            plan,
-            run_sequence: 11,
-        },
-    )
-}
-
 fn trace_phase_ids(backend: &MockBackend) -> heapless::Vec<(u16, i32), 32> {
     backend
         .trace_events
@@ -358,17 +307,6 @@ async fn direct_response_ladder_emits_only_its_initial_phase() {
     assert_eq!(
         drive_to_completion(&mut engine, &mut backend).await,
         &[CommissionPhase::IntegralGainResponseCharacterization][..]
-    );
-}
-
-#[fixture_test]
-async fn fixed_gain_amplitude_reports_fixed_gain_amplitude_validation() {
-    let mut engine = fixed_gain_amplitude_engine();
-    let mut backend = outer_backend();
-
-    assert_eq!(
-        drive_to_completion(&mut engine, &mut backend).await,
-        &[CommissionPhase::FixedGainAmplitudeValidation][..]
     );
 }
 

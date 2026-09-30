@@ -2,9 +2,6 @@
 
 #[cfg(test)]
 mod characterization_tests;
-pub mod fixed_gain_amplitude;
-#[cfg(test)]
-mod fixed_gain_amplitude_tests;
 pub mod integral;
 #[cfg(test)]
 mod integral_tests;
@@ -260,15 +257,6 @@ pub enum ReplyPayload {
         oid: u8,
         terminal: crate::commissioning::types::VelocityIntegralTerminal,
     },
-    FixedGainAmplitudePlan {
-        oid: u8,
-        run_sequence: u32,
-        plan: crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainAmplitudePlan,
-    },
-    FixedGainAmplitudeTerminal {
-        oid: u8,
-        terminal: crate::commissioning::types::FixedGainAmplitudeTerminal,
-    },
     RobustnessReversalTerminal {
         oid: u8,
         terminal: crate::commissioning::types::RobustnessReversalTerminal,
@@ -501,13 +489,11 @@ pub(crate) async fn drive_commission_result<B: CommissioningBackend>(
         | StepResult::At(_)
         | StepResult::PhaseChanged(_)
         | StepResult::VelocityIntegralEvent(_)
-        | StepResult::FixedGainAmplitudeEvent(_)
         | StepResult::BreakawayCampaignEvent(_)
         | StepResult::BreakawayIntegralPlanReady { .. } => {
             unreachable!("non-terminal step reached the terminal restore driver")
         }
         terminal @ (StepResult::VelocityIntegralTerminal(_)
-        | StepResult::FixedGainAmplitudeTerminal(_)
         | StepResult::RobustnessReversalTerminal(_)
         | StepResult::SelftestDone
         | StepResult::InnerFailed(_)
@@ -567,9 +553,6 @@ pub(crate) async fn drive_commission_result_with_stages<B: CommissioningBackend>
     mut retention: CommissionRetention<'_>,
 ) -> CommissionOutcome {
     let staged = match result {
-        StepResult::FixedGainAmplitudeTerminal(terminal) => {
-            crate::commissioning::schedule::CommissionTerminal::FixedGainAmplitude(terminal)
-        }
         StepResult::RobustnessReversalTerminal(terminal) => {
             crate::commissioning::schedule::CommissionTerminal::RobustnessReversal(terminal)
         }
