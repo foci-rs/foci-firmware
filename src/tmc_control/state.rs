@@ -263,8 +263,9 @@ impl TmcControlRuntime {
 
     /// Reset runtime-local state after a config reset or shutdown clear.
     ///
-    /// Channel atomics (`TmcChannelState`, `StepperChannelState`) are separate;
-    /// call `reset_channel_state` for those.
+    /// The offset-headroom reservation flag on the channel's `TmcChannelState` is cleared together
+    /// with the runtime phase so the two cannot diverge. All other channel atomics
+    /// (`TmcChannelState`, `StepperChannelState`) are still reset by `reset_channel_state`.
     pub fn reset_runtime_state(&mut self) {
         self.motor_enabled = false;
         self.calibrated = false;
@@ -275,6 +276,9 @@ impl TmcControlRuntime {
         self.feedforward_was_active = false;
         self.torque_flux_offset_was_active = false;
         self.offset_headroom = OffsetHeadroomPhase::Released;
+        if let Some(tmc_state) = crate::state::tmc::tmc_channel(self.channel) {
+            tmc_state.set_offset_headroom_reserved(false, Relaxed);
+        }
         self.applied_velocity_offset = None;
         self.applied_torque_flux_offset = None;
         self.pid_error_clear_countdown_ms = 0;

@@ -931,6 +931,7 @@ fn dispatch_state_view_mutates_runtime_owned_flags() {
 
 #[test]
 fn config_reset_runtime_state_clears_owned_flags_and_defaults() {
+    let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     runtime.set_calibrated_for_test(true);
     runtime.set_motor_enabled_for_test(true);
@@ -942,6 +943,25 @@ fn config_reset_runtime_state_clears_owned_flags_and_defaults() {
     assert!(!runtime.is_motor_enabled());
     assert_eq!(runtime.planner_velocity_scale(), None);
     assert_eq!(runtime.planner_rpm_scale(), None);
+}
+
+#[test]
+fn reset_runtime_state_releases_the_offset_headroom_reservation() {
+    let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+    let tmc_state = crate::state::tmc::tmc_channel0();
+    tmc_state.store_current_limit(current_limit(2_557), Relaxed);
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.hold_offset_headroom_for_test(tmc_state, 0x0400_0000);
+    assert!(tmc_state.offset_headroom_reserved(Relaxed));
+
+    runtime.reset_runtime_state();
+
+    assert!(!tmc_state.offset_headroom_reserved(Relaxed));
+    assert!(!runtime.offset_headroom_engaged());
+    assert_eq!(
+        crate::tmc_control::current_limit::operational_limit_register(tmc_state),
+        current_limit(2_557).register_value()
+    );
 }
 
 #[test]
@@ -994,6 +1014,7 @@ fn queue_flush_without_signal_does_not_mutate_state() {
 
 #[test]
 fn queue_flush_signal_resets_runtime_and_channel_state() {
+    let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
     let shutdown_active = AtomicBool::new(false);
     let queue_flush = AtomicBool::new(false);
     let fault_active = AtomicBool::new(true);
@@ -1027,6 +1048,7 @@ fn queue_flush_signal_resets_runtime_and_channel_state() {
 
 #[test]
 fn queue_flush_keeps_the_fault_latch_while_the_status_pin_is_asserted() {
+    let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
     let shutdown_active = AtomicBool::new(false);
     let queue_flush = AtomicBool::new(false);
     let fault_active = AtomicBool::new(true);
@@ -1057,6 +1079,7 @@ fn queue_flush_keeps_the_fault_latch_while_the_status_pin_is_asserted() {
 
 #[test]
 fn queue_flush_keeps_the_fault_latch_while_the_disable_signal_is_pending() {
+    let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
     let shutdown_active = AtomicBool::new(false);
     let queue_flush = AtomicBool::new(false);
     let fault_active = AtomicBool::new(true);
