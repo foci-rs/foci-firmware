@@ -379,6 +379,8 @@ pub enum CommissionError {
     GainFloorPositionGainUnrepresentable,
     /// A gain-floor torque step overshot its target beyond the allowed ringing. Code 118.
     GainFloorStepOvershoot,
+    /// Coil-check excitation exceeded the diagnostic-current envelope. Code 119.
+    CoilCurrentEnvelope,
 }
 
 /// Specific outcome behind a `CommissionError::PositionTuneFailed`.
@@ -555,6 +557,7 @@ impl CommissionError {
             Self::GainFloorVelocityGainUnrepresentable => 116,
             Self::GainFloorPositionGainUnrepresentable => 117,
             Self::GainFloorStepOvershoot => 118,
+            Self::CoilCurrentEnvelope => 119,
         }
     }
 }
@@ -853,6 +856,7 @@ mod tests {
             CommissionError::GainFloorVelocityGainUnrepresentable,
             CommissionError::GainFloorPositionGainUnrepresentable,
             CommissionError::GainFloorStepOvershoot,
+            CommissionError::CoilCurrentEnvelope,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -968,6 +972,7 @@ mod tests {
             117
         );
         assert_eq!(CommissionError::GainFloorStepOvershoot.status_code(), 118);
+        assert_eq!(CommissionError::CoilCurrentEnvelope.status_code(), 119);
     }
 
     #[test]

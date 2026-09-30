@@ -2,7 +2,7 @@
 //! carries the observations forward into the phase-wiring check.
 
 use super::{CoilCheckState, CoilObservation, CoilTestState, InnerPhase};
-use crate::autotune::{CommissionError, CommissionPhase, InnerSequence};
+use crate::autotune::{CommissionError, CommissionPhase, InnerSequence, Permille};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics};
 use crate::tmc_register_values::{MOTION_STOPPED, MOTION_UQ_UD_EXT};
@@ -11,6 +11,8 @@ const DIAG_COIL_CHECK_A_SAMPLE: u8 = 1;
 const DIAG_COIL_CHECK_B_SAMPLE: u8 = 2;
 
 const MOTOR_CURRENT_THRESHOLD: u16 = 200;
+
+const COIL_DIAGNOSTIC_CURRENT_FRACTION: Permille = Permille::new(1000);
 
 const COIL_SETTLE_US: u64 = 100_000;
 
@@ -126,7 +128,14 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                     value2: raw,
                 });
 
-                if sample_failed {
+                let envelope = crate::tmc_control::current_limit::diagnostic_current_envelope(
+                    backend.current_limit(),
+                    COIL_DIAGNOSTIC_CURRENT_FRACTION,
+                );
+                let over_envelope =
+                    obs.expected.unsigned_abs() > envelope || obs.other.unsigned_abs() > envelope;
+
+                if over_envelope || sample_failed {
                     if matches!(sequence, InnerSequence::Selftest) {
                         let stage = if is_coil_b {
                             crate::selftest::SelftestStage::CoilB
@@ -135,7 +144,12 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                         };
                         selftest_results.set(stage, crate::selftest::SelftestStageValue::fail(0));
                     }
-                    return super::fail_inner(phase, CommissionError::CoilFault);
+                    let error = if over_envelope {
+                        CommissionError::CoilCurrentEnvelope
+                    } else {
+                        CommissionError::CoilFault
+                    };
+                    return super::fail_inner(phase, error);
                 }
 
                 let deadline = match backend.elapsed_us().checked_add(COIL_COOLDOWN_US) {
@@ -193,7 +207,7 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
 mod tests {
     use super::*;
     use crate::autotune::{CommissionProfile, InnerSequence};
-    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::types::StepResult;
     use crate::selftest::CommissionDiagnostics;
     use foci_tmc4671::registers::ADC_IWY_IUX;
@@ -272,6 +286,7 @@ mod tests {
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = CommissionDiagnostics::default();
             let mut backend = MockBackend::new();
+            backend.current_limit_value = current_limit(2816);
             backend.elapsed_us_value = 1_000;
             backend.registers.insert(ADC_IWY_IUX.addr(), 300).unwrap();
 
@@ -331,6 +346,7 @@ mod tests {
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = CommissionDiagnostics::default();
             let mut backend = MockBackend::new();
+            backend.current_limit_value = current_limit(2816);
             let raw = ((-20i16 as u16 as u32) << 16) | 120u16 as u32;
             backend.registers.insert(ADC_IWY_IUX.addr(), raw).unwrap();
 
@@ -360,6 +376,63 @@ mod tests {
             assert_eq!(items[0].value0, 120);
             assert_eq!(items[0].value1, -20i16 as u16 as u32);
             assert_eq!(items[0].value2, raw);
+        });
+    }
+
+    fn read_state_with_sample(limit: u32, raw: u32) -> (InnerPhase, MockBackend) {
+        let phase = InnerPhase::CoilCheck {
+            state: CoilCheckState::CoilA(CoilTestState::Read { phase: 0 }),
+            coil_a: None,
+        };
+        let mut backend = MockBackend::new();
+        backend.current_limit_value = current_limit(limit);
+        backend.registers.insert(ADC_IWY_IUX.addr(), raw).unwrap();
+        (phase, backend)
+    }
+
+    async fn run_read(phase: &mut InnerPhase, backend: &mut MockBackend) -> StepResult {
+        let mut selftest_results = crate::selftest::SelftestResults::default();
+        let mut diagnostics = CommissionDiagnostics::default();
+        step_coil_check(
+            phase,
+            InnerSequence::Commission,
+            &mut selftest_results,
+            &mut diagnostics,
+            backend,
+        )
+        .await
+    }
+
+    #[test]
+    fn coil_sample_above_the_current_limit_rejects_with_the_envelope_error() {
+        pollster::block_on(async {
+            let (mut phase, mut backend) = read_state_with_sample(2816, 2817);
+            let result = run_read(&mut phase, &mut backend).await;
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::CoilCurrentEnvelope)
+            ));
+        });
+    }
+
+    #[test]
+    fn coil_over_current_on_the_unexcited_phase_also_rejects() {
+        pollster::block_on(async {
+            let (mut phase, mut backend) = read_state_with_sample(2816, (2817u32 << 16) | 300);
+            let result = run_read(&mut phase, &mut backend).await;
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::CoilCurrentEnvelope)
+            ));
+        });
+    }
+
+    #[test]
+    fn coil_sample_at_the_current_limit_passes() {
+        pollster::block_on(async {
+            let (mut phase, mut backend) = read_state_with_sample(2816, 2816);
+            let result = run_read(&mut phase, &mut backend).await;
+            assert!(matches!(result, StepResult::At(_)));
         });
     }
 }
