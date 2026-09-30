@@ -56,6 +56,7 @@ const LIMIT_WRITE_EXEMPTIONS: &[(&str, &str, &str)] = &[
 ];
 
 const LIMIT_REGISTER: &str = "PID_TORQUE_FLUX_LIMITS";
+const WRITE_CALLEE: &str = "write_register";
 const CHOKEPOINT: &str = "operational_limit_register(";
 
 struct LimitWrite {
@@ -170,19 +171,6 @@ fn matching_paren(source: &str, open: usize) -> usize {
     panic!("unbalanced call at byte {open}");
 }
 
-fn first_argument(arguments: &str) -> &str {
-    let mut depth = 0;
-    for (offset, ch) in arguments.char_indices() {
-        match ch {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
-            ',' if depth == 0 => return &arguments[..offset],
-            _ => {}
-        }
-    }
-    arguments
-}
-
 fn enclosing_function(source: &str, offset: usize) -> String {
     source[..offset]
         .rmatch_indices("fn ")
@@ -202,28 +190,54 @@ fn enclosing_function(source: &str, offset: usize) -> String {
         .unwrap_or_default()
 }
 
-fn limit_writes_in(file: &str, source: &str) -> Vec<LimitWrite> {
-    let source = strip_cfg_test_items(source);
-    let mut writes = Vec::new();
-    for needle in ["write_register(", "write_register_verified("] {
-        for (at, _) in source.match_indices(needle) {
-            if source[..at].trim_end().ends_with("fn") {
-                continue;
-            }
-            let open = at + needle.len() - 1;
-            let arguments = &source[open + 1..matching_paren(&source, open)];
-            if !first_argument(arguments).contains(LIMIT_REGISTER) {
-                continue;
-            }
-            writes.push(LimitWrite {
-                file: file.into(),
-                line: source[..at].matches('\n').count() + 1,
-                function: enclosing_function(&source, at),
-                routed: arguments.contains(CHOKEPOINT),
-            });
+fn is_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+/// Byte offsets of every call whose callee name contains `write_register`, as
+/// `(callee start, opening paren)`.
+fn write_calls(source: &str) -> Vec<(usize, usize)> {
+    let mut calls = Vec::new();
+    let mut resume = 0;
+    for (at, _) in source.match_indices(WRITE_CALLEE) {
+        if at < resume {
+            continue;
+        }
+        let start = source[..at]
+            .char_indices()
+            .rev()
+            .take_while(|(_, ch)| is_identifier_char(*ch))
+            .last()
+            .map_or(at, |(index, _)| index);
+        let end = at
+            + source[at..]
+                .find(|ch| !is_identifier_char(ch))
+                .unwrap_or(source.len() - at);
+        resume = end;
+        if source[end..].starts_with('(') && !source[..start].trim_end().ends_with("fn") {
+            calls.push((start, end));
         }
     }
-    writes
+    calls
+}
+
+/// Textual scan: matches only the literal `PID_TORQUE_FLUX_LIMITS` token in a `write_register`
+/// call's arguments, so an alias, a table-driven write, a raw address or a turbofish call is not
+/// detected.
+fn limit_writes_in(file: &str, source: &str) -> Vec<LimitWrite> {
+    let source = strip_cfg_test_items(source);
+    write_calls(&source)
+        .into_iter()
+        .filter_map(|(start, open)| {
+            let arguments = &source[open + 1..matching_paren(&source, open)];
+            arguments.contains(LIMIT_REGISTER).then(|| LimitWrite {
+                file: file.into(),
+                line: source[..start].matches('\n').count() + 1,
+                function: enclosing_function(&source, start),
+                routed: arguments.contains(CHOKEPOINT),
+            })
+        })
+        .collect()
 }
 
 fn production_limit_writes() -> Vec<LimitWrite> {
@@ -281,4 +295,62 @@ fn every_operational_limit_write_routes_through_the_chokepoint() {
         writes.iter().any(|write| write.routed),
         "no routed limit write found: {writes:#?}"
     );
+}
+
+fn fixture_writes(source: &str) -> Vec<LimitWrite> {
+    limit_writes_in("fixture.rs", source)
+}
+
+#[test]
+fn scanner_finds_a_write_with_the_register_first() {
+    let source = "fn set(b: &mut B) {\n    b.write_register(PID_TORQUE_FLUX_LIMITS, value);\n}\n";
+
+    let writes = fixture_writes(source);
+
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].function, "set");
+    assert!(!writes[0].routed);
+}
+
+#[test]
+fn scanner_finds_a_wrapper_write_with_the_register_after_the_first_argument() {
+    let source = "async fn set(b: &mut B) {\n    write_register(backend, PID_TORQUE_FLUX_LIMITS, \
+                  value).await;\n    write_register_verified(backend, PID_TORQUE_FLUX_LIMITS, \
+                  value).await;\n}\n";
+
+    let writes = fixture_writes(source);
+
+    assert_eq!(writes.len(), 2);
+    assert!(
+        writes
+            .iter()
+            .all(|write| write.function == "set" && !write.routed)
+    );
+}
+
+#[test]
+fn scanner_ignores_reads_of_the_register() {
+    let source = "fn get(b: &mut B) {\n    b.read_register(PID_TORQUE_FLUX_LIMITS);\n    \
+                  read_sub_register(backend, PID_TORQUE_FLUX_LIMITS);\n}\n";
+
+    assert!(fixture_writes(source).is_empty());
+}
+
+#[test]
+fn scanner_skips_cfg_test_modules() {
+    let source = "#[cfg(test)]\nmod tests {\n    fn t(b: &mut B) {\n        \
+                  write_register(b, PID_TORQUE_FLUX_LIMITS, 1);\n    }\n}\n";
+
+    assert!(fixture_writes(source).is_empty());
+}
+
+#[test]
+fn scanner_classifies_a_chokepoint_call_as_routed() {
+    let source = "fn set(b: &mut B) {\n    write_register(backend, PID_TORQUE_FLUX_LIMITS, \
+                  operational_limit_register(ch, limit));\n}\n";
+
+    let writes = fixture_writes(source);
+
+    assert_eq!(writes.len(), 1);
+    assert!(writes[0].routed);
 }
