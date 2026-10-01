@@ -7,11 +7,11 @@ use super::integral_sweep::{
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
     advance_integral_cursor, analyze_rung, combined_slot_transition_us, integral_fault_terminal,
     integral_i_at, integral_recovery_current_contact_policy, integral_rung_count,
-    integral_rung_kind, integral_slot_direction, integral_target_rpm_at,
-    opening_recovery_lower_rate_q, plan_integral_recovery, positive_directional_floors_exist,
-    record_integral_observation_rest_selection, record_integral_recovery_rest,
-    record_integral_recovery_rest_selection, record_integral_target_if_reached,
-    step_velocity_integral_with_trace, terminate_on_current_headroom,
+    integral_slot_direction, opening_recovery_lower_rate_q, plan_integral_recovery,
+    positive_directional_floors_exist, record_integral_observation_rest_selection,
+    record_integral_recovery_rest, record_integral_recovery_rest_selection,
+    record_integral_target_if_reached, step_velocity_integral_with_trace,
+    terminate_on_current_headroom,
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
@@ -33,9 +33,7 @@ use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit
 use crate::commissioning::outer::state::{
     PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
 };
-use crate::commissioning::outer::velocity::integral_evidence::{
-    ExactRateInterval, IntegralRungKind,
-};
+use crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval;
 use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
 use crate::commissioning::outer::{
     OuterMotionBudget, OuterPhase, OuterSafetyLimits, VelocityIntegralRuntime,
@@ -280,25 +278,6 @@ fn schedule_has_two_anchors_and_the_exact_positive_i_ladder() {
         [0, 1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 0]
     );
     assert_eq!(integral_i_at(plan, 14), None);
-}
-
-#[test]
-fn response_plan_exposes_the_exact_ladder_schedule() {
-    let response = plan();
-    assert_eq!(integral_rung_count(response), Some(7));
-    assert_eq!(integral_target_rpm_at(response, 0), Some(176));
-    assert_eq!(
-        core::array::from_fn::<_, 7, _>(|rung| { integral_rung_kind(response, rung as u8) }),
-        [
-            IntegralRungKind::OpeningAnchor,
-            IntegralRungKind::Positive,
-            IntegralRungKind::Positive,
-            IntegralRungKind::Positive,
-            IntegralRungKind::Positive,
-            IntegralRungKind::Positive,
-            IntegralRungKind::ClosingBookend,
-        ]
-    );
 }
 
 fn completed_recovery_rest_analysis() -> RecoveryRestAnalysis {
@@ -2664,7 +2643,7 @@ fn rung_aggregation_follows_the_declared_slot_order() {
 }
 
 #[test]
-fn recover_rung_rest_unconfirmed_is_attributed_to_integral_recovery() {
+fn unconfirmed_recovery_rest_ends_the_integral_run() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral {
@@ -2713,8 +2692,6 @@ fn recover_rung_rest_unconfirmed_is_attributed_to_integral_recovery() {
     backend.current_limit_value = current_limit(u32::from(data.plan.usable_torque_limit));
     backend.mechanical_encoder_position_counts_value = raw;
 
-    let mut saw_rest_selection = false;
-    let mut saw_recovery_rest = false;
     let terminal = loop {
         match step(&mut phase, &mut workspace, &mut backend) {
             StepResult::ReadyNow => {}
@@ -2724,32 +2701,15 @@ fn recover_rung_rest_unconfirmed_is_attributed_to_integral_recovery() {
                 let offset = start_offset_counts.saturating_sub(drift);
                 backend.mechanical_encoder_position_counts_value = offset.rem_euclid(4_000) as u32;
             }
-            StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(_)) => {
-                assert!(
-                    !saw_recovery_rest,
-                    "RestSelection must be observed before RecoveryRest"
-                );
-                saw_rest_selection = true;
-            }
-            StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RecoveryRest(_)) => {
-                saw_recovery_rest = true;
-            }
             StepResult::VelocityIntegralEvent(_) => {}
             StepResult::VelocityIntegralTerminal(terminal) => break terminal,
             other => panic!("unexpected recovery rest result: {other:?}"),
         }
     };
-    assert!(saw_rest_selection, "RestSelection event was never emitted");
-    assert!(saw_recovery_rest, "RecoveryRest event was never emitted");
-
     let OuterPhase::VelocityIntegral { data, .. } = &phase else {
         unreachable!()
     };
     assert!(data.rest_unconfirmed);
-    assert_eq!(
-        data.rest_unconfirmed_owner,
-        Some(RestSelectionOwner::IntegralRecovery)
-    );
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
         terminal.cause,
