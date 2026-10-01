@@ -1058,8 +1058,6 @@ mod tests {
         VelocityIntegralExecutionPlan {
             slot_order: IntegralSlotOrder::ForwardFirst,
             plan_digest: 0x0123_4567_89ab_cdef,
-            acceptance_plan_digest: 0,
-            qualifier_bits: 0,
             fixed_p: 1_448,
             planned_velocity_mrev_s: 4_394,
             target_velocity_rpm: 264,
@@ -1081,9 +1079,6 @@ mod tests {
             usable_torque_limit: 2_534,
             limit_evidence_capability:
                 super::super::velocity_clamp::VelocityLimitEvidenceCapability::BestEffortPolling,
-            amplitude_targets_rpm: [0; 5],
-            selected_response_intervals_q: [[0; 2]; 2],
-            recovery_lower_rate_q: [0; 2],
             recovery_quantization_exposed: true,
             probe_constrained_test_point: false,
         }

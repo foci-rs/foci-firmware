@@ -61,8 +61,6 @@ fn plan() -> VelocityIntegralExecutionPlan {
     VelocityIntegralExecutionPlan {
         slot_order: IntegralSlotOrder::ForwardFirst,
         plan_digest: 7,
-        acceptance_plan_digest: 0,
-        qualifier_bits: 0,
         fixed_p: 1_448,
         planned_velocity_mrev_s: 2_929,
         target_velocity_rpm: 176,
@@ -83,9 +81,6 @@ fn plan() -> VelocityIntegralExecutionPlan {
         hard_torque_limit: 2_816,
         usable_torque_limit: 2_534,
         limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
-        amplitude_targets_rpm: [0; 5],
-        selected_response_intervals_q: [[0; 2]; 2],
-        recovery_lower_rate_q: [13_217_792, 12_827_648],
         recovery_quantization_exposed: true,
         probe_constrained_test_point: false,
     }

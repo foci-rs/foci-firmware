@@ -257,12 +257,9 @@ impl VelocityIntegralPlan {
 
     /// Compact the report plan into phase-local execution state.
     pub fn execution_plan(self) -> VelocityIntegralExecutionPlan {
-        let selected_response_intervals_q = [[0; 2]; 2];
         VelocityIntegralExecutionPlan {
             slot_order: self.slot_order,
             plan_digest: self.digest(),
-            acceptance_plan_digest: 0,
-            qualifier_bits: 0,
             fixed_p: self.fixed_p,
             planned_velocity_mrev_s: self.planned_velocity_mrev_s,
             target_velocity_rpm: self.target_velocity_rpm,
@@ -283,9 +280,6 @@ impl VelocityIntegralPlan {
             hard_torque_limit: self.hard_torque_limit,
             usable_torque_limit: self.usable_torque_limit,
             limit_evidence_capability: self.limit_evidence_capability,
-            amplitude_targets_rpm: [0; 5],
-            selected_response_intervals_q,
-            recovery_lower_rate_q: [0; 2],
             recovery_quantization_exposed: self.recovery_quantization_exposed,
             probe_constrained_test_point: self.probe_constrained_test_point,
         }
@@ -350,11 +344,6 @@ impl IntegralSlotOrder {
 pub struct VelocityIntegralExecutionPlan {
     /// Exact complete-plan digest.
     pub plan_digest: u64,
-    /// Acceptance-plan identity digest; always `0` for the response ladder.
-    pub acceptance_plan_digest: u64,
-    /// Packed operating-point, model-validity, and evidence-quality qualifiers; always `0` for
-    /// the response ladder.
-    pub qualifier_bits: u16,
     /// Fixed proportional gain.
     pub fixed_p: u16,
     /// Frozen encoder-domain amplitude.
@@ -395,13 +384,6 @@ pub struct VelocityIntegralExecutionPlan {
     /// Inclusive usable torque-target boundary.
     pub usable_torque_limit: u16,
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
-    /// Fixed per-rung targets; always zero for the response ladder.
-    pub amplitude_targets_rpm: [i16; 5],
-    /// Selected Proportional response intervals.
-    pub selected_response_intervals_q: [[i32; 2]; 2],
-    /// Settled-rate recovery bounds; always zero for the response ladder, which derives its
-    /// recovery bound from the opening anchor.
-    pub recovery_lower_rate_q: [u64; 2],
     /// One opposite-sign meter quantum can contact the probe clamp during recovery.
     pub recovery_quantization_exposed: bool,
     /// The commissioning probe clamp removed at least one Proportional-operable rung.
@@ -410,8 +392,8 @@ pub struct VelocityIntegralExecutionPlan {
     pub slot_order: IntegralSlotOrder,
 }
 
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 128);
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 128);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 72);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 72);
 
 /// Exact identity retained when Integral has no transition-capable test point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]

@@ -1585,7 +1585,7 @@ mod tests {
         assert_eq!(size_of::<TraceSummarySeqs>(), 16);
         assert_eq!(
             size_of::<crate::commissioning::outer::VelocityIntegralRuntime>(),
-            2_960
+            2_912
         );
         assert!(
             size_of::<crate::commissioning::outer::velocity::sweep_plan::VelocitySweepExecutionPlan>(
