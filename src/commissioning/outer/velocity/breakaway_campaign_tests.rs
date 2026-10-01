@@ -2690,7 +2690,7 @@ fn a_resolved_probe_breakaway_emits_its_plan_brackets_and_the_discovery_plan_in_
 
     let streamed = &events[1..events.len() - 2];
     assert_eq!(streamed.len() % 2, 0, "raw/decision stream must be paired");
-    for pair in streamed.chunks_exact(2) {
+    for pair in streamed.as_chunks::<2>().0 {
         let BreakawayCampaignEvent::RawObservation(raw) = &pair[0] else {
             panic!("expected a raw probe observation, got {:?}", pair[0]);
         };
@@ -2745,7 +2745,7 @@ fn a_probe_failure_emits_its_terminal_then_the_campaign_closure_record() {
     assert!(matches!(events[0], BreakawayCampaignEvent::ProbePlanned(_)));
     let streamed = &events[1..events.len() - 2];
     assert_eq!(streamed.len() % 2, 0, "raw/decision stream must be paired");
-    for pair in streamed.chunks_exact(2) {
+    for pair in streamed.as_chunks::<2>().0 {
         assert!(matches!(pair[0], BreakawayCampaignEvent::RawObservation(_)));
         assert!(matches!(pair[1], BreakawayCampaignEvent::ProbeDecision(_)));
     }

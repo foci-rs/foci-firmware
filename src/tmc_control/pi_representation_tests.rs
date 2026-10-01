@@ -114,7 +114,7 @@ fn pi_representation_bootstrap_is_deterministic_when_repeated_disarmed() {
 
         assert!(state.pi_representation_established());
         assert_eq!(backend.spi_log.len(), 8);
-        for pair in backend.spi_log.chunks_exact(4) {
+        for pair in backend.spi_log.as_chunks::<4>().0 {
             assert!(matches!(
                 pair[0],
                 SpiOp::Write(addr, value)
