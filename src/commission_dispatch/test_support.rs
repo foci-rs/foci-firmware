@@ -3,7 +3,7 @@ use crate::commissioning::backend::{
     CommissionRegisterIo, CommissionStepStimulus, CommissionTiming, CommissionTrace, StimulusError,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
-    AcceptancePoint, FixedGainAmplitudeProgress, IntegralPlanIdentity,
+    AcceptancePoint, IntegralPlanIdentity,
 };
 use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
 use crate::config::TmcConfig;
@@ -200,7 +200,7 @@ pub fn breakaway_campaign_engine() -> crate::commissioning::CommissioningEngine 
 pub fn robustness_reversal_engine() -> crate::commissioning::CommissioningEngine {
     use crate::commission_dispatch::robustness::RobustnessPreflight;
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptancePoint, FixedGainAmplitudeProgress, IntegralPlanIdentity,
+        AcceptancePoint, IntegralPlanIdentity,
     };
 
     let point = AcceptancePoint {
@@ -218,7 +218,6 @@ pub fn robustness_reversal_engine() -> crate::commissioning::CommissioningEngine
         band_position_q: 0,
         qualifier_bits: 0,
         token: None,
-        progress: FixedGainAmplitudeProgress::ReadyAscending,
     };
     crate::commissioning::CommissioningEngine::new_outer_for_tmc_with_robustness(
         0,
@@ -1247,10 +1246,7 @@ pub fn accepted_commission_result() -> crate::commissioning::types::CommissionRe
     }
 }
 
-pub(crate) fn test_acceptance_point(
-    request: VelocitySweepRequest,
-    progress: FixedGainAmplitudeProgress,
-) -> AcceptancePoint {
+pub(crate) fn test_acceptance_point(request: VelocitySweepRequest) -> AcceptancePoint {
     use crate::commissioning::outer::OuterMotionBudget;
     use crate::commissioning::outer::velocity::integral_plan::{
         AcquisitionContext, BreakawayIntegralEvidence, IntegralPlanPhysics,
@@ -1324,7 +1320,6 @@ pub(crate) fn test_acceptance_point(
         band_position_q: plan.authority.band_position_q,
         qualifier_bits: 0,
         token: Some(confirmation.token),
-        progress,
     }
 }
 

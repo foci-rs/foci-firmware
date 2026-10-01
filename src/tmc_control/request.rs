@@ -2684,9 +2684,7 @@ mod tests {
 
     #[fixture_test]
     async fn robustness_discloses_worst_case_duration_before_motion() {
-        use crate::commissioning::outer::velocity::integral_reproduction::{
-            FixedGainAmplitudeProgress, IntegralRetentionSlot,
-        };
+        use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
 
         let mut board = RecordingBoard::skip_tick_tail();
         tmc_channel0()
@@ -2700,7 +2698,6 @@ mod tests {
         integral.install_acceptance_point(
             crate::commission_dispatch::test_support::test_acceptance_point(
                 velocity_sweep_request(),
-                FixedGainAmplitudeProgress::ReadyAscending,
             ),
         );
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());

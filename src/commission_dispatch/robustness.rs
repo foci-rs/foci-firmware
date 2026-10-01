@@ -190,9 +190,7 @@ fn zero_robustness_evidence() -> RobustnessEvidence {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commissioning::outer::velocity::integral_reproduction::{
-        FixedGainAmplitudeProgress, IntegralPlanIdentity,
-    };
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralPlanIdentity;
 
     fn sample_acceptance_point() -> AcceptancePoint {
         AcceptancePoint {
@@ -210,7 +208,6 @@ mod tests {
             band_position_q: 0,
             qualifier_bits: 0,
             token: None,
-            progress: FixedGainAmplitudeProgress::ReadyAscending,
         }
     }
 
@@ -245,13 +242,13 @@ mod tests {
     }
 
     #[test]
-    fn preflight_reads_point_without_mutating_progress() {
+    fn preflight_reads_point_without_mutating_it() {
         let mut slot = IntegralRetentionSlot::new();
         slot.install_acceptance_point(sample_acceptance_point());
-        let before = slot.acceptance_point().unwrap().progress;
+        let before = slot.acceptance_point();
         let pre = preflight_robustness_reversal(1, &slot).expect("has point");
         assert_eq!(pre.point.selected_p, sample_acceptance_point().selected_p);
-        assert_eq!(slot.acceptance_point().unwrap().progress, before);
+        assert_eq!(slot.acceptance_point(), before);
     }
 
     #[test]

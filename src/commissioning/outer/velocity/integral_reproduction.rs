@@ -159,18 +159,6 @@ pub struct RetainedIntegralEvidence {
     pub run_digest: u64,
 }
 
-/// Next amplitude acquisition allowed by one retained acceptance point.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-#[repr(u8)]
-pub enum FixedGainAmplitudeProgress {
-    /// The ascending amplitude is the next allowed acquisition.
-    ReadyAscending = 0,
-    /// The ascending amplitude completed and the descending amplitude is next.
-    ReadyDescending = 1,
-    /// The fixed two-run amplitude sequence is closed.
-    Closed = 2,
-}
-
 /// Compact RAM-only handoff from one target-reaching breakaway run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct AcceptancePoint {
@@ -192,8 +180,6 @@ pub struct AcceptancePoint {
     pub qualifier_bits: u16,
     /// Unforgeable breakaway confirmation token that authorized this point.
     pub token: Option<super::integral_plan::ConfirmedAcquisitionDigest>,
-    /// Next allowed amplitude acquisition.
-    pub progress: FixedGainAmplitudeProgress,
 }
 
 /// Externally visible lifecycle state of the Integral RAM slot.
@@ -205,7 +191,7 @@ pub enum IntegralRetentionSlotState {
     AuthorityOnly,
     /// Authority and one sufficient Integral curve await reproduction.
     Candidate,
-    /// One target-reaching breakaway point awaits its fixed amplitude sequence.
+    /// One target-reaching breakaway point is retained for the robustness gate.
     AcceptancePoint,
 }
 
@@ -336,32 +322,6 @@ impl IntegralRetentionSlot {
     /// Install one target-reaching breakaway operating point.
     pub fn install_acceptance_point(&mut self, point: AcceptancePoint) {
         self.retained = RetainedIntegral::AcceptancePoint(point);
-    }
-
-    /// Advance a completed ascending amplitude to the descending acquisition.
-    pub fn advance_matrix_progress(&mut self) -> bool {
-        let RetainedIntegral::AcceptancePoint(mut point) = self.retained else {
-            return false;
-        };
-        if point.progress != FixedGainAmplitudeProgress::ReadyAscending {
-            return false;
-        }
-        point.progress = FixedGainAmplitudeProgress::ReadyDescending;
-        self.retained = RetainedIntegral::AcceptancePoint(point);
-        true
-    }
-
-    /// Close a nonclosed amplitude sequence after its final safe terminal.
-    pub fn close_matrix_progress(&mut self) -> bool {
-        let RetainedIntegral::AcceptancePoint(mut point) = self.retained else {
-            return false;
-        };
-        if point.progress == FixedGainAmplitudeProgress::Closed {
-            return false;
-        }
-        point.progress = FixedGainAmplitudeProgress::Closed;
-        self.retained = RetainedIntegral::AcceptancePoint(point);
-        true
     }
 
     /// Reject a changed plan before actuation without modifying retention.

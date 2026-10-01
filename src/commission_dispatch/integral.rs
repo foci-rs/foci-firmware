@@ -5,9 +5,9 @@ use crate::commissioning::outer::velocity::integral_plan::{
     IntegralFailedAdmission, VelocityIntegralPlan, VelocityIntegralPlanError,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
-    AcceptancePoint, FixedGainAmplitudeProgress, IntegralAuthoritySummary, IntegralPlanIdentity,
-    IntegralReproductionDecision, IntegralReproductionDelta, IntegralRestBoundaryReference,
-    IntegralRetentionSlot, RetainedIntegralEvidence,
+    AcceptancePoint, IntegralAuthoritySummary, IntegralPlanIdentity, IntegralReproductionDecision,
+    IntegralReproductionDelta, IntegralRestBoundaryReference, IntegralRetentionSlot,
+    RetainedIntegralEvidence,
 };
 use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
@@ -155,7 +155,6 @@ pub(crate) fn breakaway_acceptance_point(
         band_position_q: authority.band_position_q,
         qualifier_bits,
         token,
-        progress: FixedGainAmplitudeProgress::ReadyAscending,
     }))
 }
 

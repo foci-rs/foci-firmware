@@ -3,8 +3,7 @@
 //! For each reversal direction, runs up to [`ROBUSTNESS_CYCLES_PER_DIRECTION`] probe
 //! cycles: an establish leg (integrator cleared) then a measured reversal leg
 //! (integrator not cleared). Metrics fold into a per-direction [`CycleLedger`]. The
-//! accepted point is read-only; the phase never advances
-//! [`FixedGainAmplitudeProgress`](super::integral_reproduction::FixedGainAmplitudeProgress).
+//! accepted point is read-only; the phase never mutates the retained Integral slot.
 
 use crate::autotune::CommissionError;
 use crate::autotune::CommissionStatus;
@@ -164,7 +163,7 @@ pub(crate) struct RobustnessReversalSession {
 
 impl RobustnessReversalSession {
     /// Freeze the accepted point for a robustness-reversal run. Reads the point
-    /// only; never mutates the candidate slot or its fixed-gain-amplitude progress.
+    /// only; never mutates the candidate slot.
     pub(crate) fn new(point: AcceptancePoint, run_sequence: u32, counts_per_rev: u32) -> Self {
         let (_, thresholds) = constructed_thresholds(&point, counts_per_rev);
         let iae_max_q = thresholds.iae_max_q;
@@ -1864,7 +1863,7 @@ mod tests {
     use crate::commissioning::outer::OuterMotionBudget;
     use crate::commissioning::outer::check_outer_safety;
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        FixedGainAmplitudeProgress, IntegralPlanIdentity, IntegralRetentionSlot,
+        IntegralPlanIdentity, IntegralRetentionSlot,
     };
     use crate::commissioning::outer::velocity::robustness_metrics::{
         ROBUSTNESS_MAX_RETRIES, ROBUSTNESS_THRESHOLDS,
@@ -1929,7 +1928,6 @@ mod tests {
             band_position_q: 0,
             qualifier_bits: 0,
             token: None,
-            progress: FixedGainAmplitudeProgress::ReadyAscending,
         }
     }
 
@@ -2414,12 +2412,12 @@ mod tests {
     }
 
     #[test]
-    fn run_leaves_acceptance_matrix_progress_untouched() {
+    fn run_leaves_the_retained_acceptance_point_untouched() {
         for (noisy, expected) in [(false, false), (true, true)] {
             let point = test_point();
             let mut slot = IntegralRetentionSlot::new();
             slot.install_acceptance_point(point);
-            let before = slot.acceptance_point().expect("point installed").progress;
+            let before = slot.acceptance_point().expect("point installed");
 
             let (terminal, _backend, _session) = drive(point, noisy);
             assert_eq!(
@@ -2427,11 +2425,7 @@ mod tests {
                 expected
             );
 
-            assert_eq!(
-                slot.acceptance_point().expect("point retained").progress,
-                before
-            );
-            assert_eq!(before, FixedGainAmplitudeProgress::ReadyAscending);
+            assert_eq!(slot.acceptance_point().expect("point retained"), before);
         }
     }
 
