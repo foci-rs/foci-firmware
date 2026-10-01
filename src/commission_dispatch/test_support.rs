@@ -2,7 +2,9 @@ use crate::commissioning::backend::{
     CommissionBoardConfig, CommissionEncoderRead, CommissionMotorControl, CommissionPendingConfig,
     CommissionRegisterIo, CommissionStepStimulus, CommissionTiming, CommissionTrace, StimulusError,
 };
-use crate::commissioning::outer::velocity::integral_reproduction::FixedGainAmplitudeProgress;
+use crate::commissioning::outer::velocity::integral_reproduction::{
+    AcceptancePoint, FixedGainAmplitudeProgress, IntegralPlanIdentity,
+};
 use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
 use crate::config::TmcConfig;
 use crate::tmc_control::lifecycle::LifecycleFlag;
@@ -1248,7 +1250,7 @@ pub fn accepted_commission_result() -> crate::commissioning::types::CommissionRe
 pub(crate) fn test_acceptance_point(
     request: VelocitySweepRequest,
     progress: FixedGainAmplitudeProgress,
-) -> crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
+) -> AcceptancePoint {
     use crate::commissioning::outer::OuterMotionBudget;
     use crate::commissioning::outer::velocity::integral_plan::{
         AcquisitionContext, BreakawayIntegralEvidence, IntegralPlanPhysics,
@@ -1307,14 +1309,13 @@ pub(crate) fn test_acceptance_point(
     )
     .unwrap();
 
-    crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
-        identity:
-            crate::commissioning::outer::velocity::integral_reproduction::IntegralPlanIdentity {
-                channel: 0,
-                build_features: BUILD_FEATURES,
-                schema_revision: plan.schema_revision,
-                plan_digest: plan.digest(),
-            },
+    AcceptancePoint {
+        identity: IntegralPlanIdentity {
+            channel: 0,
+            build_features: BUILD_FEATURES,
+            schema_revision: plan.schema_revision,
+            plan_digest: plan.digest(),
+        },
         selected_p: plan.fixed_p,
         selected_i: plan.positive_rungs()[0],
         target_velocity_rpm: plan.target_velocity_rpm,
