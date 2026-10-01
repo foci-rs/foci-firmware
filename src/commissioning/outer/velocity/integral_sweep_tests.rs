@@ -1,7 +1,5 @@
 use super::integral_plan::IntegralSlotOrder;
-use super::integral_plan::{
-    AcceptanceSource, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegralExecutionPlan,
-};
+use super::integral_plan::{INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegralExecutionPlan};
 use super::integral_sweep::{
     INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
@@ -85,7 +83,6 @@ fn plan() -> VelocityIntegralExecutionPlan {
         hard_torque_limit: 2_816,
         usable_torque_limit: 2_534,
         limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
-        acceptance_source: super::integral_plan::AcceptanceSource::NonBreakaway,
         amplitude_targets_rpm: [0; 5],
         selected_response_intervals_q: [[0; 2]; 2],
         recovery_lower_rate_q: [13_217_792, 12_827_648],
@@ -97,7 +94,6 @@ fn plan() -> VelocityIntegralExecutionPlan {
 #[test]
 fn breakaway_target_terminus_stays_sticky_once_recorded() {
     let mut plan = plan();
-    plan.acceptance_source = AcceptanceSource::Breakaway;
     plan.target_velocity_rpm = 264;
     plan.encoder_counts_per_rev = 4_000;
     plan.positive_rung_count = 13;
@@ -146,7 +142,6 @@ fn breakaway_target_terminus_stays_sticky_once_recorded() {
 #[test]
 fn breakaway_records_target_terminus_when_target_reached() {
     let mut plan = plan();
-    plan.acceptance_source = AcceptanceSource::Breakaway;
     plan.target_velocity_rpm = 264;
     plan.encoder_counts_per_rev = 4_000;
     plan.positive_rung_count = 13;
@@ -169,7 +164,6 @@ fn breakaway_records_target_terminus_when_target_reached() {
 #[test]
 fn breakaway_leaves_terminus_none_on_sufficiency_without_target() {
     let mut plan = plan();
-    plan.acceptance_source = AcceptanceSource::Breakaway;
     plan.target_velocity_rpm = 264;
     plan.encoder_counts_per_rev = 4_000;
     plan.positive_rung_count = 13;
@@ -190,32 +184,8 @@ fn breakaway_leaves_terminus_none_on_sufficiency_without_target() {
 }
 
 #[test]
-fn non_breakaway_ladder_does_not_record_a_terminus() {
-    let mut plan = plan();
-    assert_eq!(plan.acceptance_source, AcceptanceSource::NonBreakaway);
-    plan.target_velocity_rpm = 264;
-    plan.encoder_counts_per_rev = 4_000;
-    plan.positive_rung_count = 13;
-    let mut data = VelocityIntegralRuntime::new(1, plan);
-    data.rung_index = 4;
-
-    let reached = record_integral_target_if_reached(
-        &mut data,
-        [
-            ExactRateInterval::new(-100_000, 340_000).unwrap(),
-            ExactRateInterval::new(-340_000, 100_000).unwrap(),
-        ],
-    )
-    .expect("valid intervals");
-
-    assert!(!reached);
-    assert_eq!(data.target_terminus, None);
-}
-
-#[test]
 fn target_terminus_recorder_reports_target_rate_invalid_for_a_non_positive_target() {
     let mut plan = plan();
-    plan.acceptance_source = AcceptanceSource::Breakaway;
     plan.target_velocity_rpm = 0;
     plan.encoder_counts_per_rev = 4_000;
     plan.positive_rung_count = 13;
@@ -1638,7 +1608,6 @@ fn breakaway_rest_boundary_sufficiency_records_target_terminus() {
     else {
         unreachable!()
     };
-    data.plan.acceptance_source = AcceptanceSource::Breakaway;
     data.plan.target_velocity_rpm = 264;
     data.plan.encoder_counts_per_rev = 4_000;
     seed_sufficient_curve(data, &mut workspace);
@@ -1695,7 +1664,6 @@ fn breakaway_rest_boundary_sufficiency_leaves_terminus_none_without_target() {
     else {
         unreachable!()
     };
-    data.plan.acceptance_source = AcceptanceSource::Breakaway;
     data.plan.target_velocity_rpm = 264;
     data.plan.encoder_counts_per_rev = 4_000;
     seed_sufficient_curve(data, &mut workspace);
@@ -1752,7 +1720,6 @@ fn breakaway_analyze_rung_records_target_terminus_when_target_reached() {
     else {
         unreachable!()
     };
-    data.plan.acceptance_source = AcceptanceSource::Breakaway;
     data.plan.target_velocity_rpm = 264;
     data.plan.encoder_counts_per_rev = 4_000;
     *state = VelocityIntegralState::AnalyzeRung;
@@ -1795,7 +1762,6 @@ fn breakaway_clean_sufficiency_preserves_recorded_terminus_through_continuation(
         unreachable!()
     };
     *state = VelocityIntegralState::AnalyzeRung;
-    data.plan.acceptance_source = AcceptanceSource::Breakaway;
     data.rung_index = data.plan.positive_rung_count + 1;
     seed_sufficient_curve(data, &mut workspace);
     for (index, value) in [-1_i32, 11_733_334, -11_733_334, 1].into_iter().enumerate() {
@@ -2762,7 +2728,6 @@ fn integral_i_at_response_ladder_returns_the_half_octave_rung() {
     let mut test_plan = plan();
     test_plan.i_top_cap = 1_310;
     test_plan.positive_rung_count = 13;
-    test_plan.acceptance_source = AcceptanceSource::NonBreakaway;
     for (positive_index, expected) in [1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1_024]
         .iter()
         .enumerate()
@@ -2777,7 +2742,6 @@ fn integral_i_at_response_ladder_returns_the_half_octave_rung() {
 #[test]
 fn integral_i_at_breakaway_response_ladder_never_returns_724() {
     let mut test_plan = plan();
-    test_plan.acceptance_source = AcceptanceSource::Breakaway;
     test_plan.i_top_cap = 0;
     test_plan.positive_rung_count = 12;
     let total = integral_rung_count(test_plan).unwrap();

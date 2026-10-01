@@ -60,6 +60,10 @@ pub use crate::commissioning::types::{
 };
 
 const PHASE_END_OK: u8 = 0;
+/// Promotion-diagnostic acceptance-source code for a breakaway-confirmed Integral plan.
+/// Code 2, the non-breakaway acceptance source, is reserved and must never be reused.
+#[cfg(feature = "trace")]
+const PROMOTION_SOURCE_BREAKAWAY: u8 = 1;
 
 /// Parameters for outer (mechanical) commissioning engine construction.
 #[derive(Debug, Clone, Copy, defmt::Format)]
@@ -514,8 +518,6 @@ impl CommissioningEngine {
         &self,
     ) -> Option<crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan>
     {
-        use crate::commissioning::outer::velocity::integral_plan::AcceptanceSource;
-
         let EngineMode::Outer {
             phase: OuterPhase::VelocityIntegral { data, .. },
             ..
@@ -523,24 +525,19 @@ impl CommissioningEngine {
         else {
             return None;
         };
-        (data.plan.acceptance_source == AcceptanceSource::Breakaway).then_some(data.plan)
+        Some(data.plan)
     }
 
     #[cfg(feature = "trace")]
     pub(crate) fn integral_promotion_source_diagnostic(&self) -> (u8, bool) {
-        use crate::commissioning::outer::velocity::integral_plan::AcceptanceSource;
         let EngineMode::Outer {
-            phase: OuterPhase::VelocityIntegral { data, .. },
+            phase: OuterPhase::VelocityIntegral { .. },
             ..
         } = &self.engine_mode
         else {
             return (0, false);
         };
-        let code = match data.plan.acceptance_source {
-            AcceptanceSource::Breakaway => 1,
-            AcceptanceSource::NonBreakaway => 2,
-        };
-        (code, true)
+        (PROMOTION_SOURCE_BREAKAWAY, true)
     }
 
     /// Create a direct Integral resume engine from a preflighted exact plan.

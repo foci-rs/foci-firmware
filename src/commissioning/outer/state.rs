@@ -449,7 +449,7 @@ mod tests {
 
     use crate::commissioning::outer::OuterSafetyLimits;
     use crate::commissioning::outer::velocity::integral_plan::{
-        AcceptanceSource, IntegralSlotOrder, VelocityIntegralExecutionPlan,
+        IntegralSlotOrder, VelocityIntegralExecutionPlan,
     };
     use crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability;
 
@@ -487,7 +487,6 @@ mod tests {
             hard_torque_limit: 2_816,
             usable_torque_limit: 2_534,
             limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
-            acceptance_source: AcceptanceSource::NonBreakaway,
             amplitude_targets_rpm: [0; 5],
             selected_response_intervals_q: [[0; 2]; 2],
             recovery_lower_rate_q: [13_217_792, 12_827_648],

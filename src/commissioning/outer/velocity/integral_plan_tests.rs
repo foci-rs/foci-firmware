@@ -10,11 +10,11 @@ use super::breakaway_plan::{
 };
 use super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION;
 use super::integral_plan::{
-    AcceptanceSource, AcquisitionContext, BreakawayAuthorityBindingError,
-    BreakawayIntegralEvidence, ConfirmedAcquisitionDigest, INTEGRAL_EVIDENCE_SCHEMA_REVISION,
-    INTEGRAL_MAX_POSITIVE_RUNGS, INTEGRAL_MIN_POSITIVE_I, INTEGRAL_OBSERVATIONS_PER_RUNG,
-    IntegralAcquisitionAuthority, IntegralPlanPhysics, IntegralSlotOrder, VelocityIntegralPlan,
-    VelocityIntegralPlanError, bind_breakaway_integral_authority, breakaway_confirmation_slots_us,
+    AcquisitionContext, BreakawayAuthorityBindingError, BreakawayIntegralEvidence,
+    ConfirmedAcquisitionDigest, INTEGRAL_EVIDENCE_SCHEMA_REVISION, INTEGRAL_MAX_POSITIVE_RUNGS,
+    INTEGRAL_MIN_POSITIVE_I, INTEGRAL_OBSERVATIONS_PER_RUNG, IntegralAcquisitionAuthority,
+    IntegralPlanPhysics, IntegralSlotOrder, VelocityIntegralPlan, VelocityIntegralPlanError,
+    bind_breakaway_integral_authority, breakaway_confirmation_slots_us,
     breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
     breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
     integral_gain_at, integral_top_gap_candidate, max_transition_capable_p, native_rung_count,
@@ -1067,31 +1067,6 @@ fn breakaway_integral_admits_the_confirmed_p_unchanged() {
         plan.positive_rungs(),
         &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1_024]
     );
-}
-
-#[test]
-fn execution_plan_reports_acceptance_source_from_authority() {
-    let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(512));
-    let token = breakaway_token_for(confirmation_plan);
-    let breakaway = plan_breakaway_velocity_integral_response(
-        token,
-        confirmation_plan,
-        breakaway_acquisition_context(),
-        BreakawayIntegralEvidence {
-            held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
-            confidence_q: 0,
-            band_position_q: 0,
-        },
-        IntegralPlanPhysics {
-            motion_budget: motion_budget(),
-            pwm_hz: 25_000,
-            encoder_counts_per_rev: 4_000,
-        },
-    )
-    .expect("the campaign's own Integral plan")
-    .execution_plan();
-    assert_eq!(breakaway.acceptance_source, AcceptanceSource::Breakaway);
-    assert!(breakaway.records_target_terminus());
 }
 
 #[test]

@@ -36,7 +36,7 @@ use super::integral_evidence::{
     classify_integral_observation,
 };
 use super::integral_plan::{
-    AcceptanceSource, INTEGRAL_MAX_POSITIVE_RUNGS, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US,
+    INTEGRAL_MAX_POSITIVE_RUNGS, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US,
     VelocityIntegralExecutionPlan, integral_gain_at,
 };
 use super::recovery::{
@@ -195,9 +195,6 @@ pub(super) fn record_integral_target_if_reached(
     data: &mut VelocityIntegralRuntime,
     intervals: [ExactRateInterval; 2],
 ) -> Result<bool, CommissionError> {
-    if !data.plan.records_target_terminus() {
-        return Ok(false);
-    }
     if data.target_terminus.is_some() {
         return Ok(true);
     }
@@ -589,7 +586,7 @@ pub(super) fn terminal_from_data(
         digest: data.integrity.digest(),
         outcome,
         cause,
-        breakaway_acceptance: data.plan.acceptance_source == AcceptanceSource::Breakaway,
+        breakaway_acceptance: true,
         fixed_p: data.plan.fixed_p,
         candidate_i: None,
         recovery_unavailable: data.recovery_unavailable,
@@ -2157,7 +2154,7 @@ mod tests {
         IntegralRungEvidence, IntegralRungKind,
     };
     use crate::commissioning::outer::velocity::integral_plan::{
-        AcceptanceSource, IntegralSlotOrder, VelocityIntegralExecutionPlan,
+        IntegralSlotOrder, VelocityIntegralExecutionPlan,
     };
     use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability;
@@ -2192,7 +2189,6 @@ mod tests {
             hard_torque_limit: 2_816,
             usable_torque_limit: 2_534,
             limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
-            acceptance_source: AcceptanceSource::NonBreakaway,
             amplitude_targets_rpm: [0; 5],
             selected_response_intervals_q: [[0; 2]; 2],
             recovery_lower_rate_q: [13_217_792, 12_827_648],
@@ -2205,7 +2201,6 @@ mod tests {
     fn record_integral_target_if_reached_rejects_inverted_deficit_interval() {
         let mut plan = plan();
         plan.positive_rung_count = 5;
-        plan.acceptance_source = AcceptanceSource::Breakaway;
         let mut data = VelocityIntegralRuntime::new(1, plan);
         data.rung_index = 1;
         let intervals = [

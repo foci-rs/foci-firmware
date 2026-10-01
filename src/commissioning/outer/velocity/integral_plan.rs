@@ -283,7 +283,6 @@ impl VelocityIntegralPlan {
             hard_torque_limit: self.hard_torque_limit,
             usable_torque_limit: self.usable_torque_limit,
             limit_evidence_capability: self.limit_evidence_capability,
-            acceptance_source: AcceptanceSource::Breakaway,
             amplitude_targets_rpm: [0; 5],
             selected_response_intervals_q,
             recovery_lower_rate_q: [0; 2],
@@ -346,18 +345,6 @@ impl IntegralSlotOrder {
     }
 }
 
-/// Which acquisition authorized one Integral execution plan; drives
-/// [`VelocityIntegralExecutionPlan::records_target_terminus`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-#[repr(u8)]
-pub enum AcceptanceSource {
-    /// Accepted breakaway-campaign confirmation.
-    Breakaway = 1,
-    /// Any acceptance source that is not a breakaway confirmation. Carries no
-    /// target-reaching evidence.
-    NonBreakaway = 2,
-}
-
 /// Compact immutable Integral state retained after plan emission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralExecutionPlan {
@@ -408,8 +395,6 @@ pub struct VelocityIntegralExecutionPlan {
     /// Inclusive usable torque-target boundary.
     pub usable_torque_limit: u16,
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
-    /// Which acquisition category authorized this plan; see [`Self::records_target_terminus`].
-    pub acceptance_source: AcceptanceSource,
     /// Fixed per-rung targets; always zero for the response ladder.
     pub amplitude_targets_rpm: [i16; 5],
     /// Selected Proportional response intervals.
@@ -427,14 +412,6 @@ pub struct VelocityIntegralExecutionPlan {
 
 const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 128);
 const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 128);
-
-impl VelocityIntegralExecutionPlan {
-    /// Whether a target-reaching run on this plan records a target terminus; true only for an
-    /// accepted breakaway confirmation.
-    pub const fn records_target_terminus(&self) -> bool {
-        matches!(self.acceptance_source, AcceptanceSource::Breakaway)
-    }
-}
 
 /// Exact identity retained when Integral has no transition-capable test point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
