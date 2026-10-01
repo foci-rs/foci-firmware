@@ -171,7 +171,7 @@ pub(super) fn integral_rung_kind(
     }
 }
 
-pub(super) fn apply_integral_current_headroom(
+pub(super) fn terminate_on_current_headroom(
     state: &mut VelocityIntegralState,
     data: &mut VelocityIntegralRuntime,
 ) {
@@ -1723,7 +1723,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                         Err(error) => return fail_integral(phase, backend, error).await,
                     }
                 } else {
-                    apply_integral_current_headroom(state, data);
+                    terminate_on_current_headroom(state, data);
                 }
             } else if data.slot + 1 < INTEGRAL_SLOT_COUNT {
                 if settle_result.confirmed_rest {
@@ -2083,7 +2083,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 data.rung_index = data.plan.positive_rung_count.saturating_add(1);
                 *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
             } else if report.outcome == RungOriginRecoveryOutcome::RecoveryCurrentHeadroom {
-                apply_integral_current_headroom(state, data);
+                terminate_on_current_headroom(state, data);
             } else {
                 match integral_rung_kind(data.plan, data.rung_index) {
                     IntegralRungKind::ClosingBookend => {

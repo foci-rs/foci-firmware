@@ -5,14 +5,13 @@ use super::integral_plan::{
 use super::integral_sweep::{
     INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
-    advance_integral_cursor, analyze_rung, apply_integral_current_headroom,
-    combined_slot_transition_us, integral_fault_terminal, integral_i_at,
-    integral_recovery_current_contact_policy, integral_rung_count, integral_rung_kind,
-    integral_slot_direction, integral_target_rpm_at, opening_recovery_lower_rate_q,
-    plan_integral_recovery, positive_directional_floors_exist,
+    advance_integral_cursor, analyze_rung, combined_slot_transition_us, integral_fault_terminal,
+    integral_i_at, integral_recovery_current_contact_policy, integral_rung_count,
+    integral_rung_kind, integral_slot_direction, integral_target_rpm_at,
+    opening_recovery_lower_rate_q, plan_integral_recovery, positive_directional_floors_exist,
     record_integral_observation_rest_selection, record_integral_recovery_rest,
     record_integral_recovery_rest_selection, record_integral_target_if_reached,
-    step_velocity_integral_with_trace,
+    step_velocity_integral_with_trace, terminate_on_current_headroom,
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
@@ -768,7 +767,7 @@ fn partial_integral_current_terminus_does_not_schedule_a_bookend() {
     data.rung_index = 3;
 
     assert!(!positive_directional_floors_exist(data));
-    apply_integral_current_headroom(state, data);
+    terminate_on_current_headroom(state, data);
 
     assert_eq!(data.current_terminus, Some(2));
     assert_eq!(data.rung_index, 3);
