@@ -128,17 +128,15 @@ pub const EVENT_COMMISSION_OUTER_SAFETY_TIMING: u16 = 144;
 /// Retired: focused velocity-output-limit persistence diagnostic. The id stays
 /// reserved (never reassigned) so historical captures still decode.
 pub const EVENT_COMMISSION_VELOCITY_LIMIT_LATCH_TEST: u16 = 145;
-/// Retired: fixed-gain-amplitude plan. The id stays reserved (never
-/// reassigned) so historical captures still decode.
+/// Retired: fixed-gain-amplitude plan. The id stays reserved (never reassigned).
 pub const EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_PLAN: u16 = 146;
-/// Retired: fixed-gain-amplitude observation evidence. The id stays reserved
-/// (never reassigned) so historical captures still decode.
+/// Retired: fixed-gain-amplitude observation evidence. The id stays reserved (never
+/// reassigned).
 pub const EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_OBSERVATION: u16 = 147;
-/// Retired: fixed-gain-amplitude per-amplitude consensus. The id stays
-/// reserved (never reassigned) so historical captures still decode.
+/// Retired: fixed-gain-amplitude per-amplitude consensus. The id stays reserved (never
+/// reassigned).
 pub const EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_AMPLITUDE: u16 = 148;
-/// Retired: fixed-gain-amplitude terminal. The id stays reserved (never
-/// reassigned) so historical captures still decode.
+/// Retired: fixed-gain-amplitude terminal. The id stays reserved (never reassigned).
 pub const EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_TERMINAL: u16 = 149;
 /// Selected Proportional recovery lead-in and scored-rest evidence.
 pub const EVENT_COMMISSION_SELECTED_RECOVERY_REST: u16 = 150;
