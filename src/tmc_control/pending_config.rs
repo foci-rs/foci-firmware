@@ -207,17 +207,17 @@ where
 mod tests {
     use super::*;
     use crate::tmc_control::test_spi::MockRawSpi;
+    use foci_firmware_macros::fixture_test;
     use foci_tmc4671::spi::Tmc4671Spi;
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
         crate::state::tmc::tmc_channel0()
     }
 
-    #[test]
+    #[fixture_test]
     fn drain_pending_config_with_only_filters_does_not_write_voltage_limit() {
         use core::sync::atomic::Ordering::Relaxed;
 
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             tmc_state().velocity_filter_hz.store(Some(100), Relaxed);
             tmc_state().torque_filter_hz.store(Some(0), Relaxed);
@@ -264,12 +264,11 @@ mod tests {
         });
     }
 
-    #[test]
+    #[fixture_test]
     fn drain_pending_config_with_current_bit_writes_the_converted_torque_flux_limit() {
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
 
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             let mut config = crate::config::TmcConfig::default_for_test();
             config.pwm_maxcnt = 4095;
@@ -328,12 +327,11 @@ mod tests {
         });
     }
 
-    #[test]
+    #[fixture_test]
     fn drain_pending_config_applies_the_newer_current_when_a_setter_races_the_apply() {
         use core::sync::atomic::Ordering::{Relaxed, Release};
         use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
 
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             let config = crate::config::TmcConfig::default_for_test();
             let limit_for = |run_ma: u32| {
@@ -414,12 +412,11 @@ mod tests {
         });
     }
 
-    #[test]
+    #[fixture_test]
     fn drain_pending_config_with_encoder_dir_bit_writes_abn_decoder_mode() {
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::ABN_DECODER_MODE;
 
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             let config = crate::config::TmcConfig::default_for_test();
 
@@ -471,12 +468,11 @@ mod tests {
         });
     }
 
-    #[test]
+    #[fixture_test]
     fn drain_pending_config_with_inner_gains_bit_publishes_into_sink_on_success() {
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::{PID_FLUX_P_FLUX_I, PID_TORQUE_P_TORQUE_I};
 
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             let config = crate::config::TmcConfig::default_for_test();
 
@@ -524,12 +520,11 @@ mod tests {
         });
     }
 
-    #[test]
+    #[fixture_test]
     fn drain_pending_config_with_inner_gains_bit_leaves_sink_untouched_on_write_failure() {
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::PID_FLUX_P_FLUX_I;
 
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             let config = crate::config::TmcConfig::default_for_test();
 
@@ -585,13 +580,12 @@ mod tests {
         });
     }
 
-    #[test]
+    #[fixture_test]
     fn drain_pending_config_with_outer_gains_bit_publishes_on_success() {
         use crate::pid::OuterLoopGains;
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::{PID_POSITION_P_POSITION_I, PID_VELOCITY_P_VELOCITY_I};
 
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             let config = crate::config::TmcConfig::default_for_test();
 
@@ -639,13 +633,12 @@ mod tests {
         });
     }
 
-    #[test]
+    #[fixture_test]
     fn drain_pending_config_with_outer_gains_bit_leaves_outer_gains_unchanged_on_write_failure() {
         use crate::pid::OuterLoopGains;
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I;
 
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             let config = crate::config::TmcConfig::default_for_test();
 
@@ -707,12 +700,11 @@ mod tests {
         });
     }
 
-    #[test]
+    #[fixture_test]
     fn drain_pending_config_names_the_voltage_limit_item_on_write_failure() {
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
 
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             tmc_state().voltage_limit_cfg.store(8_000, Relaxed);
             tmc_state()
@@ -744,12 +736,11 @@ mod tests {
         });
     }
 
-    #[test]
+    #[fixture_test]
     fn drain_pending_config_names_the_current_item_on_write_failure() {
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
 
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             tmc_state().run_current_ma_cfg.store(1500, Relaxed);
             tmc_state()
@@ -782,12 +773,11 @@ mod tests {
         });
     }
 
-    #[test]
+    #[fixture_test]
     fn drain_pending_config_names_the_encoder_dir_item_on_write_failure() {
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::ABN_DECODER_MODE;
 
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             tmc_state().encoder_invert_cfg.store(Some(true), Relaxed);
             tmc_state()
@@ -820,12 +810,11 @@ mod tests {
         });
     }
 
-    #[test]
+    #[fixture_test]
     fn drain_pending_config_names_the_filters_item_on_write_failure() {
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::CONFIG_BIQUAD_V_A_1;
 
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             tmc_state().velocity_filter_hz.store(Some(100), Relaxed);
             tmc_state().torque_filter_hz.store(Some(0), Relaxed);
@@ -866,12 +855,11 @@ mod tests {
         });
     }
 
-    #[test]
+    #[fixture_test]
     fn drain_pending_config_clears_the_encoder_dir_bit_when_no_direction_is_recorded() {
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::ABN_DECODER_MODE;
 
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             tmc_state().encoder_invert_cfg.store(None, Relaxed);
             tmc_state()
