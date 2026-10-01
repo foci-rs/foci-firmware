@@ -1543,6 +1543,7 @@ impl TerminalRestoreMachine {
         self.terminal.authority = dispatch.authority;
     }
 
+    #[inline(never)]
     fn cancelled_reply(&self, oid: u8, status_error: CommissionError) -> ReplyPayload {
         let status = status_error.status_code();
         match self.terminal.payload.clone() {
