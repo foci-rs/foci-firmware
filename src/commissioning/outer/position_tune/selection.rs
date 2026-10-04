@@ -24,6 +24,9 @@ pub(crate) enum ConflictKind {
     OvershootRatio,
     OvershootOverBound,
     Dither,
+    // Produced by the ceiling stop in position_tune/mod.rs.
+    #[allow(dead_code)]
+    VelocityCeiling,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -36,6 +39,24 @@ pub(crate) enum RungDecision {
 /// Reversal overshoot may not grow past this multiple of the running
 /// minimum overshoot seen so far without tripping a conflict.
 pub(crate) const OVERSHOOT_RATIO_LIMIT: u32 = 3;
+
+/// The position tune stops a rung whose window velocity reaches this fraction of the active
+/// outer-safety cap: 4/5, so in the proportional regime 1.2x planned speed against a 1.5x fault.
+// Produced by the ceiling stop in position_tune/mod.rs.
+#[allow(dead_code)]
+pub(crate) const VELOCITY_CEILING_NUM: u64 = 4;
+// Produced by the ceiling stop in position_tune/mod.rs.
+#[allow(dead_code)]
+pub(crate) const VELOCITY_CEILING_DEN: u64 = 5;
+
+/// A rung the ceiling stop may accept: everything the `Accept` path checks except the motion
+/// cruise bound. A rung that fails the homing bound would stall a home; one whose overshoot
+/// exceeds the bound rings past the tolerance.
+// Produced by the ceiling stop in position_tune/mod.rs.
+#[allow(dead_code)]
+pub(crate) fn qualifies_as_candidate(m: &RungMeasurement, bound_units: u32) -> bool {
+    m.homing_peak_abs_units <= bound_units && m.motion_overshoot_units <= bound_units
+}
 
 /// Decide what to do with one rung's measurement against the tracking bound and the
 /// dither/overshoot-ratio guards, checked in that order.
@@ -183,6 +204,35 @@ mod tests {
         assert_eq!(
             decide(&m, 409, None, ceiling_tripped),
             RungDecision::Conflict(ConflictKind::Dither)
+        );
+    }
+
+    #[test]
+    fn a_rung_failing_only_the_motion_bound_is_a_candidate() {
+        let m = measurement(176, 300, 1_042, 200);
+        assert_eq!(decide(&m, 409, None, false), RungDecision::Advance);
+        assert!(qualifies_as_candidate(&m, 409));
+    }
+
+    #[test]
+    fn a_rung_failing_the_homing_bound_is_not_a_candidate() {
+        let m = measurement(100, 600, 200, 50);
+        assert_eq!(decide(&m, 409, None, false), RungDecision::Advance);
+        assert!(!qualifies_as_candidate(&m, 409));
+    }
+
+    #[test]
+    fn a_rung_with_overshoot_over_the_bound_is_not_a_candidate() {
+        let m = measurement(176, 300, 1_042, 500);
+        assert_eq!(decide(&m, 409, None, false), RungDecision::Advance);
+        assert!(!qualifies_as_candidate(&m, 409));
+    }
+
+    #[test]
+    fn the_ceiling_fraction_is_four_fifths() {
+        assert_eq!(
+            18_750_u64 * VELOCITY_CEILING_NUM / VELOCITY_CEILING_DEN,
+            15_000
         );
     }
 }
