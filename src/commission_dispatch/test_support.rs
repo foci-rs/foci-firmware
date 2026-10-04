@@ -334,7 +334,7 @@ pub struct MockBackend {
     pub stall_threshold_units_value: u32,
     pub velocity_feedforward_gain_value: u32,
     pub feedforward_path_flags_value: u8,
-    pub event_log: heapless::Vec<MockEvent, 2_048>,
+    pub event_log: heapless::Vec<MockEvent, 4_096>,
 }
 
 impl MockBackend {

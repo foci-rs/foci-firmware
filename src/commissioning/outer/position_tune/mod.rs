@@ -2152,9 +2152,6 @@ mod tests {
                     .store(true, Relaxed);
             }
             if let Some(d) = encoder_counts_per_ms(state, safety) {
-                if motion_origin.is_none() {
-                    backend.event_log.clear();
-                }
                 let (origin_us, origin_counts) = *motion_origin
                     .get_or_insert((clock_us, backend.mechanical_encoder_position_counts_value));
                 let elapsed_ms = u32::try_from((clock_us - origin_us) / 1_000).unwrap();
