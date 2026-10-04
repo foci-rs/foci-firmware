@@ -1332,7 +1332,7 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
         Ok(synthesis) => (synthesis.gains, synthesis.evidence),
         Err(error) => {
             defmt::error!("current gain synthesis rejected: {}", error);
-            return super::fail_inner(phase, CommissionError::CurrentValidationFailed);
+            return super::fail_inner(phase, CommissionError::CurrentGainUnrepresentable);
         }
     };
     current_loop_evidence.current_validation_axes = 0;
@@ -2594,6 +2594,40 @@ mod tests {
             assert!(
                 backend.spi_log.iter().all(|op| matches!(op, SpiOp::Read)),
                 "an unreachable validation envelope must fail before any PID write"
+            );
+        });
+    }
+
+    #[test]
+    fn current_tune_names_a_p_gain_the_chip_cannot_represent() {
+        pollster::block_on(async {
+            let mut phase = current_tune_phase(ElectricalModel {
+                r_count_milli: 1000,
+                l_count_micro: 20_000,
+                tau_e_us: 20_000,
+                theta_e_us: 100,
+                theta_source: 0,
+            });
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = current_limit(4000);
+
+            let result =
+                step_current_tune(&mut phase, CommissionProfile::Stiff, &mut backend).await;
+
+            assert!(
+                matches!(
+                    result,
+                    StepResult::InnerFailed(CommissionError::CurrentGainUnrepresentable)
+                ),
+                "20 ms count-space inductance at 1600 Hz needs P above PidPGain::MAX: {result:?}"
+            );
+            assert!(matches!(
+                phase,
+                InnerPhase::Failed(CommissionError::CurrentGainUnrepresentable)
+            ));
+            assert!(
+                backend.spi_log.iter().all(|op| matches!(op, SpiOp::Read)),
+                "an unrepresentable gain must fail before any PID write"
             );
         });
     }

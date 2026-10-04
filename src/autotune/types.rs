@@ -385,6 +385,9 @@ pub enum CommissionError {
     /// the configured run current with the profile's current-loop bandwidth.
     /// Code 120.
     CurrentValidationEnvelopeUnreachable,
+    /// The synthesized current-loop gain for the profile's bandwidth exceeds
+    /// what the TMC4671 PI registers can represent. Code 121.
+    CurrentGainUnrepresentable,
 }
 
 /// Specific outcome behind a `CommissionError::PositionTuneFailed`.
@@ -563,6 +566,7 @@ impl CommissionError {
             Self::GainFloorStepOvershoot => 118,
             Self::CoilCurrentEnvelope => 119,
             Self::CurrentValidationEnvelopeUnreachable => 120,
+            Self::CurrentGainUnrepresentable => 121,
         }
     }
 }
@@ -863,6 +867,7 @@ mod tests {
             CommissionError::GainFloorStepOvershoot,
             CommissionError::CoilCurrentEnvelope,
             CommissionError::CurrentValidationEnvelopeUnreachable,
+            CommissionError::CurrentGainUnrepresentable,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -982,6 +987,10 @@ mod tests {
         assert_eq!(
             CommissionError::CurrentValidationEnvelopeUnreachable.status_code(),
             120
+        );
+        assert_eq!(
+            CommissionError::CurrentGainUnrepresentable.status_code(),
+            121
         );
     }
 
