@@ -54,6 +54,8 @@ impl ResistanceWarningFlags {
     pub const SCALE_METADATA_UNVALIDATED: Self = Self(1 << 3);
     pub const ENCODER_MOVED: Self = Self(1 << 4);
     pub const STATUS_FLAGS: Self = Self(1 << 5);
+    /// The bus voltage could not be sensed, so the UD ladder ran unscaled.
+    pub const BUS_VOLTAGE_UNSCALED: Self = Self(1 << 6);
 
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 != 0
@@ -197,6 +199,8 @@ pub enum ResistanceError {
     CriticalStatus,
     /// The fitted or signed-anchor slope was zero or negative.
     NonPositiveSlope,
+    /// The measured bus voltage was outside the range the sweep supports.
+    BusVoltageOutOfRange,
 }
 
 impl ResistanceError {
@@ -230,6 +234,7 @@ impl From<ResistanceError> for crate::autotune::CommissionError {
             ResistanceError::PhaseDeadlineExceeded => Self::ResistanceDeadlineExceeded,
             ResistanceError::CriticalStatus => Self::ResistanceIdFailed,
             ResistanceError::NonPositiveSlope => Self::ResistanceNonPositiveSlope,
+            ResistanceError::BusVoltageOutOfRange => Self::ResistanceBusVoltageOutOfRange,
         }
     }
 }
@@ -264,6 +269,7 @@ mod tests {
             (ResistanceError::TimingRejected, 48),
             (ResistanceError::PhaseDeadlineExceeded, 49),
             (ResistanceError::NonPositiveSlope, 73),
+            (ResistanceError::BusVoltageOutOfRange, 122),
         ];
         let mut seen = [false; 256];
         for (error, code) in expected {
@@ -271,5 +277,15 @@ mod tests {
             assert!(!seen[code as usize], "duplicate status code {code}");
             seen[code as usize] = true;
         }
+    }
+
+    #[test]
+    fn bus_voltage_unscaled_is_a_new_warning_bit() {
+        use super::ResistanceWarningFlags;
+        assert_eq!(ResistanceWarningFlags::BUS_VOLTAGE_UNSCALED.0, 1 << 6);
+        let mut flags = ResistanceWarningFlags::NONE;
+        flags.insert(ResistanceWarningFlags::BUS_VOLTAGE_UNSCALED);
+        assert!(flags.contains(ResistanceWarningFlags::BUS_VOLTAGE_UNSCALED));
+        assert!(!flags.contains(ResistanceWarningFlags::STATUS_FLAGS));
     }
 }

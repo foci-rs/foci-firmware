@@ -388,6 +388,8 @@ pub enum CommissionError {
     /// The synthesized current-loop gain for the profile's bandwidth exceeds
     /// what the TMC4671 PI registers can represent. Code 121.
     CurrentGainUnrepresentable,
+    /// Resistance identification read a bus voltage outside 18 to 60 V. Code 122.
+    ResistanceBusVoltageOutOfRange,
 }
 
 /// Specific outcome behind a `CommissionError::PositionTuneFailed`.
@@ -567,6 +569,7 @@ impl CommissionError {
             Self::CoilCurrentEnvelope => 119,
             Self::CurrentValidationEnvelopeUnreachable => 120,
             Self::CurrentGainUnrepresentable => 121,
+            Self::ResistanceBusVoltageOutOfRange => 122,
         }
     }
 }
@@ -868,6 +871,7 @@ mod tests {
             CommissionError::CoilCurrentEnvelope,
             CommissionError::CurrentValidationEnvelopeUnreachable,
             CommissionError::CurrentGainUnrepresentable,
+            CommissionError::ResistanceBusVoltageOutOfRange,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -991,6 +995,10 @@ mod tests {
         assert_eq!(
             CommissionError::CurrentGainUnrepresentable.status_code(),
             121
+        );
+        assert_eq!(
+            CommissionError::ResistanceBusVoltageOutOfRange.status_code(),
+            122
         );
     }
 
