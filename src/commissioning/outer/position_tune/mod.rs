@@ -2107,6 +2107,16 @@ mod tests {
         error_for: impl Fn(&PositionTuneState, u16) -> i32,
         encoder_counts_per_ms: impl Fn(&PositionTuneState, &OuterSafetyLimits) -> Option<u32>,
     ) -> StepResult {
+        drive_with_safety_and_restore(phase, backend, error_for, encoder_counts_per_ms, true)
+    }
+
+    fn drive_with_safety_and_restore(
+        phase: &mut OuterPhase,
+        backend: &mut MockBackend,
+        error_for: impl Fn(&PositionTuneState, u16) -> i32,
+        encoder_counts_per_ms: impl Fn(&PositionTuneState, &OuterSafetyLimits) -> Option<u32>,
+        restore_completes: bool,
+    ) -> StepResult {
         let mut workspace = TransientBuffer::new();
         let mut trace_summary_seqs = crate::commissioning::outer::TraceSummarySeqs::new();
         let mut clock_us = backend.elapsed_us_value;
@@ -2126,10 +2136,12 @@ mod tests {
                         .insert(PID_ERROR_PID_POSITION_ERROR.data.addr(), error as u32);
                 }
                 PositionTuneStep::AwaitRestore { .. } => {
-                    backend
-                        .tmc_state
-                        .feedforward_surfaces_idle
-                        .store(true, Relaxed);
+                    if restore_completes {
+                        backend
+                            .tmc_state
+                            .feedforward_surfaces_idle
+                            .store(true, Relaxed);
+                    }
                 }
                 PositionTuneStep::StandstillHold { rung, .. } => {
                     let predicted = quantization_only(rung.raw(), state.k_q16);
@@ -2582,5 +2594,203 @@ mod tests {
             "the faulting window, over the cap, is the reported peak"
         );
         assert_eq!(position_tune.velocity_ceiling_reached, 0);
+    }
+
+    fn reproduction_case_budget() -> OuterMotionBudget {
+        OuterMotionBudget {
+            requested_velocity_mrev_s: 12_500,
+            machine_velocity_ceiling_mrev_s: 12_500,
+            requested_velocity_source:
+                crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource::Defaulted,
+            max_stroke_travel_mrev: 3_000,
+            settle_travel_reserve_mrev: 100,
+            negative_position_headroom_mrev: 4_000,
+            positive_position_headroom_mrev: 4_000,
+            max_duration_ms: 60_000,
+            homing_speed_mrev_s: 4_375,
+            max_accel_mrev_s2: 200_000,
+        }
+    }
+
+    #[fixture_test]
+    fn the_reproduction_case_accepts_p176_and_names_p248() {
+        let mut backend = position_tune_backend();
+        backend.velocity_feedforward_gain_value = 1_750;
+        backend.stall_threshold_units_value = 1_638;
+        let mut phase = OuterPhase::PositionTune {
+            state: PositionTuneState::new(
+                position_tune_entry_snapshot(),
+                CommissionProfile::Balanced,
+            ),
+            safety: OuterSafetyLimits::new(0, reproduction_case_budget()),
+        };
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+        assert_eq!(start_raw, 176);
+        assert_eq!(next_rung(PidPGain::new(176).unwrap()).unwrap().raw(), 248);
+
+        let terminal = drive_with_safety(
+            &mut phase,
+            &mut backend,
+            ceiling_trip_error(176),
+            |state, _safety| in_motion_stroke_of(state, 248).then_some(70),
+        );
+
+        let StepResult::OuterDone(result) = terminal else {
+            panic!("expected OuterDone, got {terminal:?}");
+        };
+        let provenance = &result.position_tune;
+        assert_eq!(result.position_p, 176);
+        assert_eq!(provenance.last_rung_p, 248);
+        assert_eq!(provenance.velocity_ceiling_reached, 1);
+        assert_eq!(provenance.peak_velocity_mrev_s, 17_500);
+        assert_eq!(provenance.motion_speed_mrev_s, 12_500);
+        assert_eq!(provenance.homing_speed_mrev_s, 4_375);
+        assert_eq!(provenance.rungs_measured, 1);
+        assert_eq!(provenance.motion_cruise_mean_abs_units, 10_000);
+        assert_eq!(envelope_mrev_s_of(provenance), 18_750);
+        assert_eq!(ceiling_mrev_s_of(provenance), 15_000);
+    }
+
+    #[fixture_test]
+    fn a_later_qualifying_rung_replaces_the_candidate() {
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+        let second_raw = next_rung(PidPGain::new(start_raw).unwrap()).unwrap().raw();
+        let third_raw = next_rung(PidPGain::new(second_raw).unwrap()).unwrap().raw();
+
+        let terminal = drive_with_safety(
+            &mut phase,
+            &mut backend,
+            move |state, _idx| {
+                let PositionTuneStep::Stroke { rung, kind, .. } = state.step else {
+                    return 0;
+                };
+                match (rung.raw() == third_raw, kind) {
+                    (false, StrokeKind::Motion) => 10_000,
+                    (false, StrokeKind::Homing) | (true, _) => 50,
+                }
+            },
+            move |state, safety| {
+                in_motion_stroke_of(state, third_raw).then(|| between_ceiling_and_cap(safety))
+            },
+        );
+
+        let StepResult::OuterDone(result) = terminal else {
+            panic!("expected OuterDone, got {terminal:?}");
+        };
+        assert_eq!(result.position_p, second_raw);
+        assert_eq!(result.position_tune.last_rung_p, third_raw);
+        assert_eq!(result.position_tune.velocity_ceiling_reached, 1);
+    }
+
+    #[fixture_test]
+    fn the_rung_peak_keeps_the_first_primitives_window() {
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+        let first_homing_speed = core::cell::Cell::new(None);
+        let burst_ticks_left = core::cell::Cell::new(20_u32);
+
+        let terminal = drive_with_safety(
+            &mut phase,
+            &mut backend,
+            |_state, _idx| 50,
+            |state, safety| match state.step {
+                PositionTuneStep::Stroke {
+                    rung,
+                    kind: StrokeKind::Homing,
+                    repeat: 0,
+                } if rung.raw() == start_raw
+                    && state.capture_running
+                    && burst_ticks_left.get() > 0 =>
+                {
+                    burst_ticks_left.set(burst_ticks_left.get() - 1);
+                    let d = (between_ceiling_and_cap(safety) / 2).max(1);
+                    first_homing_speed.set(Some(d));
+                    Some(d)
+                }
+                _ => None,
+            },
+        );
+
+        let StepResult::OuterDone(result) = terminal else {
+            panic!("expected OuterDone, got {terminal:?}");
+        };
+        let d = first_homing_speed
+            .get()
+            .expect("the first homing stroke moved");
+        assert_eq!(result.position_p, start_raw);
+        assert_eq!(result.position_tune.velocity_ceiling_reached, 0);
+        assert_eq!(
+            u64::from(result.position_tune.peak_velocity_mrev_s),
+            u64::from(d) * 1_000_000 / 4_000
+        );
+    }
+
+    fn safety_fault_tune_step_while(
+        moving: impl Fn(&PositionTuneState, u16) -> bool,
+        restore_completes: bool,
+    ) -> u8 {
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+
+        let terminal = drive_with_safety_and_restore(
+            &mut phase,
+            &mut backend,
+            |_state, _idx| 50,
+            |state, safety| moving(state, start_raw).then(|| over_the_cap(safety)),
+            restore_completes,
+        );
+
+        assert!(
+            matches!(
+                terminal,
+                StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
+            ),
+            "expected a safety fault, got {terminal:?}"
+        );
+        let OuterPhase::FailedWithSafety { position_tune, .. } = &phase else {
+            panic!("expected FailedWithSafety, got {phase:?}");
+        };
+        assert_eq!(position_tune.last_rung_p, start_raw);
+        assert_eq!(position_tune.velocity_ceiling_reached, 0);
+        position_tune.tune_step
+    }
+
+    #[fixture_test]
+    fn a_safety_fault_in_a_motion_stroke_reports_the_motion_sub_state() {
+        let tune_step = safety_fault_tune_step_while(in_motion_stroke_of, true);
+        assert_eq!(tune_step, 2);
+    }
+
+    #[fixture_test]
+    fn a_safety_fault_in_a_restore_wait_reports_the_restore_sub_state() {
+        let tune_step = safety_fault_tune_step_while(
+            |state, start_raw| {
+                matches!(
+                    state.step,
+                    PositionTuneStep::AwaitRestore { rung, .. } if rung.raw() == start_raw
+                )
+            },
+            false,
+        );
+        assert_eq!(tune_step, 3);
+    }
+
+    #[fixture_test]
+    fn a_safety_fault_in_a_standstill_hold_reports_the_hold_sub_state() {
+        let tune_step = safety_fault_tune_step_while(
+            |state, start_raw| {
+                matches!(
+                    state.step,
+                    PositionTuneStep::StandstillHold { rung, .. }
+                        if rung.raw() == start_raw && state.capture_running
+                )
+            },
+            true,
+        );
+        assert_eq!(tune_step, 4);
     }
 }
