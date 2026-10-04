@@ -104,6 +104,8 @@ pub trait ResistanceBackend {
 ///   limit cannot cover the profile's full sweep authority.
 /// - [`ResistanceError::InvalidMotorType`] when `MOTOR_TYPE` is not the
 ///   two-phase stepper type.
+/// - [`ResistanceError::BusVoltageOutOfRange`] when the bus reading is at or below the
+///   captured offset or outside 18 to 60 V.
 /// - [`ResistanceError::UnsupportedProfile`] when the fixed profile would exceed
 ///   the per-window or total energized-exposure budget.
 /// - [`ResistanceError::WrongPowerStage`] when the power-stage readback does not
@@ -116,8 +118,8 @@ pub trait ResistanceBackend {
 /// All errors except the entry pre-checks and pre-energize validations
 /// ([`ResistanceError::NotAdcReady`], [`ResistanceError::NotArmed`],
 /// [`ResistanceError::OutOfBoundsParameter`], [`ResistanceError::InvalidMotorType`],
-/// and [`ResistanceError::UnsupportedProfile`]) restore safe TMC4671 state
-/// before returning.
+/// [`ResistanceError::BusVoltageOutOfRange`], and [`ResistanceError::UnsupportedProfile`])
+/// restore safe TMC4671 state before returning.
 pub async fn run_resistance_identification<B: ResistanceBackend>(
     backend: &mut B,
     mode: ResistanceRunMode,

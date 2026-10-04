@@ -14,7 +14,7 @@ use crate::commissioning::capture_timing::CaptureTiming;
 
 const SAMPLES_PER_WINDOW: u8 = 8;
 const MAX_OPPORTUNITIES_PER_WINDOW: u8 = 9;
-const PHASE_DEADLINE_US: u64 = 20_000_000;
+pub(super) const PHASE_DEADLINE_US: u64 = 20_000_000;
 const PREDICTED_CURRENT_STOP_PERMILLE: u64 = 950;
 
 /// Result of one bounded resistance-runner poll.
@@ -177,6 +177,7 @@ impl AxisProgress {
 enum ResistanceState {
     ReadSavedLimit,
     ReadMotorType,
+    ReadBusVoltage(u8),
     Setup(u8),
     SelectAxis(u8),
     Window(WindowCapture),
@@ -197,6 +198,8 @@ pub struct ResistanceRunner {
     state: ResistanceState,
     deadline_us: u64,
     saved_voltage_limit: u32,
+    saved_adc_raw_addr: u32,
+    adc_vm_raw: Option<u16>,
     energized: bool,
     primary_error: Option<ResistanceError>,
     baseline_status_flags: u32,
@@ -232,6 +235,8 @@ impl ResistanceRunner {
             state: ResistanceState::ReadSavedLimit,
             deadline_us,
             saved_voltage_limit: 0,
+            saved_adc_raw_addr: 0,
+            adc_vm_raw: None,
             energized: false,
             primary_error: None,
             baseline_status_flags: 0,
@@ -312,6 +317,9 @@ impl ResistanceRunner {
         match self.state {
             ResistanceState::ReadSavedLimit => self.read_saved_limit(backend).await,
             ResistanceState::ReadMotorType => self.read_motor_type(backend).await,
+            ResistanceState::ReadBusVoltage(operation) => {
+                self.read_bus_voltage(backend, operation).await
+            }
             ResistanceState::Setup(operation) => self.poll_setup(backend, operation).await,
             ResistanceState::SelectAxis(operation) => self.select_axis(backend, operation).await,
             ResistanceState::Window(capture) => self.poll_window(backend, capture, now_us).await,
@@ -331,14 +339,14 @@ impl ResistanceRunner {
     }
 }
 
-fn exposure_is_supported(profile: &ResistanceProfile) -> bool {
+pub(super) fn exposure_is_supported(profile: &ResistanceProfile) -> bool {
     let largest =
         u64::from(profile.max_abs_ud().unsigned_abs()).pow(2) * u64::from(profile.settle_ms);
     profile.exposure_per_axis() <= profile.max_total_exposure
         && largest <= profile.max_window_exposure
 }
 
-fn nominal_duration_us(profile: &ResistanceProfile) -> Option<u64> {
+pub(super) fn nominal_duration_us(profile: &ResistanceProfile) -> Option<u64> {
     let point_pairs = u64::try_from(profile.ud_points.len()).ok()?;
     let windows_per_axis = 1 + point_pairs * 2 + 4;
     let settle_ms = u64::from(profile.zero_settle_ms)

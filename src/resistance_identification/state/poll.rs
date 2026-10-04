@@ -1,17 +1,21 @@
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION,
-    MOTOR_TYPE_N_POLE_PAIRS, MotorType, MotorTypeNPolePairs, PHI_E_EXT, PHI_E_SELECTION,
-    PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
+    ABN_DECODER_COUNT, ADC_AGPI_A_RAW_ADC_VM_RAW, ADC_IWY_IUX, ADC_RAW_ADDR, ADC_RAW_DATA,
+    DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS, MotorType,
+    MotorTypeNPolePairs, PHI_E_EXT, PHI_E_SELECTION, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L,
+    PWM_MAXCNT, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
 };
 
 use super::{
-    MAX_OPPORTUNITIES_PER_WINDOW, ResistancePoll, ResistanceRunner, ResistanceState,
-    SAMPLES_PER_WINDOW, WindowCapture, WindowPlan, WindowPurpose,
-    acquisition_opportunities_through, pack_ud, phase_current_for_axis, wrapped_encoder_delta,
-    write,
+    MAX_OPPORTUNITIES_PER_WINDOW, PHASE_DEADLINE_US, ResistancePoll, ResistanceRunner,
+    ResistanceState, SAMPLES_PER_WINDOW, WindowCapture, WindowPlan, WindowPurpose,
+    acquisition_opportunities_through, exposure_is_supported, nominal_duration_us, pack_ud,
+    phase_current_for_axis, wrapped_encoder_delta, write,
 };
 use crate::autotune::current_loop_actionable_status_mask;
 use crate::commissioning::capture_timing::{CaptureTiming, TimingEnvelope, sample_slot};
+use crate::resistance_identification::bus_voltage::{
+    BusVoltageSense, bus_millivolts, bus_millivolts_in_range, scale_profile_to_bus,
+};
 use crate::resistance_identification::runner::{ResistanceBackend, ResistanceRunMode};
 use crate::resistance_identification::types::{ResistanceError, ResistanceWarningFlags};
 use crate::tmc_register_values::{MOTION_STOPPED, MOTION_UQ_UD_EXT};
@@ -50,12 +54,96 @@ impl ResistanceRunner {
     ) -> ResistancePoll {
         match backend.read_register(MOTOR_TYPE_N_POLE_PAIRS.addr()).await {
             Ok(raw) if MotorTypeNPolePairs::from(raw).motor_type() == Ok(MotorType::TwoPhase) => {
-                self.state = ResistanceState::Setup(0);
+                self.state = ResistanceState::ReadBusVoltage(0);
                 ResistancePoll::ReadyNow
             }
             Ok(_) => self.complete_without_restore(ResistanceError::InvalidMotorType),
             Err(_) => self.complete_without_restore(ResistanceError::BackendIo),
         }
+    }
+
+    pub(super) async fn read_bus_voltage<B: ResistanceBackend>(
+        &mut self,
+        backend: &mut B,
+        operation: u8,
+    ) -> ResistancePoll {
+        let Some(sense) = backend.bus_voltage_sense() else {
+            self.warning_flags
+                .insert(ResistanceWarningFlags::BUS_VOLTAGE_UNSCALED);
+            defmt::warn!("resistance sweep: no bus-voltage sense, ladder runs unscaled");
+            self.state = ResistanceState::Setup(0);
+            return ResistancePoll::ReadyNow;
+        };
+        let vm_selector = u32::from(ADC_AGPI_A_RAW_ADC_VM_RAW.sub_addr);
+        match operation {
+            0 => match backend.read_register(ADC_RAW_ADDR.addr()).await {
+                Ok(saved) => self.saved_adc_raw_addr = saved,
+                Err(_) => return self.complete_without_restore(ResistanceError::BackendIo),
+            },
+            1 => {
+                if write(backend, ADC_RAW_ADDR.addr(), vm_selector)
+                    .await
+                    .is_err()
+                {
+                    self.state = ResistanceState::ReadBusVoltage(3);
+                    return ResistancePoll::ReadyNow;
+                }
+            }
+            2 => {
+                self.adc_vm_raw = backend
+                    .read_register(ADC_RAW_DATA.addr())
+                    .await
+                    .ok()
+                    .map(|raw| (raw & 0xffff) as u16);
+            }
+            _ => {
+                let restored = write(backend, ADC_RAW_ADDR.addr(), self.saved_adc_raw_addr).await;
+                return match (self.adc_vm_raw, restored) {
+                    (Some(raw), Ok(())) => self.apply_bus_voltage(sense, raw),
+                    _ => self.complete_without_restore(ResistanceError::BackendIo),
+                };
+            }
+        }
+        self.state = ResistanceState::ReadBusVoltage(operation + 1);
+        ResistancePoll::ReadyNow
+    }
+
+    fn apply_bus_voltage(&mut self, sense: BusVoltageSense, raw: u16) -> ResistancePoll {
+        let Some(v_bus_mv) = bus_millivolts(raw, sense) else {
+            defmt::error!(
+                "resistance sweep: ADC_VM raw {} at or below offset {}",
+                raw,
+                sense.offset_raw
+            );
+            return self.complete_without_restore(ResistanceError::BusVoltageOutOfRange);
+        };
+        if !bus_millivolts_in_range(v_bus_mv) {
+            defmt::error!(
+                "resistance sweep: bus {} mV outside the supported range",
+                v_bus_mv
+            );
+            return self.complete_without_restore(ResistanceError::BusVoltageOutOfRange);
+        }
+        let scaled = scale_profile_to_bus(&self.profile, v_bus_mv);
+        if !exposure_is_supported(&scaled) {
+            return self.complete_without_restore(ResistanceError::UnsupportedProfile);
+        }
+        if nominal_duration_us(&scaled).is_none_or(|duration| duration > PHASE_DEADLINE_US) {
+            return self.complete_without_restore(ResistanceError::PhaseDeadlineExceeded);
+        }
+        let max_abs_ud = u32::from(scaled.max_abs_ud().unsigned_abs());
+        if self.mode == ResistanceRunMode::ExternallyArmed && self.saved_voltage_limit < max_abs_ud
+        {
+            return self.complete_without_restore(ResistanceError::OutOfBoundsParameter);
+        }
+        defmt::info!(
+            "resistance sweep: bus {} mV, ladder top {} counts",
+            v_bus_mv,
+            max_abs_ud
+        );
+        self.profile = scaled;
+        self.state = ResistanceState::Setup(0);
+        ResistancePoll::ReadyNow
     }
 
     pub(super) async fn poll_setup<B: ResistanceBackend>(

@@ -157,6 +157,12 @@ impl FakeResistanceBackend {
         self.scripted_status_read_index = 0;
     }
 
+    fn script_bus_millivolts(&mut self, millivolts: u32) {
+        let sense = self.bus_voltage_sense.expect("sense configured");
+        let delta = u64::from(millivolts) * u64::from(sense.counts_per_volt_milli) / 1_000_000;
+        self.scripted_adc_vm_raw = sense.offset_raw + delta as u16;
+    }
+
     fn fail_next_write(&mut self) {
         self.fail_after_writes = Some(self.write_count);
     }
@@ -1903,4 +1909,255 @@ fn restore_failure_replaces_existing_primary_error_and_remains_terminal() {
         poll_runner(&mut runner, &mut backend, due),
         ResistancePoll::Complete(Err(ResistanceError::BackendIo))
     );
+}
+
+fn first_mode_write_index(writes: &[RecordedWrite]) -> usize {
+    writes
+        .iter()
+        .position(|write| write.addr == MODE_RAMP_MODE_MOTION.addr())
+        .expect("setup never wrote MODE_RAMP_MODE_MOTION")
+}
+
+fn energized_ud_writes(writes: &[RecordedWrite]) -> heapless::Vec<i16, 32> {
+    writes
+        .iter()
+        .filter(|write| write.addr == UQ_UD_EXT.addr())
+        .map(|write| (write.value & 0xffff) as u16 as i16)
+        .filter(|ud| *ud != 0)
+        .collect()
+}
+
+fn adc_raw_addr_writes(writes: &[RecordedWrite]) -> heapless::Vec<u32, 8> {
+    writes
+        .iter()
+        .filter(|write| write.addr == ADC_RAW_ADDR.addr())
+        .map(|write| write.value)
+        .collect()
+}
+
+#[test]
+fn bus_voltage_read_restores_adc_raw_addr_before_setup() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.adc_raw_addr = 7;
+
+    let result = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ));
+
+    assert!(result.result().is_ok(), "{result:?}");
+    let select = backend
+        .writes
+        .iter()
+        .position(|w| w.addr == ADC_RAW_ADDR.addr() && w.value == 1)
+        .expect("ADC_RAW_ADDR never selected the VM sub-register");
+    let restore = backend
+        .writes
+        .iter()
+        .position(|w| w.addr == ADC_RAW_ADDR.addr() && w.value == 7)
+        .expect("ADC_RAW_ADDR never restored");
+    let setup = first_mode_write_index(&backend.writes);
+    assert!(
+        select < restore && restore < setup,
+        "{select} {restore} {setup}"
+    );
+    assert_eq!(energized_ud_writes(&backend.writes)[0], 512);
+}
+
+#[test]
+fn failed_bus_voltage_read_still_restores_adc_raw_addr() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.adc_raw_addr = 7;
+    backend.fail_reads_at = Some(ADC_RAW_DATA.addr());
+
+    let result = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ));
+
+    assert_eq!(result.result(), Err(ResistanceError::BackendIo));
+    assert_eq!(adc_raw_addr_writes(&backend.writes).as_slice(), &[1, 7]);
+    assert!(
+        !backend
+            .writes
+            .iter()
+            .any(|w| w.addr == MODE_RAMP_MODE_MOTION.addr())
+    );
+    assert!(backend.enable_transitions.is_empty());
+}
+
+#[test]
+fn failed_selector_write_still_attempts_the_adc_raw_addr_restore() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.adc_raw_addr = 7;
+    backend.fail_write_once_at = Some(ADC_RAW_ADDR.addr());
+    backend.start_event_recording();
+
+    let result = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ));
+
+    assert_eq!(result.result(), Err(ResistanceError::BackendIo));
+    assert_eq!(adc_raw_addr_writes(&backend.writes).as_slice(), &[1, 7]);
+    assert!(
+        !backend
+            .writes
+            .iter()
+            .any(|w| w.addr == MODE_RAMP_MODE_MOTION.addr() || w.addr == ADC_RAW_DATA.addr())
+    );
+    assert!(
+        !backend
+            .events
+            .iter()
+            .any(|e| matches!(e, BackendEvent::Read(addr) if *addr == ADC_RAW_DATA.addr())),
+        "the data read must be skipped after a failed selector write"
+    );
+    assert!(backend.enable_transitions.is_empty());
+}
+
+#[test]
+fn ladder_scales_to_the_measured_bus_voltage() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.script_bus_millivolts(24_000);
+    backend.scripted_current_per_ud_milli = 500;
+
+    let result = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ));
+
+    assert!(result.result().is_ok(), "{result:?}");
+    let uds = energized_ud_writes(&backend.writes);
+    assert_eq!(uds[0], 1024, "first energized point must be the scaled 512");
+    assert!(
+        uds.contains(&1920),
+        "repeated anchor must be the scaled 960: {uds:?}"
+    );
+    assert!(
+        uds.contains(&-1920),
+        "negative anchor must be the scaled -960: {uds:?}"
+    );
+    assert!(
+        !result
+            .result()
+            .unwrap()
+            .warning_flags
+            .contains(ResistanceWarningFlags::BUS_VOLTAGE_UNSCALED)
+    );
+    let limit_write = backend
+        .writes
+        .iter()
+        .find(|w| w.addr == PIDOUT_UQ_UD_LIMITS.addr())
+        .expect("setup writes the voltage limit");
+    assert_eq!(
+        limit_write.value, 3200,
+        "setup limit must be the scaled max_abs_ud"
+    );
+}
+
+#[test]
+fn out_of_range_bus_reading_fails_before_any_setup_write() {
+    for raw in [33_000u16, 33_000 + 18_852] {
+        let mut backend = FakeResistanceBackend::standard();
+        backend.scripted_adc_vm_raw = raw;
+
+        let result = block_on(run_resistance_identification(
+            &mut backend,
+            ResistanceRunMode::CommissioningManagedEnable,
+        ));
+
+        assert_eq!(
+            result.result(),
+            Err(ResistanceError::BusVoltageOutOfRange),
+            "raw {raw}"
+        );
+        assert!(
+            !backend
+                .writes
+                .iter()
+                .any(|w| w.addr == MODE_RAMP_MODE_MOTION.addr()),
+            "raw {raw}: setup must not start"
+        );
+        assert_eq!(
+            adc_raw_addr_writes(&backend.writes).as_slice(),
+            &[1, 0],
+            "raw {raw}"
+        );
+        assert!(backend.enable_transitions.is_empty(), "raw {raw}");
+    }
+}
+
+#[test]
+fn missing_bus_sense_runs_unscaled_without_touching_adc_raw_addr() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.bus_voltage_sense = None;
+
+    let result = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ));
+
+    let run = result.result().expect("unscaled sweep completes");
+    assert!(
+        run.warning_flags
+            .contains(ResistanceWarningFlags::BUS_VOLTAGE_UNSCALED)
+    );
+    assert!(adc_raw_addr_writes(&backend.writes).is_empty());
+    assert_eq!(energized_ud_writes(&backend.writes)[0], 512);
+}
+
+#[test]
+fn externally_armed_rechecks_voltage_authority_against_the_scaled_ladder() {
+    let mut refused = FakeResistanceBackend::standard();
+    refused.saved_voltage_limit = 1_600;
+    refused.script_bus_millivolts(24_000);
+
+    let result = block_on(run_resistance_identification(
+        &mut refused,
+        ResistanceRunMode::ExternallyArmed,
+    ));
+
+    assert_eq!(result.result(), Err(ResistanceError::OutOfBoundsParameter));
+    assert!(
+        !refused
+            .writes
+            .iter()
+            .any(|w| w.addr == MODE_RAMP_MODE_MOTION.addr() || w.addr == PIDOUT_UQ_UD_LIMITS.addr())
+    );
+    assert!(refused.enable_transitions.is_empty());
+
+    let mut allowed = FakeResistanceBackend::standard();
+    allowed.saved_voltage_limit = 1_600;
+
+    let result = block_on(run_resistance_identification(
+        &mut allowed,
+        ResistanceRunMode::ExternallyArmed,
+    ));
+
+    assert!(
+        result.result().is_ok(),
+        "48 V with a 1,600 authority must still run: {result:?}"
+    );
+}
+
+#[test]
+fn scaled_ladder_that_breaks_the_exposure_budget_fails_before_energizing() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.profile.max_window_exposure = 1_600u64 * 1_600 * 500;
+    backend.script_bus_millivolts(24_000);
+
+    let result = block_on(run_resistance_identification(
+        &mut backend,
+        ResistanceRunMode::CommissioningManagedEnable,
+    ));
+
+    assert_eq!(result.result(), Err(ResistanceError::UnsupportedProfile));
+    assert!(
+        !backend
+            .writes
+            .iter()
+            .any(|w| w.addr == MODE_RAMP_MODE_MOTION.addr())
+    );
+    assert!(backend.enable_transitions.is_empty());
 }
