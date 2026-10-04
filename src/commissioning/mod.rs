@@ -1610,8 +1610,8 @@ mod tests {
             "the gain-floor capture buffer must stay inside the existing variant slack"
         );
         assert_eq!(size_of::<crate::commissioning::types::OuterResult>(), 88);
-        assert_eq!(size_of::<CommissioningEngine>(), 5_760);
-        assert!(size_of::<CommissioningEngine>() <= 5_776);
+        assert_eq!(size_of::<CommissioningEngine>(), 5_792);
+        assert!(size_of::<CommissioningEngine>() <= 5_808);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);

@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn outer_phase_size_stays_within_reasonable_stack_budget() {
         assert!(
-            size_of::<OuterPhase>() <= 4288,
+            size_of::<OuterPhase>() <= 4304,
             "OuterPhase grew to {} bytes",
             size_of::<OuterPhase>()
         );
