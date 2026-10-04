@@ -21,8 +21,6 @@ use super::velocity_clamp::VelocityLimitEvidenceCapability;
 
 /// Evidence schema stored in the RAM-only Integral candidate slot.
 pub const INTEGRAL_EVIDENCE_SCHEMA_REVISION: u16 = 17;
-/// Legacy Integral plan schema revision.
-pub const INTEGRAL_PLAN_SCHEMA_REVISION: u16 = 13;
 /// Integral schema for the breakaway-seeded campaign; binds the accepted
 /// [`super::band_confirmation::BandConfirmationPlan`] digest instead of a Proportional sweep digest.
 pub const BREAKAWAY_INTEGRAL_SCHEMA_REVISION: u16 = 18;

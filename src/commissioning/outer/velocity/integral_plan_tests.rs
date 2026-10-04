@@ -12,9 +12,9 @@ use super::integral_plan::{
     AcquisitionContext, BREAKAWAY_INTEGRAL_SCHEMA_REVISION, BreakawayAuthorityBindingError,
     BreakawayIntegralEvidence, ConfirmedAcquisitionDigest, INTEGRAL_EVIDENCE_SCHEMA_REVISION,
     INTEGRAL_MAX_POSITIVE_RUNGS, INTEGRAL_MIN_POSITIVE_I, INTEGRAL_OBSERVATIONS_PER_RUNG,
-    INTEGRAL_PLAN_SCHEMA_REVISION, IntegralAcquisitionAuthority, IntegralPlanPhysics,
-    IntegralSlotOrder, IntegralTargetStatus, RateInterval, VelocityIntegralPlan,
-    VelocityIntegralPlanError, bind_breakaway_integral_authority, breakaway_confirmation_slots_us,
+    IntegralAcquisitionAuthority, IntegralPlanPhysics, IntegralSlotOrder, IntegralTargetStatus,
+    RateInterval, VelocityIntegralPlan, VelocityIntegralPlanError,
+    bind_breakaway_integral_authority, breakaway_confirmation_slots_us,
     breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
     breakaway_workflow_envelope_us, build_integral_ladder, build_ladder_with_cap,
     confidence_family_size, integral_deficit_reaches_target, integral_gain_at,
@@ -1453,17 +1453,12 @@ fn signed_deficit_target_uses_the_conservative_directional_endpoints() {
 #[test]
 fn integral_ladder_appends_the_exact_cap_without_changing_history() {
     assert_eq!(PROPORTIONAL_PLAN_SCHEMA_REVISION, 14);
-    assert_eq!(INTEGRAL_PLAN_SCHEMA_REVISION, 13);
     assert_eq!(INTEGRAL_EVIDENCE_SCHEMA_REVISION, 17);
     assert_eq!(BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION, 17);
     assert_eq!(BREAKAWAY_INTEGRAL_SCHEMA_REVISION, 18);
     assert_ne!(
         BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION,
         PROPORTIONAL_PLAN_SCHEMA_REVISION
-    );
-    assert_ne!(
-        BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
-        INTEGRAL_PLAN_SCHEMA_REVISION
     );
 
     let historical = build_integral_ladder(
