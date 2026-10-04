@@ -66,7 +66,7 @@ fn live_recovery_geometry_extends_both_workflow_durations() {
 }
 
 #[test]
-fn combined_plan_uses_operational_current_authority_and_new_schemas() {
+fn proportional_plan_uses_operational_current_authority_and_new_schemas() {
     let historical = plan_velocity_sweep(
         live_recovery_request(),
         4_000,

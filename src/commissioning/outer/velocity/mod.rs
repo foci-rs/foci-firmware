@@ -8,9 +8,6 @@ pub(crate) mod breakaway_reporting;
 pub mod breakaway_search;
 #[cfg(feature = "trace")]
 pub(crate) mod breakaway_trace_reporting;
-pub mod combined_plan;
-#[cfg(test)]
-mod combined_plan_tests;
 pub mod integral_evidence;
 #[cfg(test)]
 mod integral_evidence_tests;

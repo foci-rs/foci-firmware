@@ -12,8 +12,8 @@ use crate::commissioning::types::{
 };
 
 use super::super::state::PositiveIRestBoundary;
-use super::combined_plan::CombinedTargetStatus;
 use super::integral_evidence::{IntegralObservationClass, IntegralRungClass, IntegralRungKind};
+use super::integral_plan::IntegralTargetStatus;
 use super::integral_plan::{VelocityIntegralExecutionPlan, VelocityIntegralPlan};
 use super::reproduction::BUILD_IDENTITY;
 
@@ -48,7 +48,7 @@ pub(crate) const fn terminal_target_terminus(report: &VelocityIntegralTerminal) 
 
 pub(crate) fn terminal_target_status(
     report: &VelocityIntegralTerminal,
-) -> Option<CombinedTargetStatus> {
+) -> Option<IntegralTargetStatus> {
     if !terminal_carries_target(report) {
         None
     } else if terminal_target_terminus(report).is_some() {
@@ -59,19 +59,19 @@ pub(crate) fn terminal_target_status(
                 .iter()
                 .all(|mask| mask.count_ones() >= 3)
             {
-                CombinedTargetStatus::TargetReached
+                IntegralTargetStatus::TargetReached
             } else {
-                CombinedTargetStatus::TargetReachedSparse
+                IntegralTargetStatus::TargetReachedSparse
             },
         )
     } else if report.evidence.current_terminus.is_some() {
-        Some(CombinedTargetStatus::CurrentHeadroom)
+        Some(IntegralTargetStatus::CurrentHeadroom)
     } else if report.rest_boundary_slot_plus_one != 0
         || report.emitted_rungs < report.expected_rungs
     {
         None
     } else {
-        Some(CombinedTargetStatus::TargetNotReachedAtCap)
+        Some(IntegralTargetStatus::TargetNotReachedAtCap)
     }
 }
 
@@ -1607,7 +1607,7 @@ mod tests {
 
         assert_eq!(
             terminal_target_status(&terminal),
-            Some(CombinedTargetStatus::TargetReached)
+            Some(IntegralTargetStatus::TargetReached)
         );
         assert_eq!(terminal_target_terminus(&terminal), Some(2));
     }

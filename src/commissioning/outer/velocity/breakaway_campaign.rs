@@ -54,7 +54,7 @@ use super::breakaway_search::{
     BreakawayMotionClass, BreakawaySearchError, ProbeStrokeRole, UpwardBreakawayCursor,
     UpwardProbeStep,
 };
-use super::combined_plan::integral_continuation_geometry;
+use super::integral_plan::integral_continuation_geometry;
 use super::integral_plan::{
     AcquisitionContext, BreakawayIntegralEvidence, IntegralPlanPhysics, VelocityIntegralPlan,
     bind_breakaway_integral_authority, breakaway_workflow_envelope_ms, max_transition_capable_p,

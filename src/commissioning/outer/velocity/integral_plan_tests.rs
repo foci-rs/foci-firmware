@@ -4,20 +4,22 @@ use super::band_confirmation::{
     plan_band_confirmation, validate_fixed_contract,
 };
 use super::breakaway_plan::{
-    AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbeContext, GridFloorOrigin,
-    PROBE_MAX_OBSERVATIONS, UpwardBreakawayProbePlan, plan_additive_discovery_ladder,
-    plan_upward_breakaway_probe, resolve_grid_floor,
+    AdditiveDiscoveryRequest, AdditiveLadderPlanError, BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION,
+    BreakawayProbeContext, GridFloorOrigin, PROBE_MAX_OBSERVATIONS, UpwardBreakawayProbePlan,
+    plan_additive_discovery_ladder, plan_upward_breakaway_probe, resolve_grid_floor,
 };
 use super::integral_plan::{
     AcquisitionContext, BREAKAWAY_INTEGRAL_SCHEMA_REVISION, BreakawayAuthorityBindingError,
     BreakawayIntegralEvidence, ConfirmedAcquisitionDigest, INTEGRAL_EVIDENCE_SCHEMA_REVISION,
     INTEGRAL_MAX_POSITIVE_RUNGS, INTEGRAL_MIN_POSITIVE_I, INTEGRAL_OBSERVATIONS_PER_RUNG,
-    IntegralAcquisitionAuthority, IntegralPlanPhysics, IntegralSlotOrder, VelocityIntegralPlan,
+    INTEGRAL_PLAN_SCHEMA_REVISION, IntegralAcquisitionAuthority, IntegralPlanPhysics,
+    IntegralSlotOrder, IntegralTargetStatus, RateInterval, VelocityIntegralPlan,
     VelocityIntegralPlanError, bind_breakaway_integral_authority, breakaway_confirmation_slots_us,
     breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
-    breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
-    integral_gain_at, integral_top_gap_candidate, max_transition_capable_p, native_rung_count,
-    native_velocity_i_at, plan_breakaway_velocity_integral_response, recovery_quantization_exposed,
+    breakaway_workflow_envelope_us, build_integral_ladder, build_ladder_with_cap,
+    confidence_family_size, integral_deficit_reaches_target, integral_gain_at,
+    integral_top_gap_candidate, max_transition_capable_p, native_rung_count, native_velocity_i_at,
+    plan_breakaway_velocity_integral_response, recovery_quantization_exposed,
     transition_capable_integral_gain, velocity_i_tau_us,
 };
 use super::sweep_consensus::{
@@ -26,8 +28,8 @@ use super::sweep_consensus::{
 use super::sweep_evidence::VelocityObservationClass;
 use super::sweep_plan::{
     MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US,
-    RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US, VelocitySweepRequest, ZERO_SETTLE_US,
-    plan_velocity_sweep,
+    PROPORTIONAL_PLAN_SCHEMA_REVISION, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
+    VelocitySweepRequest, ZERO_SETTLE_US, plan_velocity_sweep,
 };
 use super::workflow_plan::{CommissioningWorkflowPlan, VelocityAutotuneWorkflowKind};
 use crate::autotune::velocity_measurement::VelocityDirection;
@@ -1431,4 +1433,70 @@ fn other_schema_revisions_still_ignore_i_top_cap_changes_in_their_digest() {
     let baseline = plan.digest();
     plan.i_top_cap = 12_345;
     assert_eq!(plan.digest(), baseline);
+}
+
+#[test]
+fn signed_deficit_target_uses_the_conservative_directional_endpoints() {
+    let below = [
+        RateInterval::new(300_000, 400_000).unwrap(),
+        RateInterval::new(-400_000, -300_000).unwrap(),
+    ];
+    assert!(!integral_deficit_reaches_target(264, 4_000, below).unwrap());
+
+    let reached = [
+        RateInterval::new(-100_000, 340_000).unwrap(),
+        RateInterval::new(-340_000, 100_000).unwrap(),
+    ];
+    assert!(integral_deficit_reaches_target(264, 4_000, reached).unwrap());
+}
+
+#[test]
+fn integral_ladder_appends_the_exact_cap_without_changing_history() {
+    assert_eq!(PROPORTIONAL_PLAN_SCHEMA_REVISION, 14);
+    assert_eq!(INTEGRAL_PLAN_SCHEMA_REVISION, 13);
+    assert_eq!(INTEGRAL_EVIDENCE_SCHEMA_REVISION, 17);
+    assert_eq!(BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION, 17);
+    assert_eq!(BREAKAWAY_INTEGRAL_SCHEMA_REVISION, 18);
+    assert_ne!(
+        BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION,
+        PROPORTIONAL_PLAN_SCHEMA_REVISION
+    );
+    assert_ne!(
+        BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
+        INTEGRAL_PLAN_SCHEMA_REVISION
+    );
+
+    let historical = build_integral_ladder(
+        25_000,
+        MOVING_STROKE_US,
+        MIN_SETTLE_CAPTURE_US,
+        OUTER_MAX_VELOCITY_I,
+    )
+    .unwrap();
+    assert_eq!(historical.rungs.last(), Some(&1_024));
+
+    let combined = build_ladder_with_cap(
+        25_000,
+        MOVING_STROKE_US,
+        MIN_SETTLE_CAPTURE_US,
+        OUTER_MAX_VELOCITY_I,
+    )
+    .unwrap();
+    assert_eq!(combined.i_top_cap, 1_310);
+    assert_eq!(
+        combined.rungs.as_slice(),
+        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 1_310]
+    );
+}
+
+#[test]
+fn integral_target_status_keeps_distinct_reportable_termini() {
+    assert_ne!(
+        IntegralTargetStatus::TargetReached,
+        IntegralTargetStatus::TargetReachedSparse
+    );
+    assert_ne!(
+        IntegralTargetStatus::CurrentHeadroom,
+        IntegralTargetStatus::TargetNotReachedAtCap
+    );
 }

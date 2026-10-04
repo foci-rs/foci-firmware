@@ -103,8 +103,8 @@ pub(crate) fn breakaway_acceptance_point(
     plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan,
     terminal: &VelocityIntegralTerminal,
 ) -> Result<AcceptanceInstall, ()> {
-    use crate::commissioning::outer::velocity::combined_plan::CombinedTargetStatus;
     use crate::commissioning::outer::velocity::integral_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION;
+    use crate::commissioning::outer::velocity::integral_plan::IntegralTargetStatus;
     use crate::commissioning::outer::velocity::integral_reporting::{
         terminal_target_status, terminal_target_terminus,
     };
@@ -121,7 +121,7 @@ pub(crate) fn breakaway_acceptance_point(
     let Some(positive_index) = terminal_target_terminus(terminal) else {
         return Ok(AcceptanceInstall::MissingTargetTerminus);
     };
-    if terminal_target_status(terminal) != Some(CombinedTargetStatus::TargetReached) {
+    if terminal_target_status(terminal) != Some(IntegralTargetStatus::TargetReached) {
         return Err(());
     }
     if terminal.plan_digest != plan.plan_digest || terminal.fixed_p != authority.fixed_p {

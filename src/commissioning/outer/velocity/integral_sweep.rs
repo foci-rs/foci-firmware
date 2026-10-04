@@ -29,7 +29,6 @@ use foci_tmc4671::registers::{
     PID_VELOCITY_OFFSET, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
-use super::combined_plan::{CombinedRateInterval, integral_deficit_reaches_target};
 use super::integral_evidence::{
     ExactRateInterval, IntegralEvidenceError, IntegralInconclusiveKind, IntegralRunSufficiency,
     IntegralRungClass, IntegralRungEvidence, IntegralRungKind, analyze_integral_direction,
@@ -39,6 +38,7 @@ use super::integral_plan::{
     INTEGRAL_MAX_POSITIVE_RUNGS, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US,
     VelocityIntegralExecutionPlan, integral_gain_at,
 };
+use super::integral_plan::{RateInterval, integral_deficit_reaches_target};
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis, RecoveryStage,
     RungOriginRecoveryConfig, RungOriginRecoveryOutcome, RungOriginRecoveryResources,
@@ -205,7 +205,7 @@ pub(super) fn record_integral_target_if_reached(
         return Ok(false);
     }
     let deficits = intervals.map(|interval| {
-        CombinedRateInterval::new(i64::from(interval.low_q), i64::from(interval.high_q))
+        RateInterval::new(i64::from(interval.low_q), i64::from(interval.high_q))
             .map_err(|_| CommissionError::MalformedInterval)
     });
     let deficits = [deficits[0]?, deficits[1]?];
