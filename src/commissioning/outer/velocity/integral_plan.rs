@@ -20,6 +20,12 @@ use super::velocity_clamp::VelocityLimitEvidenceCapability;
 
 /// Evidence schema stored in the RAM-only Integral candidate slot.
 pub const INTEGRAL_EVIDENCE_SCHEMA_REVISION: u16 = 17;
+/// Legacy Integral plan schema; both boards still advertise it to the host as the
+/// Integral evidence schema constant.
+pub const INTEGRAL_PLAN_SCHEMA_REVISION: u16 = 13;
+/// Live Integral schema for the breakaway-seeded campaign; binds the accepted
+/// [`super::band_confirmation::BandConfirmationPlan`] digest instead of a Proportional sweep digest.
+pub const BREAKAWAY_INTEGRAL_SCHEMA_REVISION: u16 = 18;
 /// Largest predeclared positive-I ladder accepted by the family-128 table.
 pub const INTEGRAL_MAX_POSITIVE_RUNGS: usize = 30;
 /// Minimum representable positive Q4.12 velocity-I gain.
@@ -247,8 +253,7 @@ impl VelocityIntegralPlan {
         }
         if matches!(
             self.schema_revision,
-            INTEGRAL_EVIDENCE_SCHEMA_REVISION
-                | super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION
+            INTEGRAL_EVIDENCE_SCHEMA_REVISION | BREAKAWAY_INTEGRAL_SCHEMA_REVISION
         ) {
             hash_value!(self.i_top_cap);
         }
@@ -897,7 +902,7 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
         IntegralPlanSource {
             authority,
             fixed_p,
-            schema_revision: super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
+            schema_revision: BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
             probe_constrained_test_point: false,
         },
         context,
@@ -950,7 +955,7 @@ pub(crate) fn plan_retained_breakaway_velocity_integral_response(
         IntegralPlanSource {
             authority,
             fixed_p,
-            schema_revision: super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
+            schema_revision: BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
             probe_constrained_test_point: false,
         },
         context,

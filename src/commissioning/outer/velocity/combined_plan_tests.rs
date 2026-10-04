@@ -1,11 +1,15 @@
+use super::breakaway_plan::BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION;
 use super::combined_plan::{
-    BREAKAWAY_INTEGRAL_SCHEMA_REVISION, BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION,
-    CombinedRateInterval, CombinedTargetStatus, INTEGRAL_PLAN_SCHEMA_REVISION,
-    PROPORTIONAL_PLAN_SCHEMA_REVISION, build_combined_integral_ladder,
+    CombinedRateInterval, CombinedTargetStatus, build_combined_integral_ladder,
     integral_deficit_reaches_target,
 };
-use super::integral_plan::{INTEGRAL_EVIDENCE_SCHEMA_REVISION, build_integral_ladder};
-use super::sweep_plan::{MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US};
+use super::integral_plan::{
+    BREAKAWAY_INTEGRAL_SCHEMA_REVISION, INTEGRAL_EVIDENCE_SCHEMA_REVISION,
+    INTEGRAL_PLAN_SCHEMA_REVISION, build_integral_ladder,
+};
+use super::sweep_plan::{
+    MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, PROPORTIONAL_PLAN_SCHEMA_REVISION,
+};
 use crate::commissioning::outer::OUTER_MAX_VELOCITY_I;
 
 #[test]

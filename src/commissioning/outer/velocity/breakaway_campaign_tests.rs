@@ -2730,7 +2730,7 @@ fn a_resolved_probe_breakaway_emits_its_plan_brackets_and_the_discovery_plan_in_
     );
     assert_eq!(
         planned.schema_revision,
-        crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION
+        crate::commissioning::outer::velocity::breakaway_plan::BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION
     );
     assert!(planned.rung_count > 0);
 }
@@ -2821,7 +2821,7 @@ fn an_accepted_confirmation_routes_through_the_token_chain_to_a_integral_plan() 
     assert_eq!(integral_plan.authority.acquisition.get(), plan.plan_digest);
     assert_eq!(
         integral_plan.schema_revision,
-        crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION
+        crate::commissioning::outer::velocity::integral_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION
     );
 }
 

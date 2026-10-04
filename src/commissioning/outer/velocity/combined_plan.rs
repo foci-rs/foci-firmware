@@ -8,18 +8,6 @@ use super::integral_plan::{
 };
 use super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, VelocitySweepPlan, ZERO_SETTLE_US};
 
-/// Live Proportional schema for the shared Proportional velocity sweep planner.
-pub const PROPORTIONAL_PLAN_SCHEMA_REVISION: u16 = 14;
-/// First Proportional schema with cap-safe target quantization.
-pub const FIRST_CAP_SAFE_PROPORTIONAL_SCHEMA_REVISION: u16 = 10;
-/// Live Integral schema for the shared Integral continuation planner.
-pub const INTEGRAL_PLAN_SCHEMA_REVISION: u16 = 13;
-/// Live Proportional schema for the breakaway-seeded campaign.
-pub const BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION: u16 = 17;
-/// Live Integral schema for the breakaway-seeded campaign; binds the accepted
-/// [`super::band_confirmation::BandConfirmationPlan`] digest instead of a Proportional sweep digest.
-pub const BREAKAWAY_INTEGRAL_SCHEMA_REVISION: u16 = 18;
-
 const I_RESPONSE_TARGET_PERCENT: i128 = 98;
 const PERCENT_SCALE: i128 = 100;
 const SECONDS_PER_MINUTE: i128 = 60;

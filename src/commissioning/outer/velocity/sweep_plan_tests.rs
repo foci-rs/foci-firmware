@@ -1,18 +1,17 @@
 use super::super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
-use super::super::combined_plan::{
-    INTEGRAL_PLAN_SCHEMA_REVISION, PROPORTIONAL_PLAN_SCHEMA_REVISION,
-};
+use super::super::integral_plan::INTEGRAL_PLAN_SCHEMA_REVISION;
 use super::{
     CEILING_BINDING_CURRENT_LIMIT, CEILING_BINDING_REPRESENTABILITY_CLAMP, CLAMP_ENVELOPE,
     CLAMP_TRAVEL, CURRENT_HEADROOM_DEN, CURRENT_HEADROOM_NUM, EFFECTIVE_CEILING_ENCODER,
     EFFECTIVE_CEILING_MACHINE, ENVELOPE_ABSOLUTE_MARGIN_MREV_S, ENVELOPE_PROPORTIONAL_DEN,
     ENVELOPE_PROPORTIONAL_NUM, MAX_SAFETY_OBSERVATION_GAP_US, MAX_SWEEP_RUNGS,
     MIN_SETTLE_CAPTURE_US, MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US,
-    OBSERVATIONS_PER_DIRECTION_PER_RUNG, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
-    SWEEP_SLOT_COUNT, StrokeGeometry, VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US,
-    build_gain_ladder, build_gain_ladder_generic, cap_safe_target_rpm, current_gain_span,
-    envelope_cap, gain_at, half_octave_candidate, plan_proportional_velocity_sweep,
-    plan_velocity_sweep, representability_ceilings, travel_cap,
+    OBSERVATIONS_PER_DIRECTION_PER_RUNG, PROPORTIONAL_PLAN_SCHEMA_REVISION,
+    RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US, SWEEP_SLOT_COUNT, StrokeGeometry,
+    VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US, build_gain_ladder,
+    build_gain_ladder_generic, cap_safe_target_rpm, current_gain_span, envelope_cap, gain_at,
+    half_octave_candidate, plan_proportional_velocity_sweep, plan_velocity_sweep,
+    representability_ceilings, travel_cap,
 };
 use crate::autotune::TmcMechanicalRpm;
 use foci_tmc4671::pid::{PidIGain, PidPGain};

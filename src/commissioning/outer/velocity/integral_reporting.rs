@@ -244,7 +244,7 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     if matches!(
         plan.schema_revision,
         super::integral_plan::INTEGRAL_EVIDENCE_SCHEMA_REVISION
-            | super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION
+            | super::integral_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION
     ) {
         core.push_u16(plan.i_top_cap);
     }

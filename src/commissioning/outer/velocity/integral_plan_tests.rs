@@ -8,13 +8,12 @@ use super::breakaway_plan::{
     PROBE_MAX_OBSERVATIONS, UpwardBreakawayProbePlan, plan_additive_discovery_ladder,
     plan_upward_breakaway_probe, resolve_grid_floor,
 };
-use super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION;
 use super::integral_plan::{
-    AcquisitionContext, BreakawayAuthorityBindingError, BreakawayIntegralEvidence,
-    ConfirmedAcquisitionDigest, INTEGRAL_EVIDENCE_SCHEMA_REVISION, INTEGRAL_MAX_POSITIVE_RUNGS,
-    INTEGRAL_MIN_POSITIVE_I, INTEGRAL_OBSERVATIONS_PER_RUNG, IntegralAcquisitionAuthority,
-    IntegralPlanPhysics, IntegralSlotOrder, VelocityIntegralPlan, VelocityIntegralPlanError,
-    bind_breakaway_integral_authority, breakaway_confirmation_slots_us,
+    AcquisitionContext, BREAKAWAY_INTEGRAL_SCHEMA_REVISION, BreakawayAuthorityBindingError,
+    BreakawayIntegralEvidence, ConfirmedAcquisitionDigest, INTEGRAL_EVIDENCE_SCHEMA_REVISION,
+    INTEGRAL_MAX_POSITIVE_RUNGS, INTEGRAL_MIN_POSITIVE_I, INTEGRAL_OBSERVATIONS_PER_RUNG,
+    IntegralAcquisitionAuthority, IntegralPlanPhysics, IntegralSlotOrder, VelocityIntegralPlan,
+    VelocityIntegralPlanError, bind_breakaway_integral_authority, breakaway_confirmation_slots_us,
     breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
     breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
     integral_gain_at, integral_top_gap_candidate, max_transition_capable_p, native_rung_count,

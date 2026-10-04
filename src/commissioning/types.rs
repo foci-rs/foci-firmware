@@ -630,7 +630,7 @@ pub struct AdditiveDiscoveryPlanned {
     /// Exact digest of the probe plan whose search located this ladder's breakaway.
     pub prior_plan_digest: u64,
     /// Breakaway-campaign schema/rule revision under which this ladder was resolved
-    /// (`combined_plan::BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION`).
+    /// (`breakaway_plan::BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION`).
     pub schema_revision: u16,
     /// Discovery confidence family: `rung_count * observations_per_direction`.
     pub family_size: u16,

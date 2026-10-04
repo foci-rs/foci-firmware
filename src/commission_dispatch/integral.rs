@@ -103,9 +103,8 @@ pub(crate) fn breakaway_acceptance_point(
     plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan,
     terminal: &VelocityIntegralTerminal,
 ) -> Result<AcceptanceInstall, ()> {
-    use crate::commissioning::outer::velocity::combined_plan::{
-        BREAKAWAY_INTEGRAL_SCHEMA_REVISION, CombinedTargetStatus,
-    };
+    use crate::commissioning::outer::velocity::combined_plan::CombinedTargetStatus;
+    use crate::commissioning::outer::velocity::integral_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION;
     use crate::commissioning::outer::velocity::integral_reporting::{
         terminal_target_status, terminal_target_terminus,
     };

@@ -10,7 +10,7 @@ use crate::commissioning::types::{
     BreakawayRawObservation, BreakawayRungZeroDiagnostic,
 };
 
-use super::combined_plan::BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION;
+use super::breakaway_plan::BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION;
 
 use super::band_confirmation::{
     BandConfirmationFailureCause, BandConfirmationPlan, CONFIRMATION_BAND_LOWER_PERCENT,

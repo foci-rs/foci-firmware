@@ -17,6 +17,10 @@ pub const ENVELOPE_PROPORTIONAL_DEN: u32 = 2;
 pub const ENVELOPE_ABSOLUTE_MARGIN_MREV_S: u32 = 2_000;
 /// Fixed duration of one moving observation.
 pub const MOVING_STROKE_US: u32 = 512_000;
+/// Live Proportional schema for the shared Proportional velocity sweep planner.
+pub const PROPORTIONAL_PLAN_SCHEMA_REVISION: u16 = 14;
+/// First Proportional schema with cap-safe target quantization.
+pub const FIRST_CAP_SAFE_PROPORTIONAL_SCHEMA_REVISION: u16 = 10;
 
 /// Where one moving stroke sits relative to the position it started from.
 ///
@@ -292,7 +296,7 @@ impl VelocitySweepPlan {
         hash_value!(self.nominal_workflow_ms);
         hash_value!(self.maximum_workflow_ms);
         hash_value!(self.recovery_origin_band_counts);
-        if self.schema_revision == super::combined_plan::PROPORTIONAL_PLAN_SCHEMA_REVISION {
+        if self.schema_revision == PROPORTIONAL_PLAN_SCHEMA_REVISION {
             hash_value!(STABILIZED_RECOVERY_SCHEDULE_CODE);
         }
         hash_value!(self.recovery_nominal_slot_us);
@@ -428,7 +432,7 @@ pub fn plan_proportional_velocity_sweep(
         encoder_counts_per_rev,
         torque_flux_limit,
         limit_evidence_capability,
-        super::combined_plan::PROPORTIONAL_PLAN_SCHEMA_REVISION,
+        PROPORTIONAL_PLAN_SCHEMA_REVISION,
         true,
     )
 }
@@ -492,8 +496,8 @@ fn plan_velocity_sweep_with_limit(
         clamp_flags |= CLAMP_EFFECTIVE_CEILING;
     }
 
-    let cap_safe_schemas = super::combined_plan::FIRST_CAP_SAFE_PROPORTIONAL_SCHEMA_REVISION
-        ..=super::combined_plan::PROPORTIONAL_PLAN_SCHEMA_REVISION;
+    let cap_safe_schemas =
+        FIRST_CAP_SAFE_PROPORTIONAL_SCHEMA_REVISION..=PROPORTIONAL_PLAN_SCHEMA_REVISION;
     let target_velocity_rpm = if cap_safe_schemas.contains(&schema_revision) {
         let raw = cap_safe_target_rpm(planned_velocity_mrev_s)?;
         let executed_mrev_numerator = u64::try_from(raw)
@@ -557,15 +561,14 @@ fn plan_velocity_sweep_with_limit(
         .checked_mul(u32::from(SWEEP_SLOT_COUNT))
         .and_then(|value| value.checked_mul(primitive_us))
         .ok_or(VelocityPlanError::Arithmetic)?;
-    let recovery_nominal_slot_us =
-        if schema_revision == super::combined_plan::PROPORTIONAL_PLAN_SCHEMA_REVISION {
-            recovery
-                .nominal_slot_us
-                .checked_add(RECOVERY_STABILIZATION_US)
-                .ok_or(VelocityPlanError::Arithmetic)?
-        } else {
-            recovery.nominal_slot_us
-        };
+    let recovery_nominal_slot_us = if schema_revision == PROPORTIONAL_PLAN_SCHEMA_REVISION {
+        recovery
+            .nominal_slot_us
+            .checked_add(RECOVERY_STABILIZATION_US)
+            .ok_or(VelocityPlanError::Arithmetic)?
+    } else {
+        recovery.nominal_slot_us
+    };
     let nominal_workflow_us = workflow_us
         .checked_add(
             u32::from(rung_count)

@@ -157,8 +157,8 @@ fn breakaway_terminal(
 
 #[test]
 fn breakaway_reproduced_complete_installs_token_carrying_point() {
-    use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION;
     use crate::commissioning::outer::velocity::integral_i_at;
+    use crate::commissioning::outer::velocity::integral_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION;
 
     let plan = breakaway_integral_plan();
     let authority = breakaway_authority_summary(&plan);
