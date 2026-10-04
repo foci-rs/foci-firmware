@@ -229,6 +229,7 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 ) {
                     return velocity_fault_terminal(phase, err, Some(fault));
                 }
+                super::position_tune::note_safety_fault(phase);
                 let position_tune = position_tune_provenance(phase);
                 return fail_outer_with_safety(phase, err, fault, position_tune);
             }
@@ -247,6 +248,7 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                     return velocity_fault_terminal(phase, error, None);
                 }
                 if is_position_tune {
+                    super::position_tune::note_safety_fault(phase);
                     let provenance = position_tune_provenance(phase);
                     return fail_outer_position_tune(phase, error, None, provenance);
                 }

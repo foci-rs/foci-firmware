@@ -72,8 +72,6 @@ pub(crate) enum PositionTuneStep {
     },
     /// The stimulus was stopped at the velocity ceiling; waiting for feedforward restoration
     /// before resolving the rung.
-    // Consumed by the ceiling stop in Task 4 of this branch.
-    #[allow(dead_code)]
     CeilingStop {
         rung: PidPGain,
         since_us: u64,
@@ -213,6 +211,49 @@ pub(crate) fn abort_stimulus<B: CommissioningBackend>(backend: &mut B) {
     backend.set_stimulus_feedforward(false);
 }
 
+/// Fold the open primitive's peak window velocity into the rung-wide peak.
+fn merge_primitive_peak(state: &mut PositionTuneState, safety: &OuterSafetyLimits) {
+    state.rung_peak_milli_counts_per_s = state
+        .rung_peak_milli_counts_per_s
+        .max(safety.primitive_peak_milli_counts_per_s());
+}
+
+/// Record the faulting primitive's peak and sub-state before the dispatcher snapshots the
+/// provenance for `FailedWithSafety`. Never sets the ceiling flag: the envelope, not the
+/// ceiling, ended this run.
+pub(crate) fn note_safety_fault(phase: &mut OuterPhase) {
+    if let OuterPhase::PositionTune { state, safety } = phase {
+        merge_primitive_peak(state, safety);
+        refresh_provenance(state);
+    }
+}
+
+/// Stop the stimulus at the velocity ceiling and park the phase until feedforward restores.
+fn begin_ceiling_stop<B: CommissioningBackend>(
+    state: &mut PositionTuneState,
+    safety: &mut OuterSafetyLimits,
+    backend: &mut B,
+    rung: PidPGain,
+) -> StepResult {
+    abort_stimulus(backend);
+    merge_primitive_peak(state, safety);
+    safety.end_primitive();
+    state.capture_running = false;
+    state.ceiling_reached = true;
+    state.step = PositionTuneStep::CeilingStop {
+        rung,
+        since_us: backend.elapsed_us(),
+    };
+    refresh_provenance(state);
+    defmt::warn!(
+        "position tune ceiling: p={} peak={}mrev/s candidate={}",
+        rung.raw(),
+        state.provenance.peak_velocity_mrev_s,
+        state.candidate.map(|m| m.position_p.raw()),
+    );
+    StepResult::ReadyNow
+}
+
 async fn fail_position_tune<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     backend: &mut B,
@@ -224,8 +265,12 @@ async fn fail_position_tune<B: CommissioningBackend>(
     let _ = backend
         .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
         .await;
-    let provenance = match &*phase {
-        OuterPhase::PositionTune { state, .. } => state.provenance,
+    let provenance = match phase {
+        OuterPhase::PositionTune { state, safety } => {
+            merge_primitive_peak(state, safety);
+            refresh_provenance(state);
+            state.provenance
+        }
         _ => PositionTuneProvenance::default(),
     };
     match fault {
@@ -469,6 +514,10 @@ async fn arm_stroke<B: CommissioningBackend>(
         .max()
         .unwrap_or(leg.speed_mrev_s);
     safety.configure_velocity_envelope(envelope_speed_mrev_s)?;
+    let cap = safety.active_velocity_cap_milli_counts_per_s();
+    safety.set_velocity_ceiling(Some(
+        cap * selection::VELOCITY_CEILING_NUM / selection::VELOCITY_CEILING_DEN,
+    ));
 
     backend.stimulus_stop();
     if backend.stimulus_is_trigger_blocked() {
@@ -646,6 +695,9 @@ fn resolve_completed_rung(
         }
         RungDecision::Conflict(_) => Err(PositionTuneOutcome::Conflict.into()),
         RungDecision::Advance => {
+            if selection::qualifies_as_candidate(&measurement, state.bound_units) {
+                state.candidate = Some(measurement);
+            }
             state.min_overshoot_so_far = Some(match state.min_overshoot_so_far {
                 Some((prev_rung, prev_units)) if prev_units <= motion.overshoot_units => {
                     (prev_rung, prev_units)
@@ -792,6 +844,9 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
             Err(fault) => fail_position_tune(phase, backend, fault).await,
         },
         PositionTuneStep::Stroke { rung, kind, repeat } => {
+            if safety.ceiling_latched() {
+                return begin_ceiling_stop(state, safety, backend, rung);
+            }
             if !state.capture_running {
                 return match arm_stroke(state, safety, workspace, backend, rung, kind).await {
                     Ok(()) => StepResult::At(state.next_poll_us),
@@ -818,6 +873,7 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
             if now_us < state.deadline_us {
                 return StepResult::At(state.next_poll_us);
             }
+            merge_primitive_peak(state, safety);
             safety.end_primitive();
             backend.stimulus_stop();
             let timing = state
@@ -867,6 +923,9 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         PositionTuneStep::AwaitRestore { rung, since_us } => {
+            if safety.ceiling_latched() {
+                return begin_ceiling_stop(state, safety, backend, rung);
+            }
             let now_us = backend.elapsed_us();
             if backend.stimulus_feedforward_idle() {
                 state.step = PositionTuneStep::StandstillHold {
@@ -889,6 +948,9 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
             rung,
             capture_index,
         } => {
+            if safety.ceiling_latched() {
+                return begin_ceiling_stop(state, safety, backend, rung);
+            }
             if !state.capture_running {
                 return match arm_standstill_hold(state, safety, workspace, backend).await {
                     Ok(()) => StepResult::At(state.next_sample_us),
@@ -912,6 +974,7 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                     Err(error) => fail_position_tune(phase, backend, error.into()).await,
                 };
             }
+            merge_primitive_peak(state, safety);
             safety.end_primitive();
             let excursion = match standstill_excursion(workspace) {
                 Ok(value) => value,
@@ -942,7 +1005,47 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                 Err(fault) => fail_position_tune(phase, backend, fault).await,
             }
         }
-        PositionTuneStep::CeilingStop { .. } => StepResult::ReadyNow,
+        PositionTuneStep::CeilingStop { rung, since_us } => {
+            let now_us = backend.elapsed_us();
+            if !backend.stimulus_feedforward_idle() {
+                if now_us.saturating_sub(since_us) >= u64::from(RESTORE_WAIT_US) {
+                    return fail_position_tune(
+                        phase,
+                        backend,
+                        PositionTuneOutcome::RestorationTimeout.into(),
+                    )
+                    .await;
+                }
+                return StepResult::At(now_us + u64::from(STROKE_POLL_US));
+            }
+            let Some(candidate) = state.candidate else {
+                defmt::warn!(
+                    "position tune rung: p={} decision={}",
+                    rung.raw(),
+                    RungDecision::Conflict(selection::ConflictKind::VelocityCeiling),
+                );
+                return fail_position_tune(phase, backend, PositionTuneOutcome::Conflict.into())
+                    .await;
+            };
+            if let Err(error) = write_register(
+                backend,
+                PID_POSITION_P_POSITION_I,
+                PidGainPair::new(candidate.position_p, PidIGain::ZERO).register_value(),
+            )
+            .await
+            {
+                return fail_position_tune(phase, backend, error.into()).await;
+            }
+            if let Err(error) =
+                write_sub_register(backend, PID_ERROR_PID_POSITION_ERROR_SUM, 0).await
+            {
+                return fail_position_tune(phase, backend, error.into()).await;
+            }
+            state.accepted = Some(candidate);
+            state.step = PositionTuneStep::Done;
+            refresh_provenance(state);
+            position_tune_terminal(state, candidate)
+        }
         PositionTuneStep::Done => match state.accepted {
             Some(accepted) => position_tune_terminal(state, accepted),
             None => {
@@ -2008,5 +2111,507 @@ mod tests {
                 "nominal_bandwidth_hz({position_p_raw}) drifted from the pinned value"
             );
         }
+    }
+
+    /// Drive the phase through `step_outer_with_trace` so the safety check runs each tick.
+    /// `encoder_counts_per_ms(state, safety)` returns `Some(d)` to move the encoder `d`
+    /// counts per millisecond of clock from the first tick it returns `Some`, else the
+    /// encoder holds. It receives `safety` because the envelope cap only exists once a
+    /// stroke has armed; fixtures derive `d` from the live cap, never from `predict`.
+    /// `backend.event_log` is cleared on that first `Some`: the mock log is bounded and a full
+    /// rung overflows it, so it holds only the events from motion onset to the terminal.
+    fn drive_with_safety(
+        phase: &mut OuterPhase,
+        backend: &mut MockBackend,
+        error_for: impl Fn(&PositionTuneState, u16) -> i32,
+        encoder_counts_per_ms: impl Fn(&PositionTuneState, &OuterSafetyLimits) -> Option<u32>,
+    ) -> StepResult {
+        let mut workspace = TransientBuffer::new();
+        let mut trace_summary_seqs = crate::commissioning::outer::TraceSummarySeqs::new();
+        let mut clock_us = backend.elapsed_us_value;
+        let mut motion_origin: Option<(u64, u32)> = None;
+
+        for _ in 0..40_000 {
+            let OuterPhase::PositionTune { state, safety } = &*phase else {
+                panic!("the phase must stay resident until it reports a terminal");
+            };
+            match state.step {
+                PositionTuneStep::Predict | PositionTuneStep::CeilingStop { .. } => {}
+                PositionTuneStep::Stroke { .. } => {
+                    let sample_index = workspace.len();
+                    let error = error_for(state, sample_index);
+                    let _ = backend
+                        .registers
+                        .insert(PID_ERROR_PID_POSITION_ERROR.data.addr(), error as u32);
+                }
+                PositionTuneStep::AwaitRestore { .. } => {
+                    backend
+                        .tmc_state
+                        .feedforward_surfaces_idle
+                        .store(true, Relaxed);
+                }
+                PositionTuneStep::StandstillHold { rung, .. } => {
+                    let predicted = quantization_only(rung.raw(), state.k_q16);
+                    let torque = if workspace.len().is_multiple_of(2) {
+                        0
+                    } else {
+                        predicted
+                    };
+                    let _ = backend.registers.insert(
+                        PID_TORQUE_FLUX_TARGET.addr(),
+                        torque_target_register(torque),
+                    );
+                }
+                PositionTuneStep::Done => {}
+            }
+            if matches!(state.step, PositionTuneStep::CeilingStop { .. }) {
+                backend
+                    .tmc_state
+                    .feedforward_surfaces_idle
+                    .store(true, Relaxed);
+            }
+            if let Some(d) = encoder_counts_per_ms(state, safety) {
+                if motion_origin.is_none() {
+                    backend.event_log.clear();
+                }
+                let (origin_us, origin_counts) = *motion_origin
+                    .get_or_insert((clock_us, backend.mechanical_encoder_position_counts_value));
+                let elapsed_ms = u32::try_from((clock_us - origin_us) / 1_000).unwrap();
+                backend.mechanical_encoder_position_counts_value =
+                    origin_counts.wrapping_add(elapsed_ms.wrapping_mul(d));
+            }
+
+            backend.elapsed_us_value = clock_us;
+            let result = pollster::block_on(crate::commissioning::outer::step_outer_with_trace(
+                phase,
+                &mut workspace,
+                &mut trace_summary_seqs,
+                backend,
+            ));
+            match result {
+                StepResult::At(next_us) => clock_us = next_us,
+                StepResult::ReadyNow | StepResult::PhaseChanged(_) => {}
+                terminal => return terminal,
+            }
+        }
+        panic!("the sweep did not reach a terminal within the tick budget");
+    }
+
+    /// Counts per millisecond that sit between the ceiling and the cap for the armed `safety`.
+    fn between_ceiling_and_cap(safety: &OuterSafetyLimits) -> u32 {
+        let cap = safety.active_velocity_cap_milli_counts_per_s();
+        let ceiling = cap * selection::VELOCITY_CEILING_NUM / selection::VELOCITY_CEILING_DEN;
+        let d = u32::try_from(ceiling / 1_000_000 + 1).unwrap();
+        assert!(
+            u64::from(d) * 1_000_000 < cap,
+            "the fixture must leave room between the ceiling and the cap"
+        );
+        d
+    }
+
+    /// Counts per millisecond just over the cap, under the quarter-turn guard.
+    fn over_the_cap(safety: &OuterSafetyLimits) -> u32 {
+        let cap = safety.active_velocity_cap_milli_counts_per_s();
+        let d = u32::try_from(cap / 1_000_000 + 2).unwrap();
+        assert!(d < 1_000, "stay under the quarter-turn guard");
+        d
+    }
+
+    /// The envelope the position tune arms, in mrev/s, from the planned legs: the firmware's
+    /// `max(ceil(1.5 v), v + 2000)` on the faster leg.
+    fn envelope_mrev_s_of(provenance: &PositionTuneProvenance) -> u64 {
+        let v = u64::from(
+            provenance
+                .homing_speed_mrev_s
+                .max(provenance.motion_speed_mrev_s),
+        );
+        ((v * 3).div_ceil(2)).max(v + 2_000)
+    }
+
+    fn ceiling_mrev_s_of(provenance: &PositionTuneProvenance) -> u64 {
+        envelope_mrev_s_of(provenance) * selection::VELOCITY_CEILING_NUM
+            / selection::VELOCITY_CEILING_DEN
+    }
+
+    /// The ceiling-trip shape: the start rung meets the homing bound and overshoot but not the
+    /// motion cruise bound; the next rung's motion stroke crosses the ceiling.
+    fn ceiling_trip_error(start_raw: u16) -> impl Fn(&PositionTuneState, u16) -> i32 {
+        move |state, _idx| {
+            let PositionTuneStep::Stroke { rung, kind, .. } = state.step else {
+                return 0;
+            };
+            match (rung.raw() == start_raw, kind) {
+                (true, StrokeKind::Homing) => 50,
+                (true, StrokeKind::Motion) => 10_000,
+                (false, _) => 50,
+            }
+        }
+    }
+
+    /// True while the motion stroke of `rung_raw` is capturing.
+    fn in_motion_stroke_of(state: &PositionTuneState, rung_raw: u16) -> bool {
+        matches!(
+            state.step,
+            PositionTuneStep::Stroke { rung, kind: StrokeKind::Motion, .. }
+                if rung.raw() == rung_raw && state.capture_running
+        )
+    }
+
+    #[fixture_test]
+    fn a_ceiling_trip_accepts_the_candidate_and_names_the_interrupted_rung() {
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+        let second_raw = next_rung(PidPGain::new(start_raw).unwrap()).unwrap().raw();
+
+        let terminal = drive_with_safety(
+            &mut phase,
+            &mut backend,
+            ceiling_trip_error(start_raw),
+            move |state, safety| {
+                in_motion_stroke_of(state, second_raw).then(|| between_ceiling_and_cap(safety))
+            },
+        );
+
+        let StepResult::OuterDone(result) = terminal else {
+            panic!("expected OuterDone, got {terminal:?}");
+        };
+        assert_eq!(result.position_p, start_raw, "the candidate is accepted");
+        assert_eq!(result.position_tune.velocity_ceiling_reached, 1);
+        assert_eq!(result.position_tune.last_rung_p, second_raw);
+        assert_eq!(result.position_tune.rungs_measured, 1);
+        assert_eq!(result.position_tune.motion_cruise_mean_abs_units, 10_000);
+        assert_eq!(result.position_tune.tune_step, 0);
+        let peak = u64::from(result.position_tune.peak_velocity_mrev_s);
+        assert!(
+            peak + 1 >= ceiling_mrev_s_of(&result.position_tune)
+                && peak < envelope_mrev_s_of(&result.position_tune),
+            "the peak is the window that crossed the ceiling, below the cap: {peak}"
+        );
+
+        let candidate_write = backend
+            .event_log
+            .iter()
+            .rposition(|event| {
+                matches!(
+                    event,
+                    MockEvent::Spi(SpiOp::Write(addr, value))
+                        if *addr == PID_POSITION_P_POSITION_I.addr()
+                            && *value == PidGainPair::new(
+                                PidPGain::new(start_raw).unwrap(),
+                                PidIGain::ZERO
+                            ).register_value()
+                )
+            })
+            .expect("the candidate P is written back before the terminal");
+        let last_stop = backend
+            .event_log
+            .iter()
+            .rposition(|event| matches!(event, MockEvent::Stimulus(StimulusOp::Stop)))
+            .expect("the ceiling stop halts the stimulus");
+        assert!(
+            last_stop < candidate_write,
+            "stop first, then the candidate rewrite"
+        );
+        assert_ends_with_stop_and_feedforward_false(&backend.stimulus_log);
+    }
+
+    #[fixture_test]
+    fn a_ceiling_trip_stops_the_stimulus_in_the_tick_that_latched() {
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+
+        let mut workspace = TransientBuffer::new();
+        let mut trace_summary_seqs = crate::commissioning::outer::TraceSummarySeqs::new();
+        let mut clock_us = backend.elapsed_us_value;
+        let mut origin: Option<(u64, u32, u32)> = None;
+        for _ in 0..40_000 {
+            let OuterPhase::PositionTune { state, safety } = &phase else {
+                panic!("the phase stays resident");
+            };
+            let _ = backend
+                .registers
+                .insert(PID_ERROR_PID_POSITION_ERROR.data.addr(), 50);
+            if in_motion_stroke_of(state, start_raw) {
+                let (o_us, o_counts, d) = *origin.get_or_insert((
+                    clock_us,
+                    backend.mechanical_encoder_position_counts_value,
+                    between_ceiling_and_cap(safety),
+                ));
+                let ms = u32::try_from((clock_us - o_us) / 1_000).unwrap();
+                backend.mechanical_encoder_position_counts_value = o_counts.wrapping_add(ms * d);
+            }
+            let latched_before = safety.ceiling_latched();
+            let stops_before = backend
+                .stimulus_log
+                .iter()
+                .filter(|op| **op == StimulusOp::Stop)
+                .count();
+            backend.elapsed_us_value = clock_us;
+            let result = pollster::block_on(crate::commissioning::outer::step_outer_with_trace(
+                &mut phase,
+                &mut workspace,
+                &mut trace_summary_seqs,
+                &mut backend,
+            ));
+            let OuterPhase::PositionTune { state, safety } = &phase else {
+                panic!("the phase stays resident");
+            };
+            if !latched_before && safety.ceiling_latched() {
+                let stops_after = backend
+                    .stimulus_log
+                    .iter()
+                    .filter(|op| **op == StimulusOp::Stop)
+                    .count();
+                assert!(
+                    stops_after > stops_before,
+                    "the latching tick must stop the stimulus"
+                );
+                assert!(matches!(state.step, PositionTuneStep::CeilingStop { .. }));
+                assert!(!state.capture_running);
+                return;
+            }
+            match result {
+                StepResult::At(next_us) => clock_us = next_us,
+                StepResult::ReadyNow | StepResult::PhaseChanged(_) => {}
+                terminal => panic!("unexpected terminal before the latch: {terminal:?}"),
+            }
+        }
+        panic!("the ceiling never latched");
+    }
+
+    #[fixture_test]
+    fn a_ceiling_trip_with_no_candidate_is_a_conflict_with_the_flag_set() {
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+
+        let terminal = drive_with_safety(
+            &mut phase,
+            &mut backend,
+            |_state, _idx| 50,
+            move |state, safety| {
+                in_motion_stroke_of(state, start_raw).then(|| between_ceiling_and_cap(safety))
+            },
+        );
+
+        assert!(matches!(
+            terminal,
+            StepResult::OuterFailed(CommissionError::PositionTuneFailed)
+        ));
+        let OuterPhase::PositionTuneFailed {
+            outcome,
+            provenance,
+            ..
+        } = &phase
+        else {
+            panic!("expected PositionTuneFailed, got {phase:?}");
+        };
+        assert_eq!(*outcome, Some(PositionTuneOutcome::Conflict));
+        assert_eq!(provenance.velocity_ceiling_reached, 1);
+        assert_eq!(provenance.rungs_measured, 0);
+        assert_eq!(provenance.last_rung_p, start_raw);
+        assert_ends_with_stop_and_feedforward_false(&backend.stimulus_log);
+    }
+
+    #[fixture_test]
+    fn a_rung_that_failed_the_homing_bound_is_not_accepted_at_the_ceiling() {
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+        let second_raw = next_rung(PidPGain::new(start_raw).unwrap()).unwrap().raw();
+
+        let terminal = drive_with_safety(
+            &mut phase,
+            &mut backend,
+            move |state, _idx| {
+                let PositionTuneStep::Stroke { rung, kind, .. } = state.step else {
+                    return 0;
+                };
+                if rung.raw() == start_raw && kind == StrokeKind::Homing {
+                    10_000
+                } else {
+                    50
+                }
+            },
+            move |state, safety| {
+                in_motion_stroke_of(state, second_raw).then(|| between_ceiling_and_cap(safety))
+            },
+        );
+
+        assert!(matches!(
+            terminal,
+            StepResult::OuterFailed(CommissionError::PositionTuneFailed)
+        ));
+        let OuterPhase::PositionTuneFailed {
+            outcome,
+            provenance,
+            ..
+        } = &phase
+        else {
+            panic!("expected PositionTuneFailed, got {phase:?}");
+        };
+        assert_eq!(*outcome, Some(PositionTuneOutcome::Conflict));
+        assert_eq!(provenance.velocity_ceiling_reached, 1);
+        assert_eq!(provenance.rungs_measured, 1);
+        assert_eq!(provenance.last_rung_p, second_raw);
+    }
+
+    #[fixture_test]
+    fn a_ceiling_latch_during_a_standstill_hold_resolves_without_arming_another_primitive() {
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+        let second_raw = next_rung(PidPGain::new(start_raw).unwrap()).unwrap().raw();
+
+        let terminal = drive_with_safety(
+            &mut phase,
+            &mut backend,
+            ceiling_trip_error(start_raw),
+            move |state, safety| match state.step {
+                PositionTuneStep::StandstillHold { rung, .. }
+                    if rung.raw() == second_raw && state.capture_running =>
+                {
+                    Some(between_ceiling_and_cap(safety))
+                }
+                _ => None,
+            },
+        );
+
+        let StepResult::OuterDone(result) = terminal else {
+            panic!("expected OuterDone, got {terminal:?}");
+        };
+        assert_eq!(result.position_p, start_raw);
+        assert_eq!(result.position_tune.velocity_ceiling_reached, 1);
+        assert_eq!(result.position_tune.last_rung_p, second_raw);
+        let arms_after_latch = backend
+            .stimulus_log
+            .iter()
+            .rposition(|op| *op == StimulusOp::Stop)
+            .map(|stop| {
+                backend.stimulus_log[stop..]
+                    .iter()
+                    .filter(|op| **op == StimulusOp::Arm)
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(
+            arms_after_latch, 0,
+            "nothing is armed after the ceiling stop"
+        );
+    }
+
+    #[fixture_test]
+    fn a_latch_set_between_primitives_is_handled_before_the_next_stroke_arms() {
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+
+        // Run until the first stroke has completed and the phase is about to arm the second
+        // repeat: `Stroke { repeat: 1 }` with no capture running and no primitive open.
+        let mut workspace = TransientBuffer::new();
+        let mut clock_us = backend.elapsed_us_value;
+        for _ in 0..20_000 {
+            let OuterPhase::PositionTune { state, .. } = &phase else {
+                panic!("the phase stays resident");
+            };
+            if matches!(state.step, PositionTuneStep::Stroke { repeat: 1, .. })
+                && !state.capture_running
+            {
+                break;
+            }
+            let _ = backend
+                .registers
+                .insert(PID_ERROR_PID_POSITION_ERROR.data.addr(), 50);
+            backend.elapsed_us_value = clock_us;
+            match pollster::block_on(step_position_tune(&mut phase, &mut workspace, &mut backend)) {
+                StepResult::At(next_us) => clock_us = next_us,
+                StepResult::ReadyNow | StepResult::PhaseChanged(_) => {}
+                terminal => panic!("unexpected terminal {terminal:?}"),
+            }
+        }
+        let OuterPhase::PositionTune { state, safety } = &mut phase else {
+            panic!("the phase stays resident");
+        };
+        assert!(matches!(
+            state.step,
+            PositionTuneStep::Stroke { repeat: 1, .. }
+        ));
+        safety.force_ceiling_latch_for_test();
+        let arms_before = backend
+            .stimulus_log
+            .iter()
+            .filter(|op| **op == StimulusOp::Arm)
+            .count();
+
+        backend.elapsed_us_value = clock_us;
+        let result =
+            pollster::block_on(step_position_tune(&mut phase, &mut workspace, &mut backend));
+
+        assert!(matches!(result, StepResult::ReadyNow));
+        let OuterPhase::PositionTune { state, .. } = &phase else {
+            panic!("the phase stays resident");
+        };
+        assert!(
+            matches!(state.step, PositionTuneStep::CeilingStop { rung, .. } if rung.raw() == start_raw),
+            "the latch is handled before arm_stroke could clear it, got {:?}",
+            state.step
+        );
+        let arms_after = backend
+            .stimulus_log
+            .iter()
+            .filter(|op| **op == StimulusOp::Arm)
+            .count();
+        assert_eq!(
+            arms_before, arms_after,
+            "no new stroke is armed over a latched ceiling"
+        );
+        assert_ends_with_stop_and_feedforward_false(&backend.stimulus_log);
+    }
+
+    #[fixture_test]
+    fn a_safety_fault_merges_the_faulting_primitives_peak() {
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+
+        let terminal = drive_with_safety(
+            &mut phase,
+            &mut backend,
+            |_state, _idx| 50,
+            move |state, safety| match state.step {
+                PositionTuneStep::Stroke {
+                    rung,
+                    kind: StrokeKind::Homing,
+                    ..
+                } if rung.raw() == start_raw && state.capture_running => Some(over_the_cap(safety)),
+                _ => None,
+            },
+        );
+
+        assert!(matches!(
+            terminal,
+            StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
+        ));
+        let OuterPhase::FailedWithSafety {
+            position_tune,
+            safety_fault,
+            ..
+        } = &phase
+        else {
+            panic!("expected FailedWithSafety, got {phase:?}");
+        };
+        assert_eq!(
+            safety_fault.reason,
+            crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY
+        );
+        assert_eq!(position_tune.tune_step, 1);
+        assert_eq!(position_tune.last_rung_p, start_raw);
+        assert!(
+            u64::from(position_tune.peak_velocity_mrev_s) > envelope_mrev_s_of(position_tune),
+            "the faulting window, over the cap, is the reported peak"
+        );
+        assert_eq!(position_tune.velocity_ceiling_reached, 0);
     }
 }

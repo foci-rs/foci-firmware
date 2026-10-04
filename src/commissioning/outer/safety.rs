@@ -453,19 +453,16 @@ impl OuterSafetyLimits {
     }
 
     /// Arm or clear the position-tune velocity ceiling, in the cap's unit.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_velocity_ceiling(&mut self, ceiling_milli_counts_per_s: Option<u64>) {
         self.velocity_ceiling_milli_counts_per_s = ceiling_milli_counts_per_s;
     }
 
     /// True once a window since `begin_primitive` reached the ceiling.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn ceiling_latched(&self) -> bool {
         self.ceiling_latched
     }
 
     /// Largest two-sample window velocity since `begin_primitive`.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn primitive_peak_milli_counts_per_s(&self) -> u64 {
         self.primitive_peak_milli_counts_per_s
     }
