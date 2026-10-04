@@ -3,6 +3,11 @@ use super::types::ElectricalAxis;
 /// Standard positive UD point candidates for adaptive resistance identification.
 pub const STANDARD_UD_POINTS: [i16; 8] = [512, 640, 800, 960, 1120, 1280, 1440, 1600];
 
+/// Bus voltage the standard UD ladder was tuned and validated at: every archived rig
+/// resistance run reads about 48.3 V. The runner scales the ladder by this over the
+/// measured bus so other supplies probe the same currents.
+pub const REFERENCE_BUS_MILLIVOLTS: u32 = 48_000;
+
 /// Diagnostic-current policy for the resistance sweep, as a permille fraction
 /// of the configured run-current limit.
 pub const RESISTANCE_DIAGNOSTIC_CURRENT_FRACTION: crate::autotune::Permille =
