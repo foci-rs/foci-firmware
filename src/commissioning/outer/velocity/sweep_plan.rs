@@ -17,7 +17,7 @@ pub const ENVELOPE_PROPORTIONAL_DEN: u32 = 2;
 pub const ENVELOPE_ABSOLUTE_MARGIN_MREV_S: u32 = 2_000;
 /// Fixed duration of one moving observation.
 pub const MOVING_STROKE_US: u32 = 512_000;
-/// Live Proportional schema for the shared Proportional velocity sweep planner.
+/// Proportional schema for the shared Proportional velocity sweep planner.
 pub const PROPORTIONAL_PLAN_SCHEMA_REVISION: u16 = 14;
 /// First Proportional schema with cap-safe target quantization.
 pub const FIRST_CAP_SAFE_PROPORTIONAL_SCHEMA_REVISION: u16 = 10;

@@ -15,7 +15,7 @@ use super::sweep_plan::{
     SWEEP_DIRECTION_COUNT, VelocityPlanError, ZERO_SETTLE_US, build_gain_ladder, gain_at,
 };
 
-/// Live Proportional schema for the breakaway-seeded campaign.
+/// Proportional schema for the breakaway-seeded campaign.
 pub const BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION: u16 = 17;
 
 /// Numerator of the provisional maximum additive first-gap ratio guard.
