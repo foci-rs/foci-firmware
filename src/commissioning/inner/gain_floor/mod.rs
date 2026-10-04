@@ -230,7 +230,7 @@ where
 {
     use foci_tmc4671::registers::{
         MODE_RAMP_MODE_MOTION, PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM,
-        PID_TORQUE_FLUX_TARGET, PIDOUT_UQ_UD_LIMITS, PidTorqueFluxTarget,
+        PID_TORQUE_FLUX_TARGET, PIDOUT_UQ_UD_LIMITS, POSITION_SELECTION, PidTorqueFluxTarget,
     };
 
     let zero_target = PidTorqueFluxTarget::new()
@@ -264,6 +264,13 @@ where
         .map_err(|_| CommissionError::Spi)?;
     backend
         .write_register(PIDOUT_UQ_UD_LIMITS, backend.operational_voltage_limit())
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+    backend
+        .write_register_verified(
+            POSITION_SELECTION,
+            super::closed_loop_activation::CLOSED_LOOP_POSITION_SELECTION,
+        )
         .await
         .map_err(|_| CommissionError::Spi)?;
 
@@ -1110,6 +1117,66 @@ mod tests {
             assert!(
                 mode_write_index < torque_target_write_index,
                 "torque mode must be entered before the nonzero torque step is commanded"
+            );
+        });
+    }
+
+    #[test]
+    fn gain_floor_selects_the_mechanical_position_domain_before_the_first_torque_step() {
+        pollster::block_on(async {
+            let mut phase = gain_floor_phase(2000, 4_000);
+            let mut backend = MockBackend::new();
+            backend.advance_elapsed_on_delay = true;
+            backend.script_gain_floor_capture = Some(ideal_plant());
+
+            let _ = step_gain_floor_measurement(&mut phase, &mut backend).await;
+
+            let position_selection_write_index = backend.spi_log.iter().position(|op| {
+                matches!(
+                    op,
+                    SpiOp::Write(addr, val)
+                        if *addr == foci_tmc4671::registers::POSITION_SELECTION.addr()
+                            && *val == 9
+                )
+            });
+            let torque_target_write_index = backend.spi_log.iter().position(|op| {
+                matches!(
+                    op,
+                    SpiOp::Write(addr, val)
+                        if *addr == foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET.addr()
+                            && *val != 0
+                )
+            });
+            assert!(
+                position_selection_write_index.is_some(),
+                "must write POSITION_SELECTION=9 (phi_m_abn) so the motion envelope and the \
+                 acceleration fit measure mechanical position units"
+            );
+            assert!(
+                position_selection_write_index < torque_target_write_index,
+                "the mechanical position domain must be selected before the torque step"
+            );
+        });
+    }
+
+    #[test]
+    fn gain_floor_fails_when_the_position_domain_readback_mismatches() {
+        pollster::block_on(async {
+            let mut phase = gain_floor_phase(2000, 4_000);
+            let mut backend = MockBackend::new();
+            backend.advance_elapsed_on_delay = true;
+            backend.script_gain_floor_capture = Some(ideal_plant());
+            backend.read_override = Some((foci_tmc4671::registers::POSITION_SELECTION.addr(), 0));
+
+            let result = step_gain_floor_measurement(&mut phase, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(
+                !backend.enable_pin,
+                "must not stay energized when the position domain is not confirmed"
             );
         });
     }
