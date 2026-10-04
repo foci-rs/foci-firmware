@@ -43,6 +43,8 @@ pub struct DiagnosticReadiness {
     pub stepper_active: bool,
     /// Saved operational PIDOUT_UQ_UD_LIMITS value for this request channel.
     pub saved_voltage_limit: u32,
+    /// The channel's captured `ADC_VM` offset, if the board sampled one at init.
+    pub adc_vm_offset: Option<crate::state::tmc::AdcVmOffsetSnapshot>,
 }
 
 /// Delay abstraction used by shared diagnostic runners.

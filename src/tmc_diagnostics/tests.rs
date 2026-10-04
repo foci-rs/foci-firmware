@@ -325,6 +325,7 @@ fn current_step_not_ready_returns_status_without_writes() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 999,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -341,6 +342,69 @@ fn current_step_not_ready_returns_status_without_writes() {
         assert!(tmc.into_inner().writes.is_empty());
         assert!(delay.delays_ms.is_empty());
     });
+}
+
+#[test]
+fn diagnostic_resistance_adapter_derives_the_bus_sense_from_the_readiness_offset() {
+    use crate::resistance_identification::ResistanceBackend;
+
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let mut delay = MockDelay::default();
+    let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+    let mut power_stage = MockDiagnosticPowerStage::default();
+    let mut ctx = DiagnosticContext {
+        host_liveness_expired: None,
+        tmc: &mut tmc,
+        runtime: &mut runtime,
+        delay: &mut delay,
+        power_stage: &mut power_stage,
+        tmc_config: &TEST_TMC_CONFIG,
+        feedback_config: crate::config::FeedbackConfig::abn_abn(),
+        readiness: DiagnosticReadiness {
+            homing_active: false,
+            stepper_active: false,
+            saved_voltage_limit: 16_000,
+            adc_vm_offset: Some(crate::state::tmc::AdcVmOffsetSnapshot {
+                offset_raw: 33_671,
+                sample_count: 8,
+            }),
+        },
+    };
+
+    let adapter = super::resistance::DiagnosticResistanceBackend::new(&mut ctx);
+    let sense = adapter.bus_voltage_sense().expect("offset present");
+
+    assert_eq!(sense.offset_raw, 33_671);
+    assert_eq!(sense.counts_per_volt_milli, 269_318);
+}
+
+#[test]
+fn diagnostic_resistance_adapter_has_no_bus_sense_without_an_offset() {
+    use crate::resistance_identification::ResistanceBackend;
+
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let mut delay = MockDelay::default();
+    let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+    let mut power_stage = MockDiagnosticPowerStage::default();
+    let mut ctx = DiagnosticContext {
+        host_liveness_expired: None,
+        tmc: &mut tmc,
+        runtime: &mut runtime,
+        delay: &mut delay,
+        power_stage: &mut power_stage,
+        tmc_config: &TEST_TMC_CONFIG,
+        feedback_config: crate::config::FeedbackConfig::abn_abn(),
+        readiness: DiagnosticReadiness {
+            homing_active: false,
+            stepper_active: false,
+            saved_voltage_limit: 16_000,
+            adc_vm_offset: None,
+        },
+    };
+
+    let adapter = super::resistance::DiagnosticResistanceBackend::new(&mut ctx);
+
+    assert_eq!(adapter.bus_voltage_sense(), None);
 }
 
 #[test]
@@ -365,6 +429,7 @@ fn current_vector_uses_vector_report_flag() {
                     homing_active: true,
                     stepper_active: false,
                     saved_voltage_limit: 999,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -414,6 +479,7 @@ fn current_step_success_records_settle_delays_and_restores_limit() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -521,6 +587,7 @@ fn flux_current_step_drives_and_reports_flux_axis() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -623,6 +690,7 @@ fn current_step_invalid_ppr_aborts_before_excitation() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -673,6 +741,7 @@ fn current_step_exact_half_turn_aborts_via_post_measurement_error() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -718,6 +787,7 @@ fn current_step_host_liveness_expiry_reports_dedicated_status_and_restores() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
                 host_liveness_expired: Some(&mut expire_during_main_delay_final_slice),
             },
@@ -770,6 +840,7 @@ fn current_step_pre_settle_host_liveness_expiry_reports_dedicated_status() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
                 host_liveness_expired: Some(&mut expire_immediately),
             },
@@ -817,6 +888,7 @@ fn current_step_post_settle_host_liveness_expiry_reports_dedicated_status() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
                 host_liveness_expired: Some(&mut expire_at_post_settle),
             },
@@ -865,6 +937,7 @@ fn torque_sample_not_ready_does_not_emit_detail() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -905,6 +978,7 @@ fn current_torque_sample_invalid_ppr_aborts_before_excitation() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -961,6 +1035,7 @@ fn current_torque_sample_exact_half_turn_aborts_via_post_measurement_error() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -1021,6 +1096,7 @@ fn current_torque_sample_success_reports_current_torque_sample_kind() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -1058,6 +1134,7 @@ fn position_offset_rejects_non_position_mode() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -1103,6 +1180,7 @@ fn position_offset_spi_failure_attempts_offset_restore() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -1166,6 +1244,7 @@ fn position_torque_offset_sample_invalid_ppr_aborts_before_excitation() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -1225,6 +1304,7 @@ fn position_torque_offset_sample_exact_half_turn_aborts_via_post_measurement_err
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -1286,6 +1366,7 @@ fn position_torque_offset_sample_success_reports_position_torque_offset_kind() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -1332,6 +1413,7 @@ fn current_torque_sample_host_liveness_expiry_reports_dedicated_status_and_resto
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
                 host_liveness_expired: Some(&mut expire_during_main_delay_final_slice),
             },
@@ -1391,6 +1473,7 @@ fn position_offset_host_liveness_expiry_reports_dedicated_status_and_restores() 
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
                 host_liveness_expired: Some(&mut expire_during_main_delay_final_slice),
             },
@@ -1443,6 +1526,7 @@ fn current_torque_sample_pre_settle_host_liveness_expiry_reports_dedicated_statu
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
                 host_liveness_expired: Some(&mut expire_immediately),
             },
@@ -1490,6 +1574,7 @@ fn current_torque_sample_post_settle_host_liveness_expiry_reports_dedicated_stat
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
                 host_liveness_expired: Some(&mut expire_at_post_settle),
             },
@@ -1549,6 +1634,7 @@ fn position_offset_post_settle_host_liveness_expiry_reports_dedicated_status() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
                 host_liveness_expired: Some(&mut expire_at_post_settle),
             },
@@ -1627,6 +1713,7 @@ async fn run_offset_sample(
                 homing_active: false,
                 stepper_active: false,
                 saved_voltage_limit: 777,
+                adc_vm_offset: None,
             },
         },
     )
@@ -1951,6 +2038,7 @@ fn voltage_step_rejects_non_position_mode() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -1992,6 +2080,7 @@ fn voltage_step_failure_clears_external_voltage_and_restores_mode() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -2057,6 +2146,7 @@ fn voltage_step_invalid_ppr_aborts_before_excitation() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -2102,6 +2192,7 @@ fn voltage_step_exact_half_turn_aborts_via_post_measurement_error() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -2145,6 +2236,7 @@ fn voltage_step_host_liveness_expiry_reports_dedicated_status_and_restores() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
                 host_liveness_expired: Some(&mut expire_during_main_delay_final_slice),
             },
@@ -2201,6 +2293,7 @@ fn voltage_step_post_settle_host_liveness_expiry_reports_dedicated_status() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
                 host_liveness_expired: Some(&mut expire_at_post_settle),
             },
@@ -2248,6 +2341,7 @@ fn dispatcher_returns_not_diagnostic_for_normal_request() {
                     homing_active: false,
                     stepper_active: false,
                     saved_voltage_limit: 777,
+                    adc_vm_offset: None,
                 },
             },
         )
@@ -2288,6 +2382,7 @@ fn dispatcher_refuses_every_diagnostic_while_the_limit_reservation_is_engaged() 
                         homing_active: false,
                         stepper_active: false,
                         saved_voltage_limit: 777,
+                        adc_vm_offset: None,
                     },
                 },
             )
@@ -2403,6 +2498,7 @@ async fn resistance_test_request_dispatches_to_shared_runner() {
                 homing_active: false,
                 stepper_active: false,
                 saved_voltage_limit: 777,
+                adc_vm_offset: None,
             },
         },
     )
@@ -2455,6 +2551,7 @@ fn resistance_trip_lowers_board_stage_before_clearing_shared_state() {
             homing_active: false,
             stepper_active: false,
             saved_voltage_limit: 777,
+            adc_vm_offset: None,
         },
     };
 
@@ -2479,6 +2576,7 @@ fn resistance_trip_lowers_board_stage_before_clearing_shared_state() {
             homing_active: false,
             stepper_active: false,
             saved_voltage_limit: 777,
+            adc_vm_offset: None,
         },
     };
     {
@@ -2530,6 +2628,7 @@ async fn resistance_test_not_armed_reports_no_axes() {
                 homing_active: false,
                 stepper_active: false,
                 saved_voltage_limit: 777,
+                adc_vm_offset: None,
             },
         },
     )
@@ -2599,6 +2698,7 @@ async fn resistance_test_uses_board_monotonic_for_sample_timing() {
                 homing_active: false,
                 stepper_active: false,
                 saved_voltage_limit: 2_000,
+                adc_vm_offset: None,
             },
         },
     )
@@ -2649,6 +2749,7 @@ async fn resistance_test_rejects_during_homing_without_invoking_runner() {
                 homing_active: true,
                 stepper_active: false,
                 saved_voltage_limit: 777,
+                adc_vm_offset: None,
             },
         },
     )
@@ -2695,6 +2796,7 @@ fn resistance_backend_delay_ms_liveness_expiry_injects_one_shot_error_then_recov
                 homing_active: false,
                 stepper_active: false,
                 saved_voltage_limit: 777,
+                adc_vm_offset: None,
             },
             host_liveness_expired: Some(&mut expire_after_final_slice),
         };
@@ -2789,6 +2891,7 @@ async fn resistance_test_request_host_liveness_expiry_reports_dedicated_status()
             homing_active: false,
             stepper_active: false,
             saved_voltage_limit: 777,
+            adc_vm_offset: None,
         },
         host_liveness_expired: Some(&mut expire_during_settle_final_slice),
     };
@@ -2860,6 +2963,7 @@ async fn resistance_test_request_genuine_spi_failure_reports_generic_status() {
             homing_active: false,
             stepper_active: false,
             saved_voltage_limit: 777,
+            adc_vm_offset: None,
         },
         host_liveness_expired: None,
     };

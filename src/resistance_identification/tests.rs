@@ -1,11 +1,12 @@
 use core::cell::Cell;
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION, MotionMode,
-    MotorType, MotorTypeNPolePairs, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP,
-    STATUS_FLAGS, UQ_UD_EXT,
+    ABN_DECODER_COUNT, ADC_IWY_IUX, ADC_RAW_ADDR, ADC_RAW_DATA, DSADC_MDEC_B_MDEC_A,
+    MODE_RAMP_MODE_MOTION, MotionMode, MotorType, MotorTypeNPolePairs, PIDOUT_UQ_UD_LIMITS,
+    PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
 };
 use pollster::block_on;
 
+use super::bus_voltage::BusVoltageSense;
 use super::profile::ResistanceProfile;
 use super::runner::{
     ResistanceBackend, ResistanceBackendError, ResistancePoll, ResistanceRunMode, ResistanceRunner,
@@ -72,6 +73,11 @@ struct FakeResistanceBackend {
     record_events: bool,
     events: heapless::Vec<BackendEvent, 64>,
     interlock_tripped: bool,
+    bus_voltage_sense: Option<BusVoltageSense>,
+    scripted_adc_vm_raw: u16,
+    adc_raw_addr: u32,
+    fail_reads_at: Option<u8>,
+    fail_write_once_at: Option<u8>,
 }
 
 impl FakeResistanceBackend {
@@ -122,6 +128,14 @@ impl FakeResistanceBackend {
             record_events: false,
             events: heapless::Vec::new(),
             interlock_tripped: false,
+            bus_voltage_sense: Some(BusVoltageSense {
+                offset_raw: 33_000,
+                counts_per_volt_milli: 269_318,
+            }),
+            scripted_adc_vm_raw: 33_000 + 12_927,
+            adc_raw_addr: 0,
+            fail_reads_at: None,
+            fail_write_once_at: None,
         }
     }
 
@@ -239,6 +253,9 @@ impl ResistanceBackend for FakeResistanceBackend {
         self.record_event(BackendEvent::Read(addr));
         self.operations += 1;
         self.elapsed_us += self.io_elapsed_us;
+        if self.fail_reads_at == Some(addr) {
+            return Err(ResistanceBackendError::Spi);
+        }
         if addr == foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS.addr() {
             return Ok(MotorTypeNPolePairs::new()
                 .with_motor_type(self.motor_type)
@@ -283,6 +300,17 @@ impl ResistanceBackend for FakeResistanceBackend {
         if addr == ABN_DECODER_COUNT.addr() {
             return Ok(self.encoder_count);
         }
+        if addr == ADC_RAW_ADDR.addr() {
+            return Ok(self.adc_raw_addr);
+        }
+        if addr == ADC_RAW_DATA.addr() {
+            let vm_selector =
+                u32::from(foci_tmc4671::registers::ADC_AGPI_A_RAW_ADC_VM_RAW.sub_addr);
+            if self.adc_raw_addr == vm_selector {
+                return Ok(u32::from(self.scripted_adc_vm_raw));
+            }
+            return Ok(0);
+        }
         Ok(0)
     }
 
@@ -304,6 +332,13 @@ impl ResistanceBackend for FakeResistanceBackend {
                 self.energized_window_current_reads = 0;
             }
             self.zero_window_counted = false;
+        }
+        if addr == ADC_RAW_ADDR.addr() {
+            self.adc_raw_addr = value;
+        }
+        if self.fail_write_once_at == Some(addr) {
+            self.fail_write_once_at = None;
+            return Err(ResistanceBackendError::Spi);
         }
         if addr == STATUS_FLAGS.addr() && value == 0 {
             self.scripted_status_flags = 0;
@@ -373,6 +408,10 @@ impl ResistanceBackend for FakeResistanceBackend {
 
     fn adc_offsets_ready(&self) -> bool {
         self.adc_offsets_ready
+    }
+
+    fn bus_voltage_sense(&self) -> Option<BusVoltageSense> {
+        self.bus_voltage_sense
     }
 }
 

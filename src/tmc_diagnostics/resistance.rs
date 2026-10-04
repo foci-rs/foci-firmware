@@ -121,6 +121,12 @@ where
         crate::state::tmc::tmc_channel(self.ctx.runtime.channel())
             .is_some_and(|state| state.motor_sentinel.load(Relaxed) != 0)
     }
+
+    fn bus_voltage_sense(&self) -> Option<crate::resistance_identification::BusVoltageSense> {
+        self.ctx
+            .tmc_config
+            .bus_voltage_sense(self.ctx.readiness.adc_vm_offset)
+    }
 }
 
 // `Option::as_deref_mut()` reborrowed inline at the `checked_delay_ms` call

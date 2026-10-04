@@ -222,6 +222,9 @@ pub trait CommissionBoardConfig {
 
     fn tmc_config(&self) -> &TmcConfig;
 
+    /// The channel's captured `ADC_VM` offset, if the board sampled one at init.
+    fn adc_vm_offset(&self) -> Option<crate::state::tmc::AdcVmOffsetSnapshot>;
+
     fn feedback_config(&self) -> crate::config::FeedbackConfig;
 
     /// Host-configured torque filter cutoff, including explicit zero disable.
@@ -826,6 +829,10 @@ where
 
     fn tmc_config(&self) -> &TmcConfig {
         self.commission_tmc_config()
+    }
+
+    fn adc_vm_offset(&self) -> Option<crate::state::tmc::AdcVmOffsetSnapshot> {
+        self.tmc_state().adc_vm_offset_snapshot()
     }
 
     fn feedback_config(&self) -> crate::config::FeedbackConfig {

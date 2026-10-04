@@ -290,6 +290,7 @@ pub struct MockBackend {
     pub configured_physical_width: Option<u32>,
     pub mechanical_encoder_quadrature_counts_per_rev_value: u32,
     pub adc_offsets_ready_value: bool,
+    pub adc_vm_offset_value: Option<crate::state::tmc::AdcVmOffsetSnapshot>,
     pub operational_velocity_limit_value: u32,
     pub operational_voltage_limit_value: u32,
     pub tmc_config: TmcConfig,
@@ -385,6 +386,7 @@ impl MockBackend {
             configured_physical_width: None,
             mechanical_encoder_quadrature_counts_per_rev_value: 4000,
             adc_offsets_ready_value: true,
+            adc_vm_offset_value: None,
             operational_velocity_limit_value: 500_000,
             operational_voltage_limit_value:
                 crate::state::tmc::DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT,
@@ -910,6 +912,10 @@ impl CommissionBoardConfig for MockBackend {
 
     fn tmc_config(&self) -> &TmcConfig {
         &self.tmc_config
+    }
+
+    fn adc_vm_offset(&self) -> Option<crate::state::tmc::AdcVmOffsetSnapshot> {
+        self.adc_vm_offset_value
     }
 
     fn feedback_config(&self) -> crate::config::FeedbackConfig {

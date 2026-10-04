@@ -465,6 +465,12 @@ impl<B: CommissioningBackend> crate::resistance_identification::ResistanceBacken
     fn adc_offsets_ready(&self) -> bool {
         self.backend.adc_offsets_ready()
     }
+
+    fn bus_voltage_sense(&self) -> Option<crate::resistance_identification::BusVoltageSense> {
+        self.backend
+            .tmc_config()
+            .bus_voltage_sense(self.backend.adc_vm_offset())
+    }
 }
 
 fn begin_inductance_restore<B: CommissioningBackend>(
@@ -4724,6 +4730,31 @@ mod tests {
             current_limit: PidTorqueFluxLimit::new(367).unwrap(),
         };
         assert_eq!(adapter.profile().max_expected_current_count, 220);
+    }
+
+    #[test]
+    fn resistance_adapter_derives_the_bus_sense_from_the_captured_offset() {
+        use crate::resistance_identification::ResistanceBackend;
+
+        let mut without_offset = MockBackend::new();
+        let adapter = CommissionResistanceBackend {
+            backend: &mut without_offset,
+            current_limit: current_limit(2000),
+        };
+        assert_eq!(adapter.bus_voltage_sense(), None);
+
+        let mut with_offset = MockBackend::new();
+        with_offset.adc_vm_offset_value = Some(crate::state::tmc::AdcVmOffsetSnapshot {
+            offset_raw: 33_671,
+            sample_count: 8,
+        });
+        let adapter = CommissionResistanceBackend {
+            backend: &mut with_offset,
+            current_limit: current_limit(2000),
+        };
+        let sense = adapter.bus_voltage_sense().expect("offset captured");
+        assert_eq!(sense.offset_raw, 33_671);
+        assert_eq!(sense.counts_per_volt_milli, 269_318);
     }
 
     #[test]

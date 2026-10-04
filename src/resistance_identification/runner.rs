@@ -80,6 +80,9 @@ pub trait ResistanceBackend {
     fn feedback_config(&self) -> crate::config::FeedbackConfig;
     /// Whether ADC current-offset calibration is ready.
     fn adc_offsets_ready(&self) -> bool;
+    /// How to turn a raw `ADC_VM` count into bus millivolts, or `None` when the board has
+    /// not captured an `ADC_VM` offset; the runner then runs the unscaled ladder.
+    fn bus_voltage_sense(&self) -> Option<super::bus_voltage::BusVoltageSense>;
 }
 
 /// Run the shared resistance-identification sweep.
