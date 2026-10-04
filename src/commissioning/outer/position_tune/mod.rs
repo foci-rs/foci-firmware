@@ -70,8 +70,6 @@ pub(crate) enum PositionTuneStep {
         rung: PidPGain,
         since_us: u64,
     },
-    /// The stimulus was stopped at the velocity ceiling; waiting for feedforward restoration
-    /// before resolving the rung.
     CeilingStop {
         rung: PidPGain,
         since_us: u64,
@@ -104,11 +102,8 @@ pub(crate) struct PositionTuneState {
     pub(crate) last_measurement: Option<RungMeasurement>,
     /// Feedforward path flags of the last admitted motion stroke; zero until one is admitted.
     pub(crate) feedforward_paths_active: u8,
-    /// The rung the ladder is on, set when its first stroke is admitted; `None` before.
     pub(crate) current_rung: Option<PidPGain>,
-    /// Largest window velocity across every primitive of `current_rung`, milli-counts/s.
     pub(crate) rung_peak_milli_counts_per_s: u64,
-    /// Stiffest rung so far that met every guard except the motion cruise bound.
     pub(crate) candidate: Option<RungMeasurement>,
     pub(crate) counts_per_rev: u32,
     pub(crate) ceiling_reached: bool,
@@ -211,16 +206,12 @@ pub(crate) fn abort_stimulus<B: CommissioningBackend>(backend: &mut B) {
     backend.set_stimulus_feedforward(false);
 }
 
-/// Fold the open primitive's peak window velocity into the rung-wide peak.
 fn merge_primitive_peak(state: &mut PositionTuneState, safety: &OuterSafetyLimits) {
     state.rung_peak_milli_counts_per_s = state
         .rung_peak_milli_counts_per_s
         .max(safety.primitive_peak_milli_counts_per_s());
 }
 
-/// Record the faulting primitive's peak and sub-state before the dispatcher snapshots the
-/// provenance for `FailedWithSafety`. Never sets the ceiling flag: the envelope, not the
-/// ceiling, ended this run.
 pub(crate) fn note_safety_fault(phase: &mut OuterPhase) {
     if let OuterPhase::PositionTune { state, safety } = phase {
         merge_primitive_peak(state, safety);
@@ -228,7 +219,6 @@ pub(crate) fn note_safety_fault(phase: &mut OuterPhase) {
     }
 }
 
-/// Stop the stimulus at the velocity ceiling and park the phase until feedforward restores.
 fn begin_ceiling_stop<B: CommissioningBackend>(
     state: &mut PositionTuneState,
     safety: &mut OuterSafetyLimits,
@@ -761,8 +751,6 @@ fn refresh_provenance(state: &mut PositionTuneState) {
     };
 }
 
-/// Wire code for the sub-state the phase is in: 0 none, 1 homing stroke, 2 motion stroke,
-/// 3 restore wait, 4 standstill hold.
 pub(crate) fn tune_step_code(step: PositionTuneStep) -> u8 {
     match step {
         PositionTuneStep::Predict | PositionTuneStep::Done => 0,
@@ -2113,13 +2101,6 @@ mod tests {
         }
     }
 
-    /// Drive the phase through `step_outer_with_trace` so the safety check runs each tick.
-    /// `encoder_counts_per_ms(state, safety)` returns `Some(d)` to move the encoder `d`
-    /// counts per millisecond of clock from the first tick it returns `Some`, else the
-    /// encoder holds. It receives `safety` because the envelope cap only exists once a
-    /// stroke has armed; fixtures derive `d` from the live cap, never from `predict`.
-    /// `backend.event_log` is cleared on that first `Some`: the mock log is bounded and a full
-    /// rung overflows it, so it holds only the events from motion onset to the terminal.
     fn drive_with_safety(
         phase: &mut OuterPhase,
         backend: &mut MockBackend,
@@ -2197,7 +2178,6 @@ mod tests {
         panic!("the sweep did not reach a terminal within the tick budget");
     }
 
-    /// Counts per millisecond that sit between the ceiling and the cap for the armed `safety`.
     fn between_ceiling_and_cap(safety: &OuterSafetyLimits) -> u32 {
         let cap = safety.active_velocity_cap_milli_counts_per_s();
         let ceiling = cap * selection::VELOCITY_CEILING_NUM / selection::VELOCITY_CEILING_DEN;
@@ -2209,7 +2189,6 @@ mod tests {
         d
     }
 
-    /// Counts per millisecond just over the cap, under the quarter-turn guard.
     fn over_the_cap(safety: &OuterSafetyLimits) -> u32 {
         let cap = safety.active_velocity_cap_milli_counts_per_s();
         let d = u32::try_from(cap / 1_000_000 + 2).unwrap();
@@ -2217,8 +2196,6 @@ mod tests {
         d
     }
 
-    /// The envelope the position tune arms, in mrev/s, from the planned legs: the firmware's
-    /// `max(ceil(1.5 v), v + 2000)` on the faster leg.
     fn envelope_mrev_s_of(provenance: &PositionTuneProvenance) -> u64 {
         let v = u64::from(
             provenance
@@ -2233,8 +2210,6 @@ mod tests {
             / selection::VELOCITY_CEILING_DEN
     }
 
-    /// The ceiling-trip shape: the start rung meets the homing bound and overshoot but not the
-    /// motion cruise bound; the next rung's motion stroke crosses the ceiling.
     fn ceiling_trip_error(start_raw: u16) -> impl Fn(&PositionTuneState, u16) -> i32 {
         move |state, _idx| {
             let PositionTuneStep::Stroke { rung, kind, .. } = state.step else {
@@ -2248,7 +2223,6 @@ mod tests {
         }
     }
 
-    /// True while the motion stroke of `rung_raw` is capturing.
     fn in_motion_stroke_of(state: &PositionTuneState, rung_raw: u16) -> bool {
         matches!(
             state.step,
@@ -2508,8 +2482,6 @@ mod tests {
         let mut phase = position_tune_phase();
         let start_raw = predicted_start_of(&mut phase, &mut backend);
 
-        // Run until the first stroke has completed and the phase is about to arm the second
-        // repeat: `Stroke { repeat: 1 }` with no capture running and no primitive open.
         let mut workspace = TransientBuffer::new();
         let mut clock_us = backend.elapsed_us_value;
         for _ in 0..20_000 {

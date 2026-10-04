@@ -38,14 +38,9 @@ pub(crate) enum RungDecision {
 /// minimum overshoot seen so far without tripping a conflict.
 pub(crate) const OVERSHOOT_RATIO_LIMIT: u32 = 3;
 
-/// The position tune stops a rung whose window velocity reaches this fraction of the active
-/// outer-safety cap: 4/5, so in the proportional regime 1.2x planned speed against a 1.5x fault.
 pub(crate) const VELOCITY_CEILING_NUM: u64 = 4;
 pub(crate) const VELOCITY_CEILING_DEN: u64 = 5;
 
-/// A rung the ceiling stop may accept: everything the `Accept` path checks except the motion
-/// cruise bound. A rung that fails the homing bound would stall a home; one whose overshoot
-/// exceeds the bound rings past the tolerance.
 pub(crate) fn qualifies_as_candidate(m: &RungMeasurement, bound_units: u32) -> bool {
     m.homing_peak_abs_units <= bound_units && m.motion_overshoot_units <= bound_units
 }

@@ -171,11 +171,8 @@ pub(crate) struct OuterSafetyLimits {
     previous_velocity_observation: Option<OuterVelocityObservation>,
     max_local_position_excursion: u32,
     last_observation_scoring_eligible: bool,
-    /// Position-tune ceiling in milli-counts/s; `None` outside the position tune.
     velocity_ceiling_milli_counts_per_s: Option<u64>,
-    /// Set on the first window at or above the ceiling since `begin_primitive`.
     ceiling_latched: bool,
-    /// Largest two-sample window velocity since `begin_primitive`, in milli-counts/s.
     primitive_peak_milli_counts_per_s: u64,
     pub(crate) budget: OuterMotionBudget,
 }
@@ -452,17 +449,14 @@ impl OuterSafetyLimits {
         self.in_settle_phase = false;
     }
 
-    /// Arm or clear the position-tune velocity ceiling, in the cap's unit.
     pub(crate) fn set_velocity_ceiling(&mut self, ceiling_milli_counts_per_s: Option<u64>) {
         self.velocity_ceiling_milli_counts_per_s = ceiling_milli_counts_per_s;
     }
 
-    /// True once a window since `begin_primitive` reached the ceiling.
     pub(crate) fn ceiling_latched(&self) -> bool {
         self.ceiling_latched
     }
 
-    /// Largest two-sample window velocity since `begin_primitive`.
     pub(crate) fn primitive_peak_milli_counts_per_s(&self) -> u64 {
         self.primitive_peak_milli_counts_per_s
     }
@@ -1528,9 +1522,6 @@ mod tests {
     #[test]
     fn ceiling_latches_at_the_ceiling_and_not_one_count_below() {
         pollster::block_on(async {
-            // 5000 mrev/s: envelope max(7500, 7000) = 7500 mrev/s at 4000 counts/rev is a
-            // 30_000_000 milli-counts/s cap, so the 4/5 ceiling is 24_000_000, which is
-            // exactly 48 counts over a two-sample 2 ms window.
             let mut safety = envelope_armed_safety(5_000, 7_500);
             let cap = safety.active_velocity_cap_milli_counts_per_s();
             assert_eq!(cap, 30_000_000);
