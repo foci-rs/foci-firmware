@@ -1357,7 +1357,9 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     .and_then(|pidout_ceiling| validation_envelope(current_limit, gains, pidout_ceiling));
     let validation = match validation {
         Some(validation) => validation,
-        None => return super::fail_inner(phase, CommissionError::CurrentValidationFailed),
+        None => {
+            return super::fail_inner(phase, CommissionError::CurrentValidationEnvelopeUnreachable);
+        }
     };
 
     *phase = InnerPhase::CurrentValidate {
@@ -2288,6 +2290,70 @@ mod tests {
         });
     }
 
+    fn ldo_48v_model() -> ElectricalModel {
+        ElectricalModel {
+            r_count_milli: 1011,
+            l_count_micro: 2374,
+            tau_e_us: 2349,
+            theta_e_us: 160,
+            theta_source: 0,
+        }
+    }
+
+    fn current_tune_phase(model: ElectricalModel) -> InnerPhase {
+        InnerPhase::CurrentTune {
+            model,
+            inner_warning_flags: 0,
+            resistance_result: resistance_result(),
+            inductance: InductanceEvidence::test_fixture(),
+            timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
+        }
+    }
+
+    #[test]
+    fn current_tune_names_an_unreachable_validation_envelope_at_low_run_current() {
+        pollster::block_on(async {
+            let mut phase = current_tune_phase(ldo_48v_model());
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = current_limit(1111);
+
+            let result =
+                step_current_tune(&mut phase, CommissionProfile::Stiff, &mut backend).await;
+
+            assert!(
+                matches!(
+                    result,
+                    StepResult::InnerFailed(CommissionError::CurrentValidationEnvelopeUnreachable)
+                ),
+                "stiff at 1 A on this motor needs a pidout limit above the rail ceiling: {result:?}"
+            );
+            assert!(matches!(
+                phase,
+                InnerPhase::Failed(CommissionError::CurrentValidationEnvelopeUnreachable)
+            ));
+        });
+    }
+
+    #[test]
+    fn current_tune_balanced_profile_fits_the_envelope_at_the_same_run_current() {
+        pollster::block_on(async {
+            let mut phase = current_tune_phase(ldo_48v_model());
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = current_limit(1111);
+
+            let result =
+                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+
+            assert!(
+                matches!(
+                    result,
+                    StepResult::PhaseChanged(CommissionPhase::CurrentValidate)
+                ),
+                "{result:?}"
+            );
+        });
+    }
+
     #[test]
     fn validation_pidout_ceiling_follows_run_current_and_resistance() {
         assert_eq!(validation_pidout_ceiling(2816, 959, 29_000), Some(8_101));
@@ -2325,7 +2391,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::InnerFailed(CommissionError::CurrentValidationFailed)
+                StepResult::InnerFailed(CommissionError::CurrentValidationEnvelopeUnreachable)
             ));
             let limit_addr = foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS.addr();
             assert!(!backend.spi_log.iter().any(|op| matches!(
@@ -2366,7 +2432,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::InnerFailed(CommissionError::CurrentValidationFailed)
+                StepResult::InnerFailed(CommissionError::CurrentValidationEnvelopeUnreachable)
             ));
             let limit_addr = foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS.addr();
             assert!(!backend.spi_log.iter().any(|op| matches!(
@@ -2448,7 +2514,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::InnerFailed(CommissionError::CurrentValidationFailed)
+                StepResult::InnerFailed(CommissionError::CurrentValidationEnvelopeUnreachable)
             ));
         });
     }
@@ -2496,7 +2562,7 @@ mod tests {
     }
 
     #[test]
-    fn current_tune_rejects_out_of_range_gain_before_register_write() {
+    fn current_tune_unreachable_envelope_fails_before_any_register_write() {
         pollster::block_on(async {
             let mut phase = InnerPhase::CurrentTune {
                 model: ElectricalModel {
@@ -2519,15 +2585,15 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::InnerFailed(CommissionError::CurrentValidationFailed)
+                StepResult::InnerFailed(CommissionError::CurrentValidationEnvelopeUnreachable)
             ));
             assert!(matches!(
                 phase,
-                InnerPhase::Failed(CommissionError::CurrentValidationFailed)
+                InnerPhase::Failed(CommissionError::CurrentValidationEnvelopeUnreachable)
             ));
             assert!(
                 backend.spi_log.iter().all(|op| matches!(op, SpiOp::Read)),
-                "unrepresentable gains must fail before any PID write"
+                "an unreachable validation envelope must fail before any PID write"
             );
         });
     }

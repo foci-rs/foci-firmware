@@ -381,6 +381,10 @@ pub enum CommissionError {
     GainFloorStepOvershoot,
     /// Coil-check excitation exceeded the diagnostic-current envelope. Code 119.
     CoilCurrentEnvelope,
+    /// The current-validation step cannot fit under the voltage rail ceiling at
+    /// the configured run current with the profile's current-loop bandwidth.
+    /// Code 120.
+    CurrentValidationEnvelopeUnreachable,
 }
 
 /// Specific outcome behind a `CommissionError::PositionTuneFailed`.
@@ -558,6 +562,7 @@ impl CommissionError {
             Self::GainFloorPositionGainUnrepresentable => 117,
             Self::GainFloorStepOvershoot => 118,
             Self::CoilCurrentEnvelope => 119,
+            Self::CurrentValidationEnvelopeUnreachable => 120,
         }
     }
 }
@@ -857,6 +862,7 @@ mod tests {
             CommissionError::GainFloorPositionGainUnrepresentable,
             CommissionError::GainFloorStepOvershoot,
             CommissionError::CoilCurrentEnvelope,
+            CommissionError::CurrentValidationEnvelopeUnreachable,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -973,6 +979,10 @@ mod tests {
         );
         assert_eq!(CommissionError::GainFloorStepOvershoot.status_code(), 118);
         assert_eq!(CommissionError::CoilCurrentEnvelope.status_code(), 119);
+        assert_eq!(
+            CommissionError::CurrentValidationEnvelopeUnreachable.status_code(),
+            120
+        );
     }
 
     #[test]
