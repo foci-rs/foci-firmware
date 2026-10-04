@@ -2053,7 +2053,7 @@ async fn position_tune_failure_carries_real_rung_evidence_through_the_dispatch_p
                     .feedforward_surfaces_idle
                     .store(true, core::sync::atomic::Ordering::Relaxed);
             }
-            PositionTuneStep::Done => {}
+            PositionTuneStep::CeilingStop { .. } | PositionTuneStep::Done => {}
         }
 
         backend.elapsed_us_value = clock_us;
@@ -2087,7 +2087,12 @@ async fn position_tune_failure_carries_real_rung_evidence_through_the_dispatch_p
                 "a mid-sweep failure must carry the completed rung's evidence, not a zeroed block"
             );
             assert_eq!(result.position_tune.rungs_measured, 1);
-            assert_eq!(result.position_tune.last_rung_p, start_raw);
+            let second_rung_raw = crate::commissioning::outer::position_tune::selection::next_rung(
+                foci_tmc4671::pid::PidPGain::new(start_raw).unwrap(),
+            )
+            .expect("a representable next rung")
+            .raw();
+            assert_eq!(result.position_tune.last_rung_p, second_rung_raw);
         }
         _ => panic!("expected TuneResult"),
     }

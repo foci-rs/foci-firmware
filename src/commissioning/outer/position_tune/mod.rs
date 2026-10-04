@@ -70,6 +70,14 @@ pub(crate) enum PositionTuneStep {
         rung: PidPGain,
         since_us: u64,
     },
+    /// The stimulus was stopped at the velocity ceiling; waiting for feedforward restoration
+    /// before resolving the rung.
+    // Consumed by the ceiling stop in Task 4 of this branch.
+    #[allow(dead_code)]
+    CeilingStop {
+        rung: PidPGain,
+        since_us: u64,
+    },
     StandstillHold {
         rung: PidPGain,
         capture_index: u8,
@@ -98,6 +106,14 @@ pub(crate) struct PositionTuneState {
     pub(crate) last_measurement: Option<RungMeasurement>,
     /// Feedforward path flags of the last admitted motion stroke; zero until one is admitted.
     pub(crate) feedforward_paths_active: u8,
+    /// The rung the ladder is on, set when its first stroke is admitted; `None` before.
+    pub(crate) current_rung: Option<PidPGain>,
+    /// Largest window velocity across every primitive of `current_rung`, milli-counts/s.
+    pub(crate) rung_peak_milli_counts_per_s: u64,
+    /// Stiffest rung so far that met every guard except the motion cruise bound.
+    pub(crate) candidate: Option<RungMeasurement>,
+    pub(crate) counts_per_rev: u32,
+    pub(crate) ceiling_reached: bool,
     pub(crate) provenance: PositionTuneProvenance,
     accepted: Option<RungMeasurement>,
     /// Outer gains at installed-tuning entry; the terminal `OuterResult` reports every other
@@ -132,6 +148,11 @@ impl PositionTuneState {
             rungs_measured: 0,
             last_measurement: None,
             feedforward_paths_active: 0,
+            current_rung: None,
+            rung_peak_milli_counts_per_s: 0,
+            candidate: None,
+            counts_per_rev: 0,
+            ceiling_reached: false,
             provenance: PositionTuneProvenance {
                 predicted_start_p: 0,
                 last_rung_p: 0,
@@ -148,6 +169,9 @@ impl PositionTuneState {
                 dither_margin_milli: 0,
                 rungs_measured: 0,
                 stimulus_feedforward_paths: 0,
+                velocity_ceiling_reached: 0,
+                peak_velocity_mrev_s: 0,
+                tune_step: 0,
             },
             accepted: None,
             entry,
@@ -323,6 +347,7 @@ async fn predict<B: CommissioningBackend>(
         return Err(PositionTuneOutcome::ConfigurationInvalid.into());
     }
     let counts_per_rev = backend.mechanical_encoder_quadrature_counts_per_rev();
+    state.counts_per_rev = counts_per_rev;
     safety
         .configure_velocity_sweep_encoder_resolution(counts_per_rev)
         .map_err(|_| CommissionError::EncoderFault)?;
@@ -425,6 +450,10 @@ async fn arm_stroke<B: CommissioningBackend>(
         StrokeKind::Motion => state.motion_leg,
     }
     .expect("legs are planned before the first stroke");
+    if state.current_rung != Some(rung) {
+        state.current_rung = Some(rung);
+        state.rung_peak_milli_counts_per_s = 0;
+    }
     write_register(
         backend,
         PID_POSITION_P_POSITION_I,
@@ -644,8 +673,8 @@ fn resolve_completed_rung(
 }
 
 fn refresh_provenance(state: &mut PositionTuneState) {
-    let measurement = state.last_measurement.or(state.accepted);
-    let last_rung_p = measurement.map_or(0, |m| m.position_p.raw());
+    let measurement = state.accepted.or(state.last_measurement);
+    let last_rung_p = state.current_rung.map_or(0, |rung| rung.raw());
     let homing_peak_abs_units = measurement.map_or(0, |m| m.homing_peak_abs_units);
     let motion_cruise_mean_abs_units = measurement.map_or(0, |m| m.motion_cruise_mean_abs_units);
     let motion_overshoot_units = measurement.map_or(0, |m| m.motion_overshoot_units);
@@ -671,7 +700,38 @@ fn refresh_provenance(state: &mut PositionTuneState) {
         dither_margin_milli: dither_margin,
         rungs_measured: state.rungs_measured,
         stimulus_feedforward_paths: state.feedforward_paths_active,
+        velocity_ceiling_reached: u8::from(state.ceiling_reached),
+        peak_velocity_mrev_s: peak_velocity_mrev_s(
+            state.rung_peak_milli_counts_per_s,
+            state.counts_per_rev,
+        ),
+        tune_step: tune_step_code(state.step),
     };
+}
+
+/// Wire code for the sub-state the phase is in: 0 none, 1 homing stroke, 2 motion stroke,
+/// 3 restore wait, 4 standstill hold.
+pub(crate) fn tune_step_code(step: PositionTuneStep) -> u8 {
+    match step {
+        PositionTuneStep::Predict | PositionTuneStep::Done => 0,
+        PositionTuneStep::Stroke {
+            kind: StrokeKind::Homing,
+            ..
+        } => 1,
+        PositionTuneStep::Stroke {
+            kind: StrokeKind::Motion,
+            ..
+        } => 2,
+        PositionTuneStep::AwaitRestore { .. } | PositionTuneStep::CeilingStop { .. } => 3,
+        PositionTuneStep::StandstillHold { .. } => 4,
+    }
+}
+
+fn peak_velocity_mrev_s(milli_counts_per_s: u64, counts_per_rev: u32) -> u16 {
+    if counts_per_rev == 0 {
+        return 0;
+    }
+    u16::try_from(milli_counts_per_s / u64::from(counts_per_rev)).unwrap_or(u16::MAX)
 }
 
 fn nominal_bandwidth_hz(position_p_raw: u16) -> u32 {
@@ -882,6 +942,7 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                 Err(fault) => fail_position_tune(phase, backend, fault).await,
             }
         }
+        PositionTuneStep::CeilingStop { .. } => StepResult::ReadyNow,
         PositionTuneStep::Done => match state.accepted {
             Some(accepted) => position_tune_terminal(state, accepted),
             None => {
@@ -998,7 +1059,7 @@ mod tests {
                         torque_target_register(torque),
                     );
                 }
-                PositionTuneStep::Done => {}
+                PositionTuneStep::CeilingStop { .. } | PositionTuneStep::Done => {}
             }
 
             backend.elapsed_us_value = clock_us;
@@ -1450,6 +1511,123 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tune_step_codes_cover_every_sub_state() {
+        let rung = PidPGain::new(100).unwrap();
+        assert_eq!(tune_step_code(PositionTuneStep::Predict), 0);
+        assert_eq!(
+            tune_step_code(PositionTuneStep::Stroke {
+                rung,
+                kind: StrokeKind::Homing,
+                repeat: 0
+            }),
+            1
+        );
+        assert_eq!(
+            tune_step_code(PositionTuneStep::Stroke {
+                rung,
+                kind: StrokeKind::Motion,
+                repeat: 2
+            }),
+            2
+        );
+        assert_eq!(
+            tune_step_code(PositionTuneStep::AwaitRestore { rung, since_us: 0 }),
+            3
+        );
+        assert_eq!(
+            tune_step_code(PositionTuneStep::CeilingStop { rung, since_us: 0 }),
+            3
+        );
+        assert_eq!(
+            tune_step_code(PositionTuneStep::StandstillHold {
+                rung,
+                capture_index: 0
+            }),
+            4
+        );
+        assert_eq!(tune_step_code(PositionTuneStep::Done), 0);
+    }
+
+    #[test]
+    fn peak_velocity_converts_to_mrev_s_and_saturates() {
+        assert_eq!(peak_velocity_mrev_s(80_000_000, 4_000), 20_000);
+        assert_eq!(peak_velocity_mrev_s(0, 4_000), 0);
+        assert_eq!(peak_velocity_mrev_s(u64::MAX, 4_000), u16::MAX);
+        assert_eq!(peak_velocity_mrev_s(1_000, 0), 0);
+    }
+
+    #[fixture_test]
+    fn last_rung_p_names_the_in_flight_rung_and_the_metrics_the_completed_one() {
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+        let second_rung_raw = next_rung(PidPGain::new(start_raw).unwrap())
+            .expect("a representable next rung")
+            .raw();
+
+        let mut workspace = TransientBuffer::new();
+        let mut clock_us = backend.elapsed_us_value;
+        for _ in 0..20_000 {
+            let OuterPhase::PositionTune { state, .. } = &phase else {
+                panic!("the phase stays resident");
+            };
+            if let PositionTuneStep::Stroke { rung, .. } = state.step
+                && rung.raw() == second_rung_raw
+                && state.capture_running
+            {
+                assert_eq!(state.provenance.last_rung_p, second_rung_raw);
+                assert_eq!(state.provenance.rungs_measured, 1);
+                assert_eq!(
+                    state.provenance.homing_peak_abs_units, 10_000,
+                    "metrics still describe the completed first rung"
+                );
+                assert_eq!(state.provenance.tune_step, 1);
+                return;
+            }
+            match state.step {
+                PositionTuneStep::Stroke { rung, kind, .. } => {
+                    let error = if rung.raw() == start_raw && kind == StrokeKind::Homing {
+                        10_000
+                    } else {
+                        50
+                    };
+                    let _ = backend
+                        .registers
+                        .insert(PID_ERROR_PID_POSITION_ERROR.data.addr(), error as u32);
+                }
+                PositionTuneStep::AwaitRestore { .. } => {
+                    backend
+                        .tmc_state
+                        .feedforward_surfaces_idle
+                        .store(true, Relaxed);
+                }
+                PositionTuneStep::StandstillHold { rung, .. } => {
+                    let predicted = quantization_only(rung.raw(), state.k_q16);
+                    let torque = if workspace.len().is_multiple_of(2) {
+                        0
+                    } else {
+                        predicted
+                    };
+                    let _ = backend.registers.insert(
+                        PID_TORQUE_FLUX_TARGET.addr(),
+                        torque_target_register(torque),
+                    );
+                }
+                PositionTuneStep::Predict
+                | PositionTuneStep::CeilingStop { .. }
+                | PositionTuneStep::Done => {}
+            }
+            backend.elapsed_us_value = clock_us;
+            match pollster::block_on(step_position_tune(&mut phase, &mut workspace, &mut backend)) {
+                StepResult::At(next_us) => clock_us = next_us,
+                StepResult::ReadyNow | StepResult::PhaseChanged(_) => {}
+                terminal => panic!("unexpected terminal {terminal:?}"),
+            }
+        }
+        panic!("the second rung never armed a stroke");
+    }
+
     #[fixture_test]
     fn a_safety_fault_after_a_completed_rung_keeps_its_evidence() {
         let mut backend = position_tune_backend();
@@ -1503,7 +1681,7 @@ mod tests {
                         torque_target_register(torque),
                     );
                 }
-                PositionTuneStep::Done => {}
+                PositionTuneStep::CeilingStop { .. } | PositionTuneStep::Done => {}
             }
 
             backend.elapsed_us_value = clock_us;
@@ -1525,7 +1703,12 @@ mod tests {
                         panic!("expected FailedWithSafety, got {phase:?}");
                     };
                     assert_eq!(position_tune.rungs_measured, 1);
-                    assert_eq!(position_tune.last_rung_p, start_raw);
+                    let second_rung_raw = next_rung(PidPGain::new(start_raw).unwrap())
+                        .expect("a representable next rung")
+                        .raw();
+                    assert_eq!(position_tune.last_rung_p, second_rung_raw);
+                    assert_eq!(position_tune.homing_peak_abs_units, 10_000);
+                    assert_eq!(position_tune.tune_step, 1);
                     return;
                 }
             }
@@ -1620,6 +1803,7 @@ mod tests {
                     );
                 }
                 PositionTuneStep::AwaitRestore { .. }
+                | PositionTuneStep::CeilingStop { .. }
                 | PositionTuneStep::Predict
                 | PositionTuneStep::Done => {}
             }

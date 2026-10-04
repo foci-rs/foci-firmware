@@ -1322,6 +1322,13 @@ pub struct PositionTuneProvenance {
     pub rungs_measured: u8,
     /// Feedforward paths live on the last admitted motion stroke: bit 0 velocity, 2 acceleration.
     pub stimulus_feedforward_paths: u8,
+    /// 1 when the velocity ceiling ended the walk, by accepting the candidate or by a conflict.
+    pub velocity_ceiling_reached: u8,
+    /// Rung-wide peak window velocity of the last rung driven, mrev/s, saturating.
+    pub peak_velocity_mrev_s: u16,
+    /// Position-tune sub-state at exit: 0 none, 1 homing stroke, 2 motion stroke, 3 restore
+    /// wait, 4 standstill hold.
+    pub tune_step: u8,
 }
 
 /// Result of outer (mechanical) commissioning.

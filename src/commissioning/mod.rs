@@ -1609,7 +1609,7 @@ mod tests {
             3_392,
             "the gain-floor capture buffer must stay inside the existing variant slack"
         );
-        assert_eq!(size_of::<crate::commissioning::types::OuterResult>(), 88);
+        assert_eq!(size_of::<crate::commissioning::types::OuterResult>(), 92);
         assert_eq!(size_of::<CommissioningEngine>(), 5_792);
         assert!(size_of::<CommissioningEngine>() <= 5_808);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
