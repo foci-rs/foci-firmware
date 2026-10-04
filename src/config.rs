@@ -51,6 +51,14 @@ pub struct TmcConfig {
     pub current_scale_ma_per_lsb: f32,
     /// RMS milliamp ceiling for run and homing current.
     pub max_run_current_ma: u32,
+    /// VM sense divider high-side resistance in ohms.
+    pub vm_divider_high_ohms: u32,
+    /// VM sense divider low-side resistance in ohms.
+    pub vm_divider_low_ohms: u32,
+    /// TMC4671 `ADC_VM` reference span in millivolts.
+    pub vm_adc_reference_millivolts: u32,
+    /// Centered positive `ADC_VM` count span of the 16-bit raw ADC.
+    pub vm_adc_center_counts: u32,
 }
 
 /// Which physical encoder drives a TMC4671 selection register.
@@ -111,6 +119,33 @@ impl TmcConfig {
         profile.scale_metadata_validated = scale_metadata_validated;
         profile
     }
+
+    /// Milli-counts of `ADC_VM` per bus volt for this board's divider and ADC.
+    pub const fn vm_counts_per_volt_milli(&self) -> u32 {
+        crate::resistance_identification::counts_per_volt_milli(
+            self.vm_adc_center_counts,
+            self.vm_divider_low_ohms,
+            self.vm_divider_high_ohms,
+            self.vm_adc_reference_millivolts,
+        )
+    }
+
+    /// Bus-voltage sense for the resistance sweep, or `None` when no `ADC_VM` offset
+    /// has been captured or the board constants give a zero scale.
+    pub fn bus_voltage_sense(
+        &self,
+        offset: Option<crate::state::tmc::AdcVmOffsetSnapshot>,
+    ) -> Option<crate::resistance_identification::BusVoltageSense> {
+        let offset = offset?;
+        let counts_per_volt_milli = self.vm_counts_per_volt_milli();
+        if counts_per_volt_milli == 0 {
+            return None;
+        }
+        Some(crate::resistance_identification::BusVoltageSense {
+            offset_raw: offset.offset_raw,
+            counts_per_volt_milli,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -133,6 +168,10 @@ impl TmcConfig {
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
+            vm_divider_high_ohms: 71_500,
+            vm_divider_low_ohms: 1_500,
+            vm_adc_reference_millivolts: 2_500,
+            vm_adc_center_counts: 32_767,
         }
     }
 }
@@ -169,7 +208,31 @@ mod tests {
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
+            vm_divider_high_ohms: 71_500,
+            vm_divider_low_ohms: 1_500,
+            vm_adc_reference_millivolts: 2_500,
+            vm_adc_center_counts: 32_767,
         }
+    }
+
+    #[test]
+    fn production_vm_constants_give_the_spec_milli_counts_per_volt() {
+        let config = test_config();
+        assert_eq!(config.vm_counts_per_volt_milli(), 269_318);
+    }
+
+    #[test]
+    fn bus_voltage_sense_needs_a_captured_offset() {
+        let config = test_config();
+        assert_eq!(config.bus_voltage_sense(None), None);
+        let sense = config
+            .bus_voltage_sense(Some(crate::state::tmc::AdcVmOffsetSnapshot {
+                offset_raw: 33_671,
+                sample_count: 8,
+            }))
+            .expect("offset present");
+        assert_eq!(sense.offset_raw, 33_671);
+        assert_eq!(sense.counts_per_volt_milli, 269_318);
     }
 
     #[test]
@@ -237,6 +300,10 @@ mod tests {
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
+            vm_divider_high_ohms: 71_500,
+            vm_divider_low_ohms: 1_500,
+            vm_adc_reference_millivolts: 2_500,
+            vm_adc_center_counts: 32_767,
         };
         assert_eq!(cfg.dsadc_mdec_register(), (331 << 16) | 660);
     }
@@ -259,6 +326,10 @@ mod tests {
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
+            vm_divider_high_ohms: 71_500,
+            vm_divider_low_ohms: 1_500,
+            vm_adc_reference_millivolts: 2_500,
+            vm_adc_center_counts: 32_767,
         };
         assert_eq!(cfg.pwm_freq_hz(), 100_000);
     }
@@ -281,6 +352,10 @@ mod tests {
             resistance_scale_metadata_validated: false,
             current_scale_ma_per_lsb: 1.155,
             max_run_current_ma: 10_000,
+            vm_divider_high_ohms: 71_500,
+            vm_divider_low_ohms: 1_500,
+            vm_adc_reference_millivolts: 2_500,
+            vm_adc_center_counts: 32_767,
         };
         assert_eq!(cfg.pwm_freq_hz(), 50_000);
     }

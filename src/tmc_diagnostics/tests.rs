@@ -192,6 +192,10 @@ static TEST_TMC_CONFIG: crate::config::TmcConfig = crate::config::TmcConfig {
     resistance_scale_metadata_validated: true,
     current_scale_ma_per_lsb: 1.155,
     max_run_current_ma: 10_000,
+    vm_divider_high_ohms: 71_500,
+    vm_divider_low_ohms: 1_500,
+    vm_adc_reference_millivolts: 2_500,
+    vm_adc_center_counts: 32_767,
 };
 
 fn ready_runtime() -> TmcControlRuntime {

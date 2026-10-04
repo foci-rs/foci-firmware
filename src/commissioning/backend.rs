@@ -1111,6 +1111,10 @@ mod tests {
         resistance_scale_metadata_validated: false,
         current_scale_ma_per_lsb: 1.155,
         max_run_current_ma: 10_000,
+        vm_divider_high_ohms: 71_500,
+        vm_divider_low_ohms: 1_500,
+        vm_adc_reference_millivolts: 2_500,
+        vm_adc_center_counts: 32_767,
     };
     static TEST_FEEDBACK_CONFIGS: [crate::config::FeedbackConfig; 8] = {
         let mut configs = [crate::config::FeedbackConfig::abn_abn(); 8];
