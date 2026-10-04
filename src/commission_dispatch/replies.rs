@@ -213,7 +213,7 @@ pub trait CommissionReplySink {
     fn foci_tune_result(&mut self, oid: u8, report_seq: u8, status: u8, result: &OuterResult);
 
     /// Emit position-tune evidence dropped from the terminal result; sent before it when
-    /// `rungs_measured > 0`.
+    /// the phase drove a rung.
     fn foci_tune_position_evidence(
         &mut self,
         oid: u8,
@@ -799,7 +799,7 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(
                 emit_robustness_cycle_evidence(sink, oid, &evidence);
             }
             let report_seq = crate::state::report_seq::next_report_seq(channel);
-            if result.position_tune.rungs_measured > 0 {
+            if result.position_tune.drove_a_rung() {
                 sink.foci_tune_position_evidence(oid, report_seq, &result.position_tune);
             }
             sink.foci_tune_result(oid, report_seq, status, &result);
@@ -2958,6 +2958,74 @@ mod tests {
                 warning_code: 52,
             }]
         );
+    }
+
+    #[fixture_test]
+    fn tune_result_emits_position_evidence_for_a_zero_rung_ceiling_trip() {
+        crate::state::report_seq::reset_report_seq();
+        let mut result = outer_result();
+        result.position_tune.rungs_measured = 0;
+        result.position_tune.last_rung_p = 124;
+        result.position_tune.velocity_ceiling_reached = 1;
+
+        let mut sink = RecordingSink::default();
+        emit_terminal_reply(
+            &mut sink,
+            0,
+            ReplyPayload::TuneResult {
+                oid: 8,
+                status: 12,
+                result,
+                safety_fault: None,
+                robustness_evidence: None,
+            },
+        );
+
+        assert!(matches!(
+            sink.events.as_slice(),
+            [
+                Event::TunePositionEvidence {
+                    last_rung_p: 124,
+                    rungs_measured: 0,
+                    ..
+                },
+                Event::Tune { status: 12, .. },
+            ]
+        ));
+    }
+
+    #[fixture_test]
+    fn tune_result_emits_position_evidence_for_a_zero_rung_safety_fault_mid_stroke() {
+        crate::state::report_seq::reset_report_seq();
+        let mut result = outer_result();
+        result.position_tune.rungs_measured = 0;
+        result.position_tune.last_rung_p = 124;
+        result.position_tune.tune_step = 2;
+
+        let mut sink = RecordingSink::default();
+        emit_terminal_reply(
+            &mut sink,
+            0,
+            ReplyPayload::TuneResult {
+                oid: 8,
+                status: 17,
+                result,
+                safety_fault: None,
+                robustness_evidence: None,
+            },
+        );
+
+        assert!(matches!(
+            sink.events.as_slice(),
+            [
+                Event::TunePositionEvidence {
+                    last_rung_p: 124,
+                    rungs_measured: 0,
+                    ..
+                },
+                Event::Tune { status: 17, .. },
+            ]
+        ));
     }
 
     #[test]

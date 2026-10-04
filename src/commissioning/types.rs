@@ -1331,6 +1331,15 @@ pub struct PositionTuneProvenance {
     pub tune_step: u8,
 }
 
+impl PositionTuneProvenance {
+    /// True when the phase drove at least one stroke, so the evidence fragment carries a rung
+    /// and the planned speeds worth sending: a completed rung, a ceiling trip, or an exit
+    /// inside a rung's sub-state.
+    pub fn drove_a_rung(&self) -> bool {
+        self.rungs_measured > 0 || self.velocity_ceiling_reached != 0 || self.tune_step != 0
+    }
+}
+
 /// Result of outer (mechanical) commissioning.
 #[derive(Debug, Clone, defmt::Format)]
 pub struct OuterResult {

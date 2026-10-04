@@ -1310,6 +1310,34 @@ mod velocity_sweep_reply_tests {
     }
 
     #[test]
+    fn tune_result_terminal_fits_one_protocol_frame() {
+        assert_fits(
+            &FociTuneResult {
+                oid: u8::MAX,
+                report_seq: u8::MAX,
+                status: u8::MAX,
+                velocity_p: u16::MAX,
+                velocity_i: u16::MAX,
+                position_p: u16::MAX,
+                probed_velocity_mrev_s: u32::MAX,
+                d_eq_q: i32::MIN,
+                confidence_q: u16::MAX,
+                band_lower_percent: u8::MAX,
+                band_upper_percent: u8::MAX,
+                band_position_q: u16::MAX,
+                predicted_start_p: u16::MAX,
+                rungs_measured: u8::MAX,
+                stimulus_feedforward_paths: u8::MAX,
+                position_tune_outcome_code: u8::MAX,
+                velocity_ceiling_reached: u8::MAX,
+                peak_velocity_mrev_s: u16::MAX,
+                tune_step: u8::MAX,
+            },
+            "tune_result",
+        );
+    }
+
+    #[test]
     fn velocity_integral_terminal_fits_one_protocol_frame() {
         assert_fits(
             &FociVelocityIntegralTerminal {
@@ -1389,6 +1417,13 @@ pub struct FociTuneResult {
     /// Wire code of the specific `PositionTuneOutcome` behind a
     /// `CommissionError::PositionTuneFailed` (0 = not applicable).
     pub position_tune_outcome_code: u8,
+    /// 1 when the position tune's velocity ceiling ended the walk.
+    pub velocity_ceiling_reached: u8,
+    /// Rung-wide peak window velocity of the last rung driven, mrev/s, saturating.
+    pub peak_velocity_mrev_s: u16,
+    /// Position-tune sub-state at exit: 0 none, 1 homing stroke, 2 motion stroke,
+    /// 3 restore wait, 4 standstill hold.
+    pub tune_step: u8,
 }
 
 /// Non-terminal `PositionTune` fragment.
@@ -1433,6 +1468,9 @@ mod tune_result_reply_wire_tests {
             rungs_measured: 14,
             stimulus_feedforward_paths: 15,
             position_tune_outcome_code: 16,
+            velocity_ceiling_reached: 17,
+            peak_velocity_mrev_s: 18,
+            tune_step: 19,
         }
     }
 
@@ -1463,7 +1501,9 @@ mod tune_result_reply_wire_tests {
 
         assert_eq!(
             encoded,
-            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            &[
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+            ],
             "terminal fields must serialize in declared order"
         );
     }
@@ -1502,6 +1542,9 @@ mod tune_result_reply_wire_tests {
             stimulus_feedforward_paths: 0,
             position_tune_outcome_code: crate::autotune::PositionTuneOutcome::Conflict
                 .to_wire_code(),
+            velocity_ceiling_reached: 1,
+            peak_velocity_mrev_s: 15_210,
+            tune_step: 3,
         };
         let evidence = FociTunePositionEvidence {
             oid: 1,
@@ -1540,11 +1583,17 @@ mod tune_result_reply_wire_tests {
         let _stimulus_feedforward_paths =
             u8::read(&mut cursor).expect("stimulus_feedforward_paths");
         let outcome_code = u8::read(&mut cursor).expect("position_tune_outcome_code");
+        let velocity_ceiling_reached = u8::read(&mut cursor).expect("velocity_ceiling_reached");
+        let peak_velocity_mrev_s = u16::read(&mut cursor).expect("peak_velocity_mrev_s");
+        let tune_step = u8::read(&mut cursor).expect("tune_step");
 
         assert_eq!(status, 12);
         assert_eq!(predicted_start_p, 0);
         assert_eq!(rungs_measured, 3);
         assert_eq!(outcome_code, 8);
+        assert_eq!(velocity_ceiling_reached, 1);
+        assert_eq!(peak_velocity_mrev_s, 15_210);
+        assert_eq!(tune_step, 3);
         assert!(
             cursor.is_empty(),
             "every terminal field must have been decoded"
