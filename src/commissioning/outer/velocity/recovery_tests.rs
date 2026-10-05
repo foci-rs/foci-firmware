@@ -22,7 +22,9 @@ use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit
 use crate::commissioning::outer::check_outer_safety;
 use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityObservationRing};
 use crate::commissioning::outer::{OuterMotionBudget, OuterSafetyLimits, OuterSafetyTimingPhase};
-use crate::commissioning::types::OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY;
+use crate::commissioning::types::{
+    OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY, OUTER_SAFETY_FAULT_VELOCITY,
+};
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::PidPGain;
 use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET};
@@ -1290,6 +1292,40 @@ fn recovery_safety_inherits_gap_quarter_turn_duration_current_and_spi_faults() {
             interrupted: true,
         })
     );
+}
+
+#[test]
+fn recovery_settle_inside_the_transient_window_enforces_the_steady_cap() {
+    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+    fixture.command_motion();
+    let arrival_us = fixture.arrive_at_moving_target(1_040);
+    assert!(
+        arrival_us < 24_000,
+        "the fixture must reach the origin inside the transient window"
+    );
+    let arrival = moving_arrival_counts();
+
+    fixture.backend.elapsed_us_value = arrival_us + 1_000;
+    fixture.backend.mechanical_encoder_position_counts_value =
+        (arrival - 30).rem_euclid(4_000) as u32;
+    assert_eq!(
+        pollster::block_on(check_outer_safety(
+            &mut fixture.safety,
+            &mut fixture.backend,
+        )),
+        Ok(None)
+    );
+
+    fixture.backend.elapsed_us_value = arrival_us + 2_000;
+    fixture.backend.mechanical_encoder_position_counts_value =
+        (arrival - 60).rem_euclid(4_000) as u32;
+    let fault = pollster::block_on(check_outer_safety(
+        &mut fixture.safety,
+        &mut fixture.backend,
+    ))
+    .unwrap()
+    .expect("30 counts/ms exceeds the 26 counts/ms steady cap once the zero target is written");
+    assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
 }
 
 #[test]

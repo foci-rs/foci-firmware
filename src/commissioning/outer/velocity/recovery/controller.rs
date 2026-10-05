@@ -2,7 +2,7 @@
 
 use crate::autotune::CommissionError;
 use crate::commissioning::backend::CommissioningBackend;
-use crate::commissioning::outer::check_outer_safety;
+use crate::commissioning::outer::{OuterSafetyLimits, check_outer_safety};
 use crate::commissioning::types::{OUTER_SAFETY_FAULT_CURRENT, OuterSafetyFault};
 use crate::diagnostic::BreakawayCheckpoint;
 use foci_tmc4671::pid::{PidGainPair, PidIGain};
@@ -277,6 +277,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 if zero_result.is_err() {
                     return recovery_fault(CommissionError::Spi, None);
                 }
+                resources.safety.enter_settle_phase();
                 if let Err(error) = current_result {
                     return current_guard_fault(runtime, resources, backend, error);
                 }
@@ -482,7 +483,8 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             let current_contact = if runtime.current_contact_detected() {
                 true
             } else if recovery_current_contact(resources.current_observer) {
-                if let Some(fault) = hold_zero_for_current_contact(backend).await {
+                if let Some(fault) = hold_zero_for_current_contact(resources.safety, backend).await
+                {
                     return fault;
                 }
                 true
@@ -607,6 +609,7 @@ async fn recovery_safety_sample<B: CommissioningBackend>(
 }
 
 async fn hold_zero_for_current_contact<B: CommissioningBackend>(
+    safety: &mut OuterSafetyLimits,
     backend: &mut B,
 ) -> Option<RungOriginRecoveryStep> {
     checkpoint(BreakawayCheckpoint::RecoveryZeroTargetWrite);
@@ -617,6 +620,7 @@ async fn hold_zero_for_current_contact<B: CommissioningBackend>(
     {
         return Some(recovery_fault(CommissionError::Spi, None));
     }
+    safety.enter_settle_phase();
     checkpoint(BreakawayCheckpoint::RecoverySettleIntegratorClear);
     if clear_velocity_error_sum(backend).await.is_err() {
         return Some(recovery_fault(CommissionError::Spi, None));
@@ -629,7 +633,7 @@ async fn recovery_current_headroom<B: CommissioningBackend>(
     resources: &mut RungOriginRecoveryResources<'_>,
     backend: &mut B,
 ) -> RungOriginRecoveryStep {
-    if let Some(fault) = hold_zero_for_current_contact(backend).await {
+    if let Some(fault) = hold_zero_for_current_contact(resources.safety, backend).await {
         return fault;
     }
     if runtime.proves_passive_settle() {
