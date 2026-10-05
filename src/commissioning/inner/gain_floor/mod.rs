@@ -804,7 +804,7 @@ mod tests {
                         crate::pid::DEFAULT_OUTER_GAINS.position_p.raw()
                     );
                     assert_eq!(velocity_p.raw(), 100);
-                    assert_eq!(velocity_i.raw(), 300);
+                    assert_eq!(velocity_i.raw(), 50);
                     assert_eq!(position_i, PidIGain::ZERO);
                     assert_eq!(position_p.raw(), 164);
                 }
@@ -1368,11 +1368,11 @@ mod tests {
 
     #[test]
     fn gain_floor_velocity_gain_unrepresentable_routes_through_restore_machine() {
-        let mut phase = gain_floor_phase(20_000, 30_000);
+        let mut phase = gain_floor_phase(30_000, 32_000);
         let mut backend = MockBackend::new();
         backend.advance_elapsed_on_delay = true;
         backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
-            accel_raw_per_us2_per_count: 3e-9,
+            accel_raw_per_us2_per_count: 2e-9,
             ..ideal_plant()
         });
         assert_routes_through_restore_machine(

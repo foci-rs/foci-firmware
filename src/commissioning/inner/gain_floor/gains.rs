@@ -1,8 +1,8 @@
 pub(crate) const OUTER_FLOOR_REFERENCE_BANDWIDTH_HZ: u32 = 1000;
 
 const REFERENCE_TO_VELOCITY_BANDWIDTH_RATIO: f32 = 17.0;
-const VELOCITY_I_TO_P_NUMERATOR: u32 = 3;
-const VELOCITY_I_TO_P_DENOMINATOR: u32 = 1;
+const VELOCITY_I_TO_P_NUMERATOR: u32 = 1;
+const VELOCITY_I_TO_P_DENOMINATOR: u32 = 2;
 
 const REFERENCE_TO_POSITION_BANDWIDTH_RATIO: f32 = 9.0;
 
@@ -91,11 +91,11 @@ mod tests {
     }
 
     #[test]
-    fn velocity_i_is_three_times_velocity_p() {
+    fn velocity_i_is_half_of_velocity_p_rounded_up() {
         let velocity_p = foci_tmc4671::pid::PidPGain::new(441).expect("valid");
         assert_eq!(
             compute_velocity_i(velocity_p).expect("representable").raw(),
-            1323
+            221
         );
     }
 
