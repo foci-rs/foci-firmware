@@ -1180,7 +1180,9 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 .write_register(PID_VELOCITY_TARGET, target as u32)
                 .await
                 .is_err()
-                || safety.begin_primitive(backend.elapsed_us()).is_err()
+                || safety
+                    .begin_velocity_step_primitive(backend.elapsed_us())
+                    .is_err()
             {
                 return fail_integral(phase, backend, CommissionError::Spi).await;
             }

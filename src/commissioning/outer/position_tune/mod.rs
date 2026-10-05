@@ -2199,15 +2199,8 @@ mod tests {
     }
 
     fn over_the_cap(safety: &OuterSafetyLimits) -> u32 {
-        let cap = safety.transient_velocity_cap_milli_counts_per_s();
-        let ceiling = safety.moving_velocity_cap_milli_counts_per_s()
-            * selection::VELOCITY_CEILING_NUM
-            / selection::VELOCITY_CEILING_DEN;
-        let d = u32::try_from(cap / 1_000_000 + 1).unwrap();
-        assert!(
-            u64::from(d) * 1_000_000 / 2 < ceiling,
-            "the first half-speed window must stay under the ceiling so the cap fault wins"
-        );
+        let cap = safety.moving_velocity_cap_milli_counts_per_s();
+        let d = u32::try_from(cap / 1_000_000 + 2).unwrap();
         assert!(d < 1_000, "stay under the quarter-turn guard");
         d
     }

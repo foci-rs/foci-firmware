@@ -158,6 +158,7 @@ pub(crate) struct OuterSafetyLimits {
     /// Velocity bound after the target is zeroed, mrev/s; zero means no separate settle allowance.
     settle_ceiling_mrev_s: u32,
     in_settle_phase: bool,
+    velocity_step_primitive: bool,
     pub(crate) position_window: u32,
     pub(crate) negative_position_window: u32,
     pub(crate) positive_position_window: u32,
@@ -188,6 +189,7 @@ impl OuterSafetyLimits {
             transient_cap_milli_counts_per_s: velocity_cap_milli_counts_per_s,
             settle_ceiling_mrev_s: 0,
             in_settle_phase: false,
+            velocity_step_primitive: false,
             position_window: POSITION_WINDOW_COUNTS,
             negative_position_window: POSITION_WINDOW_COUNTS,
             positive_position_window: POSITION_WINDOW_COUNTS,
@@ -418,21 +420,18 @@ impl OuterSafetyLimits {
         self.velocity_cap_milli_counts_per_s
     }
 
-    #[cfg(test)]
-    pub(crate) fn transient_velocity_cap_milli_counts_per_s(&self) -> u64 {
-        self.transient_cap_milli_counts_per_s
-    }
-
     /// The velocity bound in force for the active primitive phase at `now_us`.
     ///
-    /// For the first [`TRANSIENT_ALLOWANCE_US`] after `begin_primitive` the transient cap
-    /// applies, so a velocity-mode step may overshoot its target without ending the campaign;
-    /// afterwards the moving cap, or the settle ceiling once the target is zeroed.
+    /// For the first [`TRANSIENT_ALLOWANCE_US`] of a primitive opened with
+    /// [`Self::begin_velocity_step_primitive`] the transient cap applies, so a velocity step may
+    /// overshoot its target without ending the campaign; afterwards, and for every other
+    /// primitive, the moving cap, or the settle ceiling once the target is zeroed.
     pub(crate) fn active_velocity_cap_milli_counts_per_s(&self, now_us: u64) -> u64 {
         let moving = self.velocity_cap_milli_counts_per_s;
-        let in_transient_window = self
-            .primitive_start_us
-            .is_some_and(|start_us| now_us.saturating_sub(start_us) < TRANSIENT_ALLOWANCE_US);
+        let in_transient_window = self.velocity_step_primitive
+            && self
+                .primitive_start_us
+                .is_some_and(|start_us| now_us.saturating_sub(start_us) < TRANSIENT_ALLOWANCE_US);
         if in_transient_window && !self.in_settle_phase {
             return self.transient_cap_milli_counts_per_s;
         }
@@ -477,9 +476,20 @@ impl OuterSafetyLimits {
         self.primitive_start_position = Some(self.unwrapped_position);
         self.previous_velocity_observation = None;
         self.in_settle_phase = false;
+        self.velocity_step_primitive = false;
         self.max_local_position_excursion = 0;
         self.ceiling_latched = false;
         self.primitive_peak_milli_counts_per_s = 0;
+        Ok(())
+    }
+
+    /// Open a primitive that commands a velocity step, which earns the transient allowance.
+    pub(crate) fn begin_velocity_step_primitive(
+        &mut self,
+        now_us: u64,
+    ) -> Result<(), CommissionError> {
+        self.begin_primitive(now_us)?;
+        self.velocity_step_primitive = true;
         Ok(())
     }
 
@@ -495,6 +505,7 @@ impl OuterSafetyLimits {
         self.primitive_start_position = None;
         self.previous_velocity_observation = None;
         self.in_settle_phase = false;
+        self.velocity_step_primitive = false;
     }
 
     pub(crate) fn set_velocity_ceiling(&mut self, ceiling_milli_counts_per_s: Option<u64>) {
@@ -1140,7 +1151,7 @@ mod tests {
     fn max_local_position_excursion_updates_even_on_a_faulting_sample() {
         pollster::block_on(async {
             let mut safety = envelope_armed_safety(1_450, 3_450);
-            safety.begin_primitive(70_000).unwrap();
+            safety.begin_primitive(100_000).unwrap();
 
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 102_500;
@@ -1629,7 +1640,7 @@ mod tests {
             let mut safety = envelope_armed_safety(1_450, 3_450);
             let cap = safety.active_velocity_cap_milli_counts_per_s(100_000);
             safety.set_velocity_ceiling(Some(cap * 4 / 5));
-            safety.begin_primitive(70_000).unwrap();
+            safety.begin_primitive(100_000).unwrap();
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 102_500;
             backend.mechanical_encoder_position_counts_value = 35;
@@ -1785,7 +1796,7 @@ mod tests {
     }
 
     #[test]
-    fn transient_allowance_widens_the_cap_for_the_first_24_ms_of_a_primitive() {
+    fn transient_allowance_widens_the_cap_for_the_first_24_ms_of_a_velocity_step() {
         let mut safety = armed_safety(Some(100_000), 101_000);
         safety.configure_velocity_envelope(3_000).unwrap();
         assert_eq!(
@@ -1794,7 +1805,7 @@ mod tests {
             "no primitive open: the steady cap applies"
         );
 
-        safety.begin_primitive(100_000).unwrap();
+        safety.begin_velocity_step_primitive(100_000).unwrap();
         assert_eq!(
             safety.active_velocity_cap_milli_counts_per_s(100_000),
             30_000_000
@@ -1822,7 +1833,7 @@ mod tests {
         let mut safety = OuterSafetyLimits::new(100, budget);
         safety.configure_encoder_resolution(4_000).unwrap();
         safety.configure_velocity_envelope(3_000).unwrap();
-        safety.begin_primitive(100_000).unwrap();
+        safety.begin_velocity_step_primitive(100_000).unwrap();
         assert_eq!(
             safety.active_velocity_cap_milli_counts_per_s(100_000),
             24_000_000,
@@ -1837,7 +1848,7 @@ mod tests {
         let mut safety = OuterSafetyLimits::new(100, budget);
         safety.configure_encoder_resolution(4_000).unwrap();
         safety.configure_velocity_envelope(3_000).unwrap();
-        safety.begin_primitive(100_000).unwrap();
+        safety.begin_velocity_step_primitive(100_000).unwrap();
         assert_eq!(
             safety.active_velocity_cap_milli_counts_per_s(100_000),
             20_000_000,
@@ -1848,7 +1859,7 @@ mod tests {
     #[test]
     fn transient_allowance_applies_above_an_effective_ceiling_moving_cap() {
         let mut safety = envelope_armed_safety(5_000, 7_500);
-        safety.begin_primitive(100_000).unwrap();
+        safety.begin_velocity_step_primitive(100_000).unwrap();
         assert_eq!(
             safety.active_velocity_cap_milli_counts_per_s(100_000),
             40_000_000,
@@ -1865,7 +1876,7 @@ mod tests {
         pollster::block_on(async {
             let mut safety = armed_safety(Some(100_000), 101_000);
             safety.configure_velocity_envelope(3_000).unwrap();
-            safety.begin_primitive(100_000).unwrap();
+            safety.begin_velocity_step_primitive(100_000).unwrap();
             let mut backend = MockBackend::new();
             let deltas: [u32; 9] = [1, 4, 6, 9, 11, 14, 16, 19, 22];
             let mut position = 0;
@@ -1889,7 +1900,7 @@ mod tests {
         pollster::block_on(async {
             let mut safety = armed_safety(Some(100_000), 101_000);
             safety.configure_velocity_envelope(3_000).unwrap();
-            safety.begin_primitive(100_000).unwrap();
+            safety.begin_velocity_step_primitive(100_000).unwrap();
             let mut backend = MockBackend::new();
             let mut position = 0;
             let mut faulted = None;
@@ -1918,7 +1929,7 @@ mod tests {
         pollster::block_on(async {
             let mut safety = armed_safety(Some(100_000), 101_000);
             safety.configure_velocity_envelope(3_000).unwrap();
-            safety.begin_primitive(100_000).unwrap();
+            safety.begin_velocity_step_primitive(100_000).unwrap();
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101_000;
             backend.mechanical_encoder_position_counts_value = 35;
@@ -1937,6 +1948,30 @@ mod tests {
             assert_eq!(fault.velocity_cap_counts_per_ms, 30);
             assert_eq!(fault.velocity_counts_per_ms, 35);
         });
+    }
+
+    #[test]
+    fn a_profiled_primitive_keeps_the_steady_cap_inside_the_window() {
+        let mut safety = armed_safety(Some(100_000), 101_000);
+        safety.configure_velocity_envelope(3_000).unwrap();
+        safety.begin_primitive(100_000).unwrap();
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(100_000),
+            20_000_000
+        );
+    }
+
+    #[test]
+    fn ending_a_velocity_step_clears_the_allowance_for_the_next_primitive() {
+        let mut safety = armed_safety(Some(100_000), 101_000);
+        safety.configure_velocity_envelope(3_000).unwrap();
+        safety.begin_velocity_step_primitive(100_000).unwrap();
+        safety.end_primitive();
+        safety.begin_primitive(100_000).unwrap();
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(100_000),
+            20_000_000
+        );
     }
 
     #[test]

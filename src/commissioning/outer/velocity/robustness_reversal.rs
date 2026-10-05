@@ -1313,7 +1313,7 @@ async fn begin_capture<B: CommissioningBackend>(
     }
     if open_primitive {
         safety.end_primitive();
-        if safety.begin_primitive(baseline_us).is_err() {
+        if safety.begin_velocity_step_primitive(baseline_us).is_err() {
             return Err(fault_terminal(
                 session,
                 backend,

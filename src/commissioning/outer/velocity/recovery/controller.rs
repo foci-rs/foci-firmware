@@ -191,7 +191,11 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 Err(error) => return recovery_fault(error, None),
             };
             let started_us = backend.elapsed_us();
-            if resources.safety.begin_primitive(started_us).is_err() {
+            if resources
+                .safety
+                .begin_velocity_step_primitive(started_us)
+                .is_err()
+            {
                 return recovery_fault(CommissionError::PrimitiveAlreadyOpen, None);
             }
             checkpoint(BreakawayCheckpoint::RecoveryCurrentPrimitiveStart);

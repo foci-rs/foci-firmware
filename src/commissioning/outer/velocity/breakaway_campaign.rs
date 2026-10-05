@@ -400,7 +400,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             {
                 return fault(CommissionError::Spi);
             }
-            if let Err(error) = safety.begin_primitive(backend.elapsed_us()) {
+            if let Err(error) = safety.begin_velocity_step_primitive(backend.elapsed_us()) {
                 return fault(error);
             }
             let started_us = backend.elapsed_us();
@@ -1561,7 +1561,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             {
                 return discovery_fault(CommissionError::Spi);
             }
-            if let Err(error) = safety.begin_primitive(backend.elapsed_us()) {
+            if let Err(error) = safety.begin_velocity_step_primitive(backend.elapsed_us()) {
                 return discovery_fault(error);
             }
             let started_us = backend.elapsed_us();
@@ -2490,7 +2490,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             {
                 return confirmation_fault(CommissionError::Spi);
             }
-            if let Err(error) = safety.begin_primitive(backend.elapsed_us()) {
+            if let Err(error) = safety.begin_velocity_step_primitive(backend.elapsed_us()) {
                 return confirmation_fault(error);
             }
             let started_us = backend.elapsed_us();
