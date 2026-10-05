@@ -17,7 +17,8 @@ use super::limits::{
 };
 use super::velocity::sweep_plan::{
     ENVELOPE_ABSOLUTE_MARGIN_MREV_S, ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM,
-    MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource,
+    MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, TRANSIENT_ABSOLUTE_MARGIN_MREV_S,
+    TRANSIENT_ALLOWANCE_US, TRANSIENT_PROPORTIONAL_DEN, TRANSIENT_PROPORTIONAL_NUM,
 };
 use super::{mechanical_id_velocity_cap_counts_per_ms, position_window_counts, state::OuterPhase};
 
@@ -153,6 +154,7 @@ impl PartialEq<Option<u64>> for OuterSafetyTimestamp {
 pub(crate) struct OuterSafetyLimits {
     /// Velocity cap while a commanded amplitude is active, in milli-counts per second.
     velocity_cap_milli_counts_per_s: u64,
+    transient_cap_milli_counts_per_s: u64,
     /// Velocity bound after the target is zeroed, mrev/s; zero means no separate settle allowance.
     settle_ceiling_mrev_s: u32,
     in_settle_phase: bool,
@@ -179,10 +181,11 @@ pub(crate) struct OuterSafetyLimits {
 
 impl OuterSafetyLimits {
     pub(crate) fn new(torque_cap: u16, budget: OuterMotionBudget) -> Self {
+        let velocity_cap_milli_counts_per_s =
+            counts_per_ms_to_milli_counts_per_s(MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS);
         Self {
-            velocity_cap_milli_counts_per_s: counts_per_ms_to_milli_counts_per_s(
-                MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS,
-            ),
+            velocity_cap_milli_counts_per_s,
+            transient_cap_milli_counts_per_s: velocity_cap_milli_counts_per_s,
             settle_ceiling_mrev_s: 0,
             in_settle_phase: false,
             position_window: POSITION_WINDOW_COUNTS,
@@ -230,6 +233,7 @@ impl OuterSafetyLimits {
             mechanical_id_velocity_cap_counts_per_ms(counts_per_rev)
                 .min(self.budget.velocity_counts_per_ms(counts_per_rev)),
         );
+        self.transient_cap_milli_counts_per_s = self.velocity_cap_milli_counts_per_s;
         self.settle_ceiling_mrev_s = 0;
         self.position_window =
             position_window_counts(counts_per_rev).min(self.budget.travel_counts(counts_per_rev));
@@ -327,11 +331,30 @@ impl OuterSafetyLimits {
         Ok(proportional.max(absolute))
     }
 
-    fn apply_velocity_envelope(&mut self, moving_mrev_s: u32, settle_ceiling_mrev_s: u32) {
+    fn apply_velocity_envelope(
+        &mut self,
+        planned_velocity_mrev_s: u32,
+        moving_mrev_s: u32,
+        settle_ceiling_mrev_s: u32,
+    ) {
         let counts_per_rev = self.counts_per_rev();
         self.velocity_cap_milli_counts_per_s =
             velocity_mrev_s_to_milli_counts_per_s(moving_mrev_s, counts_per_rev);
+        let transient_mrev_s = Self::transient_mrev_s(planned_velocity_mrev_s)
+            .min(self.budget.machine_velocity_ceiling_mrev_s)
+            .max(moving_mrev_s);
+        self.transient_cap_milli_counts_per_s =
+            velocity_mrev_s_to_milli_counts_per_s(transient_mrev_s, counts_per_rev);
         self.settle_ceiling_mrev_s = settle_ceiling_mrev_s;
+    }
+
+    fn transient_mrev_s(planned_velocity_mrev_s: u32) -> u32 {
+        let proportional = u64::from(planned_velocity_mrev_s)
+            .saturating_mul(u64::from(TRANSIENT_PROPORTIONAL_NUM))
+            .div_ceil(u64::from(TRANSIENT_PROPORTIONAL_DEN));
+        let proportional = u32::try_from(proportional).unwrap_or(u32::MAX);
+        let absolute = planned_velocity_mrev_s.saturating_add(TRANSIENT_ABSOLUTE_MARGIN_MREV_S);
+        proportional.max(absolute)
     }
 
     /// Configure the runtime envelope around the frozen sweep amplitude.
@@ -346,7 +369,7 @@ impl OuterSafetyLimits {
         planned_velocity_mrev_s: u32,
     ) -> Result<(), CommissionError> {
         let envelope_mrev_s = Self::envelope_mrev_s(planned_velocity_mrev_s)?;
-        self.apply_velocity_envelope(envelope_mrev_s, 0);
+        self.apply_velocity_envelope(planned_velocity_mrev_s, envelope_mrev_s, 0);
         Ok(())
     }
 
@@ -376,7 +399,11 @@ impl OuterSafetyLimits {
         if envelope_mrev_s > effective_ceiling_mrev_s {
             return Err(CommissionError::VelocityEnvelopeExceedsCeiling);
         }
-        self.apply_velocity_envelope(effective_ceiling_mrev_s, effective_ceiling_mrev_s);
+        self.apply_velocity_envelope(
+            planned_velocity_mrev_s,
+            effective_ceiling_mrev_s,
+            effective_ceiling_mrev_s,
+        );
         Ok(())
     }
 
@@ -385,9 +412,30 @@ impl OuterSafetyLimits {
         self.in_settle_phase = true;
     }
 
-    /// The velocity bound in force for the active primitive phase.
-    pub(crate) fn active_velocity_cap_milli_counts_per_s(&self) -> u64 {
+    /// The steady velocity cap while a commanded amplitude is active, ignoring the transient
+    /// allowance and the settle ceiling.
+    pub(crate) fn moving_velocity_cap_milli_counts_per_s(&self) -> u64 {
+        self.velocity_cap_milli_counts_per_s
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transient_velocity_cap_milli_counts_per_s(&self) -> u64 {
+        self.transient_cap_milli_counts_per_s
+    }
+
+    /// The velocity bound in force for the active primitive phase at `now_us`.
+    ///
+    /// For the first [`TRANSIENT_ALLOWANCE_US`] after `begin_primitive` the transient cap
+    /// applies, so a velocity-mode step may overshoot its target without ending the campaign;
+    /// afterwards the moving cap, or the settle ceiling once the target is zeroed.
+    pub(crate) fn active_velocity_cap_milli_counts_per_s(&self, now_us: u64) -> u64 {
         let moving = self.velocity_cap_milli_counts_per_s;
+        let in_transient_window = self
+            .primitive_start_us
+            .is_some_and(|start_us| now_us.saturating_sub(start_us) < TRANSIENT_ALLOWANCE_US);
+        if in_transient_window && !self.in_settle_phase {
+            return self.transient_cap_milli_counts_per_s;
+        }
         if !self.in_settle_phase || self.settle_ceiling_mrev_s == 0 {
             return moving;
         }
@@ -557,7 +605,11 @@ impl OuterSafetyLimits {
             dt_us: clamp_u64_to_u32(dt_us),
             velocity_counts_per_ms,
             velocity_cap_counts_per_ms: clamp_u32_to_i32(milli_counts_per_s_to_counts_per_ms(
-                self.active_velocity_cap_milli_counts_per_s(),
+                self.active_velocity_cap_milli_counts_per_s(
+                    self.primitive_start_us
+                        .unwrap_or(0)
+                        .saturating_add(elapsed_us),
+                ),
             )),
             position_counts: self.unwrapped_position,
             position_window_counts: clamp_u32_to_i32(self.position_window),
@@ -829,7 +881,7 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
         .previous_velocity_observation
         .replace(velocity_observation);
 
-    let active_cap_milli_counts_per_s = safety.active_velocity_cap_milli_counts_per_s();
+    let active_cap_milli_counts_per_s = safety.active_velocity_cap_milli_counts_per_s(now_us);
     let window = previous_velocity_observation.map(|previous| {
         let window_counts = u128::from(previous.absolute_delta_counts)
             + u128::from(velocity_observation.absolute_delta_counts);
@@ -1088,7 +1140,7 @@ mod tests {
     fn max_local_position_excursion_updates_even_on_a_faulting_sample() {
         pollster::block_on(async {
             let mut safety = envelope_armed_safety(1_450, 3_450);
-            safety.begin_primitive(100_000).unwrap();
+            safety.begin_primitive(70_000).unwrap();
 
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 102_500;
@@ -1523,7 +1575,7 @@ mod tests {
     fn ceiling_latches_at_the_ceiling_and_not_one_count_below() {
         pollster::block_on(async {
             let mut safety = envelope_armed_safety(5_000, 7_500);
-            let cap = safety.active_velocity_cap_milli_counts_per_s();
+            let cap = safety.active_velocity_cap_milli_counts_per_s(100_000);
             assert_eq!(cap, 30_000_000);
             safety.set_velocity_ceiling(Some(cap * 4 / 5));
             safety.begin_primitive(100_000).unwrap();
@@ -1575,9 +1627,9 @@ mod tests {
     fn a_faulting_window_also_sets_the_latch_and_the_peak() {
         pollster::block_on(async {
             let mut safety = envelope_armed_safety(1_450, 3_450);
-            let cap = safety.active_velocity_cap_milli_counts_per_s();
+            let cap = safety.active_velocity_cap_milli_counts_per_s(100_000);
             safety.set_velocity_ceiling(Some(cap * 4 / 5));
-            safety.begin_primitive(100_000).unwrap();
+            safety.begin_primitive(70_000).unwrap();
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 102_500;
             backend.mechanical_encoder_position_counts_value = 35;
@@ -1704,13 +1756,22 @@ mod tests {
     fn outer_safety_both_phases_share_the_effective_ceiling_bound() {
         let mut safety = envelope_armed_safety(1_450, 10_000);
         safety.begin_primitive(100_000).unwrap();
-        assert_eq!(safety.active_velocity_cap_milli_counts_per_s(), 40_000_000);
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(100_000),
+            40_000_000
+        );
 
         safety.enter_settle_phase();
-        assert_eq!(safety.active_velocity_cap_milli_counts_per_s(), 40_000_000);
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(100_000),
+            40_000_000
+        );
 
         safety.end_primitive();
-        assert_eq!(safety.active_velocity_cap_milli_counts_per_s(), 40_000_000);
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(100_000),
+            40_000_000
+        );
     }
 
     #[test]
@@ -1721,6 +1782,161 @@ mod tests {
             safety.configure_velocity_envelope_with_settle_ceiling(1_450, 3_000),
             Err(CommissionError::VelocityEnvelopeExceedsCeiling)
         );
+    }
+
+    #[test]
+    fn transient_allowance_widens_the_cap_for_the_first_24_ms_of_a_primitive() {
+        let mut safety = armed_safety(Some(100_000), 101_000);
+        safety.configure_velocity_envelope(3_000).unwrap();
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(100_000),
+            20_000_000,
+            "no primitive open: the steady cap applies"
+        );
+
+        safety.begin_primitive(100_000).unwrap();
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(100_000),
+            30_000_000
+        );
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(123_999),
+            30_000_000
+        );
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(124_000),
+            20_000_000
+        );
+
+        safety.end_primitive();
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(100_000),
+            20_000_000
+        );
+    }
+
+    #[test]
+    fn transient_allowance_is_clamped_to_the_machine_ceiling() {
+        let mut budget = OuterMotionBudget::firmware_caps();
+        budget.machine_velocity_ceiling_mrev_s = 6_000;
+        let mut safety = OuterSafetyLimits::new(100, budget);
+        safety.configure_encoder_resolution(4_000).unwrap();
+        safety.configure_velocity_envelope(3_000).unwrap();
+        safety.begin_primitive(100_000).unwrap();
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(100_000),
+            24_000_000,
+            "max(7_500, 7_000) mrev/s clamps to the 6_000 mrev/s machine ceiling"
+        );
+    }
+
+    #[test]
+    fn transient_allowance_never_drops_below_the_moving_cap() {
+        let mut budget = OuterMotionBudget::firmware_caps();
+        budget.machine_velocity_ceiling_mrev_s = 4_000;
+        let mut safety = OuterSafetyLimits::new(100, budget);
+        safety.configure_encoder_resolution(4_000).unwrap();
+        safety.configure_velocity_envelope(3_000).unwrap();
+        safety.begin_primitive(100_000).unwrap();
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(100_000),
+            20_000_000,
+            "a ceiling below the moving cap leaves the moving cap in force"
+        );
+    }
+
+    #[test]
+    fn transient_allowance_applies_above_an_effective_ceiling_moving_cap() {
+        let mut safety = envelope_armed_safety(5_000, 7_500);
+        safety.begin_primitive(100_000).unwrap();
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(100_000),
+            40_000_000,
+            "max(12_500, 9_000) mrev/s clamps to the 10_000 mrev/s machine ceiling"
+        );
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(124_000),
+            30_000_000
+        );
+    }
+
+    #[test]
+    fn a_light_axis_step_overshoot_inside_the_transient_window_does_not_fault() {
+        pollster::block_on(async {
+            let mut safety = armed_safety(Some(100_000), 101_000);
+            safety.configure_velocity_envelope(3_000).unwrap();
+            safety.begin_primitive(100_000).unwrap();
+            let mut backend = MockBackend::new();
+            let deltas: [u32; 9] = [1, 4, 6, 9, 11, 14, 16, 19, 22];
+            let mut position = 0;
+            for (index, delta) in deltas.iter().enumerate() {
+                position += delta;
+                backend.elapsed_us_value = 101_000 + index as u64 * 1_000;
+                backend.mechanical_encoder_position_counts_value = position;
+                let fault = check_outer_safety(&mut safety, &mut backend).await.unwrap();
+                assert!(
+                    fault.is_none(),
+                    "41 counts over the 2 ms window ending at {} ms is 20.5 counts/ms, \
+                     above the 20 counts/ms steady cap and below the 30 counts/ms transient cap",
+                    index + 1
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn velocity_still_above_the_steady_cap_after_the_transient_window_faults() {
+        pollster::block_on(async {
+            let mut safety = armed_safety(Some(100_000), 101_000);
+            safety.configure_velocity_envelope(3_000).unwrap();
+            safety.begin_primitive(100_000).unwrap();
+            let mut backend = MockBackend::new();
+            let mut position = 0;
+            let mut faulted = None;
+            for index in 0..30u64 {
+                position += 22;
+                backend.elapsed_us_value = 101_000 + index * 1_000;
+                backend.mechanical_encoder_position_counts_value = position;
+                if let Some(fault) = check_outer_safety(&mut safety, &mut backend).await.unwrap() {
+                    faulted = Some((index + 1, fault));
+                    break;
+                }
+            }
+            let (ms, fault) =
+                faulted.expect("a sustained 22 counts/ms faults once the window closes");
+            assert_eq!(
+                ms, 24,
+                "the first sample at 24 ms is evaluated against the steady cap"
+            );
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+            assert_eq!(fault.velocity_cap_counts_per_ms, 20);
+        });
+    }
+
+    #[test]
+    fn a_fault_inside_the_transient_window_reports_the_transient_cap() {
+        pollster::block_on(async {
+            let mut safety = armed_safety(Some(100_000), 101_000);
+            safety.configure_velocity_envelope(3_000).unwrap();
+            safety.begin_primitive(100_000).unwrap();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101_000;
+            backend.mechanical_encoder_position_counts_value = 35;
+            assert!(
+                check_outer_safety(&mut safety, &mut backend)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            backend.elapsed_us_value = 102_000;
+            backend.mechanical_encoder_position_counts_value = 70;
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .unwrap()
+                .expect("35 counts/ms exceeds the 30 counts/ms transient cap");
+            assert_eq!(fault.velocity_cap_counts_per_ms, 30);
+            assert_eq!(fault.velocity_counts_per_ms, 35);
+        });
     }
 
     #[test]

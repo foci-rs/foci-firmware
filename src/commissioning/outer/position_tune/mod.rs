@@ -504,7 +504,7 @@ async fn arm_stroke<B: CommissioningBackend>(
         .max()
         .unwrap_or(leg.speed_mrev_s);
     safety.configure_velocity_envelope(envelope_speed_mrev_s)?;
-    let cap = safety.active_velocity_cap_milli_counts_per_s();
+    let cap = safety.moving_velocity_cap_milli_counts_per_s();
     safety.set_velocity_ceiling(Some(
         cap * selection::VELOCITY_CEILING_NUM / selection::VELOCITY_CEILING_DEN,
     ));
@@ -1223,7 +1223,7 @@ mod tests {
             if let (PositionTuneStep::Stroke { kind, .. }, true) =
                 (state.step, state.capture_running)
             {
-                let cap = safety.active_velocity_cap_milli_counts_per_s();
+                let cap = safety.moving_velocity_cap_milli_counts_per_s();
                 match kind {
                     StrokeKind::Homing => homing_cap = homing_cap.or(Some(cap)),
                     StrokeKind::Motion => motion_cap = motion_cap.or(Some(cap)),
@@ -2188,7 +2188,7 @@ mod tests {
     }
 
     fn between_ceiling_and_cap(safety: &OuterSafetyLimits) -> u32 {
-        let cap = safety.active_velocity_cap_milli_counts_per_s();
+        let cap = safety.moving_velocity_cap_milli_counts_per_s();
         let ceiling = cap * selection::VELOCITY_CEILING_NUM / selection::VELOCITY_CEILING_DEN;
         let d = u32::try_from(ceiling / 1_000_000 + 1).unwrap();
         assert!(
@@ -2199,8 +2199,15 @@ mod tests {
     }
 
     fn over_the_cap(safety: &OuterSafetyLimits) -> u32 {
-        let cap = safety.active_velocity_cap_milli_counts_per_s();
-        let d = u32::try_from(cap / 1_000_000 + 2).unwrap();
+        let cap = safety.transient_velocity_cap_milli_counts_per_s();
+        let ceiling = safety.moving_velocity_cap_milli_counts_per_s()
+            * selection::VELOCITY_CEILING_NUM
+            / selection::VELOCITY_CEILING_DEN;
+        let d = u32::try_from(cap / 1_000_000 + 1).unwrap();
+        assert!(
+            u64::from(d) * 1_000_000 / 2 < ceiling,
+            "the first half-speed window must stay under the ceiling so the cap fault wins"
+        );
         assert!(d < 1_000, "stay under the quarter-turn guard");
         d
     }
@@ -2571,10 +2578,13 @@ mod tests {
             },
         );
 
-        assert!(matches!(
-            terminal,
-            StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
-        ));
+        assert!(
+            matches!(
+                terminal,
+                StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
+            ),
+            "terminal was {terminal:?}"
+        );
         let OuterPhase::FailedWithSafety {
             position_tune,
             safety_fault,

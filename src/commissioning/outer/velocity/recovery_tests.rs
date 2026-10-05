@@ -1310,10 +1310,10 @@ fn recovery_safety_inherits_velocity_local_and_absolute_position_faults() {
     let mut velocity = RecoveryFixture::new(8_458, Some(14_000_000));
     velocity.command_motion();
     assert!(matches!(
-        velocity.sample(1_000, 8_428),
+        velocity.sample(1_000, 8_413),
         RungOriginRecoveryStep::At(_)
     ));
-    assert_eq!(safety_fault(velocity.sample(2_000, 8_398)), 4);
+    assert_eq!(safety_fault(velocity.sample(2_000, 8_368)), 4);
 
     let mut local = RecoveryFixture::new(90, Some(14_000_000));
     local.runtime = RungOriginRecoveryRuntime::new(

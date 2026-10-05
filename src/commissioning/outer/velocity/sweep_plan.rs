@@ -15,6 +15,15 @@ pub const ENVELOPE_PROPORTIONAL_NUM: u32 = 3;
 pub const ENVELOPE_PROPORTIONAL_DEN: u32 = 2;
 /// Absolute runtime velocity-envelope margin in mechanical millirevolutions per second.
 pub const ENVELOPE_ABSOLUTE_MARGIN_MREV_S: u32 = 2_000;
+/// Window after a primitive starts during which the transient velocity cap applies, in
+/// microseconds.
+pub const TRANSIENT_ALLOWANCE_US: u64 = 24_000;
+/// Numerator of the transient velocity-cap proportional margin.
+pub const TRANSIENT_PROPORTIONAL_NUM: u32 = 5;
+/// Denominator of the transient velocity-cap proportional margin.
+pub const TRANSIENT_PROPORTIONAL_DEN: u32 = 2;
+/// Absolute transient velocity-cap margin in mechanical millirevolutions per second.
+pub const TRANSIENT_ABSOLUTE_MARGIN_MREV_S: u32 = 4_000;
 /// Fixed duration of one moving observation.
 pub const MOVING_STROKE_US: u32 = 512_000;
 /// Proportional schema for the shared Proportional velocity sweep planner.
