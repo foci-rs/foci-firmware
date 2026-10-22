@@ -8,15 +8,29 @@ use crate::tmc::tmc_set_enable;
 
 /// Register a digital output for motor enable/disable.
 /// The pin must be a FOCI virtual enable pin mapped to a board-local TMC4671 channel.
+/// A nonzero `value` or `default_value` means the host inverted the pin and shuts down.
 #[klipper_command]
 pub fn config_digital_out(
     ctx: &mut dyn DigitalOutConfigHost,
     oid: u8,
     pin: u32,
-    _value: u8,
-    _default_value: u8,
+    value: u8,
+    default_value: u8,
     _max_duration: u32,
 ) {
+    if value != 0 || default_value != 0 {
+        defmt::error!(
+            "config_digital_out: inverted ENA pin (value={} default_value={})",
+            value,
+            default_value
+        );
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::EnablePinInverted, clock);
+        }
+        return;
+    }
+
     let channel = match ctx.enable_pin_channel(pin) {
         Some(channel) => channel,
         None => {
@@ -201,6 +215,28 @@ mod tests {
 
         assert_eq!(ctx.state.enable_channel(11), Some(0));
         assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn config_digital_out_rejects_inverted_start_value() {
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+
+        config_digital_out(&mut ctx, &mut sender, 11, 100, 1, 0, 0);
+
+        assert_eq!(ctx.state.enable_channel(11), None);
+        assert_eq!(ctx.last_shutdown, Some(ShutdownReason::EnablePinInverted));
+    }
+
+    #[test]
+    fn config_digital_out_rejects_inverted_default_value() {
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+
+        config_digital_out(&mut ctx, &mut sender, 11, 100, 0, 1, 0);
+
+        assert_eq!(ctx.state.enable_channel(11), None);
+        assert_eq!(ctx.last_shutdown, Some(ShutdownReason::EnablePinInverted));
     }
 
     #[test]
