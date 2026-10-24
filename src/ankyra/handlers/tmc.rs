@@ -8,14 +8,22 @@ use crate::context::{ShutdownRecovery, TmcHost};
 use crate::shutdown::ShutdownReason;
 use crate::state::tmc::TmcChannelState;
 
+#[cfg(feature = "diagnostics")]
 pub(crate) const MAX_CURRENT_STEP_TARGET: i16 = 1_000;
+#[cfg(feature = "diagnostics")]
 const MIN_CURRENT_STEP_DURATION_MS: u16 = 20;
+#[cfg(feature = "diagnostics")]
 pub(crate) const MAX_CURRENT_STEP_DURATION_MS: u16 = 200;
+#[cfg(feature = "diagnostics")]
 const MIN_CURRENT_SAMPLE_DELAY_MS: u16 = 1;
+#[cfg(feature = "diagnostics")]
 pub(crate) const MAX_CURRENT_SAMPLE_DELAY_MS: u16 = MAX_CURRENT_STEP_DURATION_MS;
+#[cfg(feature = "diagnostics")]
 const MAX_VOLTAGE_STEP_EXT: i16 = 1_024;
+#[cfg(feature = "diagnostics")]
 const MIN_CURRENT_STEP_VOLTAGE_LIMIT: u16 =
     crate::state::tmc::MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT as u16;
+#[cfg(feature = "diagnostics")]
 pub(crate) const MAX_CURRENT_STEP_VOLTAGE_LIMIT: u16 = 29_000;
 
 /// Trigger TMC4671 initialization sequence (dev-only).
@@ -362,6 +370,7 @@ pub fn tmc_set_voltage_limit(ctx: &mut dyn TmcWriteHost, oid: u8, voltage_limit:
 
 /// Run a bounded current-loop step diagnostic.
 /// The board task rejects it unless the motor is enabled and calibrated.
+#[cfg(feature = "diagnostics")]
 #[klipper_command]
 pub fn tmc_current_step_test(
     ctx: &mut dyn TmcWriteHost,
@@ -411,6 +420,7 @@ pub fn tmc_current_step_test(
 
 /// Run a bounded current-vector step diagnostic.
 /// The board task rejects it unless the motor is enabled and calibrated.
+#[cfg(feature = "diagnostics")]
 #[klipper_command]
 pub fn tmc_current_vector_step_test(
     ctx: &mut dyn TmcWriteHost,
@@ -454,6 +464,7 @@ pub fn tmc_current_vector_step_test(
 
 /// Run a bounded torque-current pulse and sample it.
 /// The board task rejects it unless the motor is enabled and calibrated.
+#[cfg(feature = "diagnostics")]
 #[klipper_command]
 pub fn tmc_current_torque_sample_test(
     ctx: &mut dyn TmcWriteHost,
@@ -497,6 +508,7 @@ pub fn tmc_current_torque_sample_test(
 
 /// Run a bounded position-mode torque-offset pulse and sample it.
 /// The board task rejects it unless the motor is enabled, calibrated, idle, outside a homing move, and in production position mode.
+#[cfg(feature = "diagnostics")]
 #[klipper_command]
 pub fn tmc_position_torque_offset_sample_test(
     ctx: &mut dyn TmcWriteHost,
@@ -537,6 +549,7 @@ pub fn tmc_position_torque_offset_sample_test(
 
 /// Run a bounded open-loop voltage-vector pulse and sample it.
 /// The board task rejects it unless the motor is enabled, calibrated, idle, outside a homing move, and in production position mode.
+#[cfg(feature = "diagnostics")]
 #[klipper_command]
 pub fn tmc_voltage_step_test(
     ctx: &mut dyn TmcWriteHost,
@@ -576,6 +589,7 @@ pub fn tmc_voltage_step_test(
 
 /// Run the shared resistance-identification sweep over an armed motor.
 /// The board task rejects it unless the motor is enabled, calibrated, and ADC offsets are ready.
+#[cfg(feature = "diagnostics")]
 #[klipper_command]
 pub fn tmc_resistance_test(ctx: &mut dyn TmcWriteHost, oid: u8, detail: u8) {
     let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -1204,6 +1218,7 @@ mod tests {
         assert_eq!(ctx.last_shutdown, None);
     }
 
+    #[cfg(feature = "diagnostics")]
     #[test]
     fn tmc_current_step_test_routes_by_stepper_oid() {
         let mut ctx = MockCtx::new(2);
@@ -1227,6 +1242,7 @@ mod tests {
         assert_eq!(ctx.last_shutdown, None);
     }
 
+    #[cfg(feature = "diagnostics")]
     #[test]
     fn tmc_current_vector_step_test_routes_by_stepper_oid() {
         let mut ctx = MockCtx::new(2);
@@ -1250,6 +1266,7 @@ mod tests {
         assert_eq!(ctx.last_shutdown, None);
     }
 
+    #[cfg(feature = "diagnostics")]
     #[test]
     fn tmc_current_torque_sample_test_routes_by_stepper_oid() {
         let mut ctx = MockCtx::new(2);
@@ -1273,6 +1290,7 @@ mod tests {
         assert_eq!(ctx.last_shutdown, None);
     }
 
+    #[cfg(feature = "diagnostics")]
     #[test]
     fn tmc_current_torque_sample_test_rejects_zero_delay() {
         let mut ctx = MockCtx::new(2);
@@ -1288,6 +1306,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "diagnostics")]
     #[test]
     fn tmc_position_torque_offset_sample_test_routes_by_stepper_oid() {
         let mut ctx = MockCtx::new(2);
@@ -1307,6 +1326,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "diagnostics")]
     #[test]
     fn tmc_voltage_step_test_routes_by_stepper_oid() {
         let mut ctx = MockCtx::new(2);
@@ -1326,6 +1346,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "diagnostics")]
     #[test]
     fn tmc_voltage_step_test_rejects_large_voltage() {
         let mut ctx = MockCtx::new(2);
@@ -1341,6 +1362,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "diagnostics")]
     #[test]
     fn tmc_resistance_test_routes_by_stepper_oid() {
         let mut ctx = MockCtx::new(2);
@@ -1355,6 +1377,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "diagnostics")]
     #[test]
     fn tmc_resistance_test_rejects_unknown_oid() {
         let mut ctx = MockCtx::new(2);
@@ -1369,6 +1392,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "diagnostics")]
     #[test]
     fn tmc_current_vector_step_test_rejects_excessive_flux_target() {
         let mut ctx = MockCtx::new(2);
@@ -1384,6 +1408,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "diagnostics")]
     #[test]
     fn tmc_current_step_test_rejects_excessive_target() {
         let mut ctx = MockCtx::new(2);
@@ -1399,6 +1424,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "diagnostics")]
     #[test]
     fn tmc_current_step_test_rejects_too_long_duration() {
         let mut ctx = MockCtx::new(2);
@@ -1604,7 +1630,7 @@ mod tests {
             source
                 .matches("crate::ankyra::handlers::tmc::tmc_set_velocity_feedforward_rpm,")
                 .count(),
-            2
+            4
         );
         assert!(!source.contains("crate::ankyra::handlers::tmc::tmc_set_velocity_feedforward,"));
     }

@@ -103,6 +103,7 @@ pub trait CommissionBusyReplySink {
     /// Emit one established commissioning-family busy response.
     fn emit_reply(&mut self, channel: u8, payload: ReplyPayload);
     /// Emit one established diagnostic not-ready response.
+    #[cfg(feature = "diagnostics")]
     fn emit_busy_diagnostic(&mut self, request: TmcRequest);
 }
 
@@ -188,6 +189,7 @@ where
     ) -> Result<(), RegisterRequestError>;
 
     /// Run an active diagnostic request in board context.
+    #[cfg(feature = "diagnostics")]
     async fn run_diagnostic_request(
         &mut self,
         req: TmcRequest,
@@ -239,6 +241,7 @@ where
             channel,
             commission_phase_failure_payload(oid, CommissionError::AlreadyRunning.status_code()),
         ),
+        #[cfg(feature = "diagnostics")]
         diagnostic_req @ TmcRequest {
             kind:
                 TmcRequestKind::CurrentStepTest { .. }
@@ -815,6 +818,7 @@ where
                 ),
             );
         }
+        #[cfg(feature = "diagnostics")]
         diagnostic_req @ TmcRequest {
             kind:
                 TmcRequestKind::CurrentStepTest { .. }
@@ -1811,6 +1815,7 @@ mod tests {
             self.register_result
         }
 
+        #[cfg(feature = "diagnostics")]
         async fn run_diagnostic_request(
             &mut self,
             _req: TmcRequest,
@@ -1845,6 +1850,7 @@ mod tests {
             self.replies.push(payload);
         }
 
+        #[cfg(feature = "diagnostics")]
         fn emit_busy_diagnostic(&mut self, request: TmcRequest) {
             self.busy_diagnostic_requests.push(request);
         }
@@ -1982,6 +1988,7 @@ mod tests {
             Calibrate(u8),
             Selftest(u8),
             Commission(u8),
+            #[cfg(feature = "diagnostics")]
             Diagnostic,
         }
 
@@ -1994,6 +2001,7 @@ mod tests {
                 TmcRequest::new(0, TmcRequestKind::DumpRegisters { oid: 2 }),
                 ExpectedReply::None,
             ),
+            #[cfg(feature = "diagnostics")]
             (
                 TmcRequest::new(
                     0,
@@ -2074,6 +2082,7 @@ mod tests {
                     );
                     assert_eq!(board.reply_channels, std::vec![expected_channel]);
                 }
+                #[cfg(feature = "diagnostics")]
                 ExpectedReply::Diagnostic => {
                     assert!(board.replies.is_empty());
                     assert!(board.reply_channels.is_empty());
@@ -3425,6 +3434,7 @@ mod tests {
         assert!(!outcome.should_refresh_velocity_scale);
     }
 
+    #[cfg(feature = "diagnostics")]
     #[fixture_test]
     async fn resistance_test_runs_diagnostic_request() {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
@@ -3517,40 +3527,43 @@ mod tests {
         ));
         assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
 
-        let mut board = RecordingBoard::fall_through();
-        let (mut runtime, limit) = held_tune_runtime();
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-        handle_tmc_control_request(
-            crate::tmc::tmc_position_torque_offset_sample_test(0, 5, 100, 10, 1_000),
-            TmcPreRequestDisposition::ContinueRequest,
-            &mut runtime,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-        let writes = tmc.into_inner().writes;
-        assert_eq!(writes[..2], release_writes(limit), "{writes:?}");
-        assert_eq!(board.diagnostic_calls, 1);
-        assert!(!runtime.offset_headroom_engaged());
+        #[cfg(feature = "diagnostics")]
+        {
+            let mut board = RecordingBoard::fall_through();
+            let (mut runtime, limit) = held_tune_runtime();
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+            handle_tmc_control_request(
+                crate::tmc::tmc_position_torque_offset_sample_test(0, 5, 100, 10, 1_000),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+            let writes = tmc.into_inner().writes;
+            assert_eq!(writes[..2], release_writes(limit), "{writes:?}");
+            assert_eq!(board.diagnostic_calls, 1);
+            assert!(!runtime.offset_headroom_engaged());
 
-        let mut board = RecordingBoard::fall_through();
-        let (mut runtime, _) = held_tune_runtime();
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(offset_addr));
-        let outcome = handle_tmc_control_request(
-            crate::tmc::tmc_position_torque_offset_sample_test(0, 5, 100, 10, 1_000),
-            TmcPreRequestDisposition::ContinueRequest,
-            &mut runtime,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-        assert_eq!(tmc.into_inner().write_attempts, std::vec![(offset_addr, 0)]);
-        assert_eq!(
-            board.diagnostic_calls, 1,
-            "the runner still receives the request so it can reply not-ready"
-        );
-        assert!(runtime.offset_headroom_engaged());
-        assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+            let mut board = RecordingBoard::fall_through();
+            let (mut runtime, _) = held_tune_runtime();
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(offset_addr));
+            let outcome = handle_tmc_control_request(
+                crate::tmc::tmc_position_torque_offset_sample_test(0, 5, 100, 10, 1_000),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+            assert_eq!(tmc.into_inner().write_attempts, std::vec![(offset_addr, 0)]);
+            assert_eq!(
+                board.diagnostic_calls, 1,
+                "the runner still receives the request so it can reply not-ready"
+            );
+            assert!(runtime.offset_headroom_engaged());
+            assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+        }
     }
 
     #[cfg(feature = "dev")]

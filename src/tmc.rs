@@ -204,6 +204,7 @@ pub enum TmcRequestKind {
         voltage_limit: u32,
     },
     /// Run a bounded current-loop step diagnostic while already enabled.
+    #[cfg(feature = "diagnostics")]
     CurrentStepTest {
         oid: u8,
         axis: CurrentStepAxis,
@@ -214,6 +215,7 @@ pub enum TmcRequestKind {
         voltage_limit: u16,
     },
     /// Run a bounded current-vector step diagnostic while already enabled.
+    #[cfg(feature = "diagnostics")]
     CurrentVectorStepTest {
         oid: u8,
         /// Signed torque-current target in TMC4671 current counts.
@@ -225,6 +227,7 @@ pub enum TmcRequestKind {
         voltage_limit: u16,
     },
     /// Run a bounded torque-current pulse and sample it before the old dwell floor.
+    #[cfg(feature = "diagnostics")]
     CurrentTorqueSampleTest {
         oid: u8,
         /// Signed torque-current target in TMC4671 current counts.
@@ -237,6 +240,7 @@ pub enum TmcRequestKind {
         voltage_limit: u16,
     },
     /// Run a bounded torque-offset pulse in position mode and sample it.
+    #[cfg(feature = "diagnostics")]
     PositionTorqueOffsetSampleTest {
         oid: u8,
         /// Signed torque offset in TMC4671 current counts.
@@ -247,6 +251,7 @@ pub enum TmcRequestKind {
         voltage_limit: u16,
     },
     /// Run a bounded open-loop voltage pulse and sample it.
+    #[cfg(feature = "diagnostics")]
     VoltageStepTest {
         oid: u8,
         /// Signed q-axis voltage component for UQ_UD_EXT.
@@ -258,6 +263,7 @@ pub enum TmcRequestKind {
     },
     /// Run the resistance-identification sweep over an already-armed motor; commissioning state is
     /// untouched.
+    #[cfg(feature = "diagnostics")]
     ResistanceTest {
         oid: u8,
         /// Reserved verbosity/selector byte for future detail replies.
@@ -524,6 +530,7 @@ pub fn tmc_set_voltage_limit(channel: u8, voltage_limit: u32) -> TmcRequest {
 }
 
 /// Build a `CurrentStepTest` request.
+#[cfg(feature = "diagnostics")]
 pub fn tmc_current_step_test(
     channel: u8,
     oid: u8,
@@ -545,6 +552,7 @@ pub fn tmc_current_step_test(
 }
 
 /// Build a `CurrentVectorStepTest` request.
+#[cfg(feature = "diagnostics")]
 pub fn tmc_current_vector_step_test(
     channel: u8,
     oid: u8,
@@ -566,6 +574,7 @@ pub fn tmc_current_vector_step_test(
 }
 
 /// Build a `CurrentTorqueSampleTest` request.
+#[cfg(feature = "diagnostics")]
 pub fn tmc_current_torque_sample_test(
     channel: u8,
     oid: u8,
@@ -587,6 +596,7 @@ pub fn tmc_current_torque_sample_test(
 }
 
 /// Build a `PositionTorqueOffsetSampleTest` request.
+#[cfg(feature = "diagnostics")]
 pub fn tmc_position_torque_offset_sample_test(
     channel: u8,
     oid: u8,
@@ -606,6 +616,7 @@ pub fn tmc_position_torque_offset_sample_test(
 }
 
 /// Build a `VoltageStepTest` request.
+#[cfg(feature = "diagnostics")]
 pub fn tmc_voltage_step_test(
     channel: u8,
     oid: u8,
@@ -625,6 +636,7 @@ pub fn tmc_voltage_step_test(
 }
 
 /// Build a `ResistanceTest` request.
+#[cfg(feature = "diagnostics")]
 pub fn tmc_resistance_test(channel: u8, oid: u8, detail: u8) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::ResistanceTest { oid, detail })
 }

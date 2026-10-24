@@ -141,8 +141,9 @@ pub fn classify_wait_request(kind: &TmcRequestKind) -> CommissionWaitRequestDisp
         | TmcRequestKind::SelfTest { .. }
         | TmcRequestKind::DumpRegisters { .. }
         | TmcRequestKind::Commission { .. }
-        | TmcRequestKind::Tune { .. }
-        | TmcRequestKind::CurrentStepTest { .. }
+        | TmcRequestKind::Tune { .. } => CommissionWaitRequestDisposition::RejectBusy,
+        #[cfg(feature = "diagnostics")]
+        TmcRequestKind::CurrentStepTest { .. }
         | TmcRequestKind::CurrentVectorStepTest { .. }
         | TmcRequestKind::CurrentTorqueSampleTest { .. }
         | TmcRequestKind::PositionTorqueOffsetSampleTest { .. }

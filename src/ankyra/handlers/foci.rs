@@ -811,7 +811,7 @@ mod tests {
             source
                 .matches("crate::ankyra::handlers::foci::foci_commission_cancel,")
                 .count(),
-            2
+            4
         );
     }
 

@@ -2,20 +2,32 @@
 //!
 //! The runners own chip-level sequencing and report construction; boards own channel
 //! selection, reply emission, and shutdown glue.
+//!
+//! Everything except the report types requires the `diagnostics` feature; the report types stay
+//! because commissioning replies reuse them.
 
+#[cfg(feature = "diagnostics")]
 mod current_step;
+#[cfg(feature = "diagnostics")]
 mod helpers;
+#[cfg(feature = "diagnostics")]
 mod replies;
 mod reports;
+#[cfg(feature = "diagnostics")]
 mod resistance;
+#[cfg(feature = "diagnostics")]
 mod torque_sample;
+#[cfg(feature = "diagnostics")]
 mod voltage_step;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "diagnostics"))]
 mod tests;
 
+#[cfg(feature = "diagnostics")]
 pub use current_step::run_current_step_request;
+#[cfg(feature = "diagnostics")]
 pub use helpers::pack_voltage_ext;
+#[cfg(feature = "diagnostics")]
 pub use replies::{DiagnosticReplySink, emit_diagnostic_report};
 pub use reports::{
     CURRENT_STEP_STATUS_HOST_LIVENESS, CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI,
@@ -26,15 +38,20 @@ pub use reports::{
     VoltageStepReport, empty_current_torque_sample_report, empty_resistance_run_report,
     empty_voltage_step_report,
 };
+#[cfg(feature = "diagnostics")]
 pub use resistance::run_resistance_test_request;
+#[cfg(feature = "diagnostics")]
 pub use torque_sample::{
     run_current_torque_sample_request, run_position_torque_offset_sample_request,
 };
+#[cfg(feature = "diagnostics")]
 pub use voltage_step::run_voltage_step_request;
 
+#[cfg(feature = "diagnostics")]
 use foci_tmc4671::spi::Tmc4671Spi;
 
 /// Board-supplied readiness snapshot for one diagnostic request.
+#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiagnosticReadiness {
     /// Whether board-global homing is active.
@@ -48,6 +65,7 @@ pub struct DiagnosticReadiness {
 }
 
 /// Delay abstraction used by shared diagnostic runners.
+#[cfg(feature = "diagnostics")]
 #[allow(async_fn_in_trait)]
 pub trait DiagnosticDelay {
     /// Delay by `ms` milliseconds.
@@ -67,12 +85,14 @@ pub trait DiagnosticDelay {
 /// Implementations must lower the selected channel's physical enable GPIO and
 /// stop its hardware step timer. They must not perform SPI, delay, allocation,
 /// or asynchronous work.
+#[cfg(feature = "diagnostics")]
 pub trait DiagnosticPowerStage {
     /// Immediately make the selected channel's power stage physically inert.
     fn trip_power_stage(&mut self);
 }
 
 /// Mutable resources borrowed by one active diagnostic request.
+#[cfg(feature = "diagnostics")]
 pub struct DiagnosticContext<'a, B, D> {
     /// TMC4671 SPI transport for the selected request channel.
     pub tmc: &'a mut Tmc4671Spi<B>,
@@ -94,6 +114,7 @@ pub struct DiagnosticContext<'a, B, D> {
 }
 
 /// Which current-step reply a completed request should emit.
+#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CurrentStepReply {
     /// Emit the scalar current-step reply, echoing the driven axis.
@@ -103,6 +124,7 @@ pub enum CurrentStepReply {
 }
 
 /// Report produced by a handled active diagnostic request.
+#[cfg(feature = "diagnostics")]
 #[allow(clippy::large_enum_variant)]
 pub enum DiagnosticReport {
     /// Current-step or current-vector-step diagnostic.
@@ -129,6 +151,7 @@ pub enum DiagnosticReport {
 }
 
 /// Result of shared diagnostic request dispatch.
+#[cfg(feature = "diagnostics")]
 #[allow(clippy::large_enum_variant)]
 pub enum DiagnosticOutcome {
     /// The request was an active diagnostic and produced a report.
@@ -138,6 +161,7 @@ pub enum DiagnosticOutcome {
 }
 
 /// Build the established not-ready reply for a diagnostic rejected by commissioning.
+#[cfg(feature = "diagnostics")]
 pub fn busy_diagnostic_report(
     req: crate::tmc::TmcRequest,
     tmc_config: &crate::config::TmcConfig,
@@ -245,6 +269,7 @@ pub fn busy_diagnostic_report(
 ///
 /// While the offset-headroom reservation is engaged, returns the request's not-ready report
 /// without touching the TMC.
+#[cfg(feature = "diagnostics")]
 pub async fn handle_diagnostic_request<B, D>(
     req: crate::tmc::TmcRequest,
     ctx: DiagnosticContext<'_, B, D>,
