@@ -1630,7 +1630,7 @@ mod tests {
             source
                 .matches("crate::ankyra::handlers::tmc::tmc_set_velocity_feedforward_rpm,")
                 .count(),
-            4
+            2
         );
         assert!(!source.contains("crate::ankyra::handlers::tmc::tmc_set_velocity_feedforward,"));
     }
