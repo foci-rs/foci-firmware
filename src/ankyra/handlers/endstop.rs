@@ -22,6 +22,7 @@ pub fn config_endstop(ctx: &mut dyn EndstopConfigHost, oid: u8, pin: u8, pull_up
         }
     };
 
+    let pin = ctx.physical_pin_for_alias(pin).unwrap_or(pin);
     if pin < GPIO_MAX_PIN_VALUE {
         ctx.configure_input(pin, pull_up != 0);
         defmt::info!(
@@ -226,6 +227,9 @@ mod tests {
         fn stall_channel_for_pin(&self, pin: u8) -> Option<u8> {
             if pin == 200 { Some(1) } else { None }
         }
+        fn physical_pin_for_alias(&self, pin: u8) -> Option<u8> {
+            if pin == 201 { Some(55) } else { None }
+        }
     }
 
     #[test]
@@ -256,5 +260,17 @@ mod tests {
 
         assert_eq!(ENDSTOP_PIN_IDS[0].load(Relaxed), 10);
         assert_eq!(ctx.configured_inputs, std::vec![(10, true)]);
+    }
+
+    #[test]
+    fn config_endstop_resolves_alias_to_physical_gpio() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+
+        config_endstop(&mut ctx, &mut sender, 7, 201, 1);
+
+        assert_eq!(ENDSTOP_PIN_IDS[0].load(Relaxed), 55);
+        assert_eq!(ctx.configured_inputs, std::vec![(55, true)]);
     }
 }

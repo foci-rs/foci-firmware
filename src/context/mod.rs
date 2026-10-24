@@ -63,6 +63,10 @@ pub trait EndstopHost: StateAccess {
     fn read_pin(&self, pin: u8) -> bool;
     /// Map a board virtual STALL pin id to its TMC channel, `None` for any other pin.
     fn stall_channel_for_pin(&self, pin: u8) -> Option<u8>;
+    /// Resolve a board pin-name alias to the physical GPIO id it names, `None` for any other pin.
+    fn physical_pin_for_alias(&self, _pin: u8) -> Option<u8> {
+        None
+    }
 }
 
 /// Board-specific analog-in pin resolution.
