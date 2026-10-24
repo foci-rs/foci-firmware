@@ -1,10 +1,5 @@
-//! Shared active TMC4671 diagnostic runners.
-//!
 //! The runners own chip-level sequencing and report construction; boards own channel
 //! selection, reply emission, and shutdown glue.
-//!
-//! Everything except the report types requires the `diagnostics` feature; the report types stay
-//! because commissioning replies reuse them.
 
 #[cfg(feature = "diagnostics")]
 mod current_step;

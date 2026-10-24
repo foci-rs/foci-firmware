@@ -1,8 +1,3 @@
-//! Ankyra providers for FOCI protocol items shared by all boards.
-//! Dev-gated TMC handlers are included in `FOCI_FIRMWARE_PROVIDER` only with the `dev` feature.
-//! The active TMC diagnostic commands and their replies live in `FOCI_DIAGNOSTICS_PROVIDER`, which
-//! is empty without the `diagnostics` feature.
-
 #[cfg(feature = "dev")]
 ankyra::ankyra_provider! {
     name: FOCI_FIRMWARE_PROVIDER,
