@@ -7,7 +7,6 @@ description = "Board-agnostic FOCI firmware library: protocol handlers, commissi
 repository = "https://github.com/foci-rs/foci-firmware"
 
 [features]
-default = ["diagnostics"]
 dev = []
 diagnostics = []
 trace = []
