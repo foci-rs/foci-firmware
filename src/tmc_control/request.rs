@@ -1187,10 +1187,9 @@ where
                 max_accel_mrev_s2,
             };
             let position_tune_steps_per_rev = board
-                .tmc_state()
-                .physical_step_width()
-                .filter(|width| *width > 0)
-                .map_or(0, |width| 65_536 / width);
+                .stepper_state()
+                .planner_steps_per_rev(board.tmc_state())
+                .unwrap_or(0);
             let position_tune_step_timer_hz = board.stimulus_step_timer_hz();
             let workflow = crate::commissioning::outer::velocity::workflow_plan::
                 CommissioningWorkflowPlan::new_position_tune(
@@ -2793,10 +2792,9 @@ mod tests {
             homing_speed_mrev_s: 4_375,
             max_accel_mrev_s2: 200_000,
         };
-        let expected_steps_per_rev = 65_536
-            / tmc_channel0()
-                .physical_step_width()
-                .expect("configure_motion_scale set a physical step width");
+        let expected_steps_per_rev = stepper_channel0()
+            .planner_steps_per_rev(tmc_channel0())
+            .expect("configure_motion_scale set a planner scale");
         let expected_step_timer_hz = board.stimulus_step_timer_hz();
         assert_eq!(
             workflow.maximum_workflow_ms,

@@ -10,7 +10,7 @@ pub(crate) struct StrokeRequest {
     pub accel_mrev_s2: u32,
     /// Distance one leg travels, mrev.
     pub excursion_mrev: u32,
-    /// Physical steps per mechanical revolution (`65536 / STEP_WIDTH`).
+    /// Logical planner steps per mechanical revolution, the unit of the step queue.
     pub steps_per_rev: u32,
     /// Step timer frequency, Hz.
     pub step_timer_hz: u32,
