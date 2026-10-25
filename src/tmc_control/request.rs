@@ -3105,10 +3105,12 @@ mod tests {
             nomination_p_below: 896,
             ..velocity_sweep_request()
         };
+        let mut plan = resumable_integral_plan(ceiled);
+        plan.motion_request.nomination_p_below = 896;
         let retained = crate::commission_dispatch::integral::install_authority_from_plan(
             0,
             &mut integral,
-            resumable_integral_plan(ceiled),
+            plan,
         );
         assert_eq!(integral.state(), IntegralRetentionSlotState::AuthorityOnly);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
