@@ -6,10 +6,10 @@ use super::integral_sweep::{
     advance_integral_cursor, analyze_rung, combined_slot_transition_us, integral_fault_terminal,
     integral_i_at, integral_recovery_current_contact_policy, integral_rung_count,
     integral_slot_direction, opening_recovery_lower_rate_q, plan_integral_recovery,
-    positive_directional_floors_exist, record_integral_observation_rest_selection,
-    record_integral_recovery_rest, record_integral_recovery_rest_selection,
-    record_integral_target_if_reached, step_velocity_integral_with_trace,
-    terminate_on_current_headroom,
+    pooled_deficit_interval, positive_directional_floors_exist,
+    record_integral_observation_rest_selection, record_integral_recovery_rest,
+    record_integral_recovery_rest_selection, record_integral_target_if_reached,
+    step_velocity_integral_with_trace, terminate_on_current_headroom,
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
@@ -23,6 +23,7 @@ use crate::autotune::CommissionError;
 use crate::autotune::TmcMechanicalRpm;
 use crate::autotune::TransientBuffer;
 use crate::autotune::velocity_measurement::VelocityDirection;
+use crate::autotune::velocity_measurement::confidence_multiplier_95_df15;
 use crate::autotune::velocity_measurement::{
     RestSelectionDecision, RestSelectionDisposition, RestStructuralCode, StationarityExclusion,
     StationarityResult,
@@ -31,7 +32,10 @@ use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit
 use crate::commissioning::outer::state::{
     PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
 };
-use crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval;
+use crate::commissioning::outer::velocity::integral_evidence::{
+    ExactRateInterval, IntegralObservationClass, IntegralRungClass, IntegralRungEvidence,
+    IntegralRungKind,
+};
 use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
 use crate::commissioning::outer::{
     OuterMotionBudget, OuterPhase, OuterSafetyLimits, VelocityIntegralRuntime,
@@ -2743,4 +2747,84 @@ fn integral_i_at_breakaway_response_ladder_never_returns_724() {
     for index in 0..total {
         assert_ne!(integral_i_at(test_plan, index), Some(724));
     }
+}
+
+fn eligible_evidence(intervals: [Option<(i32, i32)>; 4], usable_mask: u8) -> IntegralRungEvidence {
+    IntegralRungEvidence {
+        direction: VelocityDirection::Forward,
+        kind: IntegralRungKind::Positive,
+        classification: IntegralRungClass::EligibleConsensus,
+        interval: None,
+        components: [ExactRateInterval::EMPTY; 2],
+        component_count: 0,
+        observation_classes: [IntegralObservationClass::Usable; 4],
+        observation_intervals: intervals
+            .map(|interval| interval.map(|(low, high)| ExactRateInterval::new(low, high).unwrap())),
+        usable_mask,
+        included_mask: usable_mask,
+    }
+}
+
+#[test]
+fn pooled_interval_uses_floor_and_ceil_of_the_exact_mean_with_zero_width() {
+    let evidence = eligible_evidence([Some((3, 3)), Some((4, 4)), Some((6, 6)), None], 0b0111);
+    let pooled = pooled_deficit_interval(&evidence, 56, 12).unwrap().unwrap();
+    assert_eq!((pooled.low_q, pooled.high_q), (4, 5));
+}
+
+#[test]
+fn pooled_interval_floors_toward_negative_infinity_for_a_negative_mean() {
+    let evidence = eligible_evidence(
+        [Some((-3, -3)), Some((-4, -4)), Some((-6, -6)), None],
+        0b0111,
+    );
+    let pooled = pooled_deficit_interval(&evidence, 56, 12).unwrap().unwrap();
+    assert_eq!((pooled.low_q, pooled.high_q), (-5, -4));
+}
+
+#[test]
+fn pooled_half_width_follows_the_two_k_multiplier() {
+    let evidence = eligible_evidence([Some((-500, 500)), None, None, None], 0b0001);
+    let m_family = confidence_multiplier_95_df15(56).unwrap();
+    let expected = |k: u8| -> i32 {
+        let m_2k = confidence_multiplier_95_df15(2 * u16::from(k)).unwrap();
+        libm::ceilf((m_2k * libm::sqrtf(1_000_000.0)) / (2.0 * m_family)) as i32
+    };
+    let twelve = pooled_deficit_interval(&evidence, 56, 12).unwrap().unwrap();
+    let six = pooled_deficit_interval(&evidence, 56, 6).unwrap().unwrap();
+    assert_eq!(twelve.high_q, expected(12));
+    assert_eq!(six.high_q, expected(6));
+    assert_eq!((twelve.high_q, six.high_q), (450, 409));
+}
+
+#[test]
+fn pooled_interval_pools_the_usable_set_not_the_included_set() {
+    let base = [
+        Some((0, 100)),
+        Some((0, 100)),
+        Some((0, 100)),
+        Some((400, 500)),
+    ];
+    let mut four = eligible_evidence(base, 0b1111);
+    four.included_mask = 0b0111;
+    let mut three = eligible_evidence(base, 0b0111);
+    three.observation_intervals[3] = Some(ExactRateInterval::new(400, 500).unwrap());
+    let only_three = eligible_evidence(
+        [Some((0, 100)), Some((0, 100)), Some((0, 100)), None],
+        0b0111,
+    );
+    let four = pooled_deficit_interval(&four, 56, 12).unwrap().unwrap();
+    let three = pooled_deficit_interval(&three, 56, 12).unwrap().unwrap();
+    let only_three = pooled_deficit_interval(&only_three, 56, 12)
+        .unwrap()
+        .unwrap();
+    assert_ne!(four, three);
+    assert_eq!(three, only_three);
+}
+
+#[test]
+fn pooled_interval_is_absent_without_eligible_consensus() {
+    let mut evidence = eligible_evidence([Some((0, 1)); 4], 0b1111);
+    evidence.classification = IntegralRungClass::AmbiguousConsensus;
+    assert_eq!(pooled_deficit_interval(&evidence, 56, 12).unwrap(), None);
 }

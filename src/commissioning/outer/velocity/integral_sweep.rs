@@ -4,7 +4,7 @@ use super::integral_plan::IntegralSlotOrder;
 use crate::autotune::velocity_measurement::SuffixDiagnostic;
 use crate::autotune::velocity_measurement::{
     RestStructuralCode, StationarityExclusion, StationarityResult, VelocityDirection,
-    estimate_confidence,
+    confidence_multiplier_95_df15, estimate_confidence,
 };
 use crate::autotune::{CommissionError, TmcMechanicalRpm, TransientBuffer};
 use crate::commissioning::backend::CommissioningBackend;
@@ -221,6 +221,55 @@ pub(super) fn record_integral_target_if_reached(
     } else {
         Ok(false)
     }
+}
+
+pub(super) fn pooled_deficit_interval(
+    evidence: &IntegralRungEvidence,
+    family_size: u16,
+    positive_rung_count: u8,
+) -> Result<Option<ExactRateInterval>, CommissionError> {
+    if !matches!(
+        evidence.classification,
+        IntegralRungClass::EligibleConsensus
+    ) || evidence.usable_mask == 0
+    {
+        return Ok(None);
+    }
+    let mut pooled_count: i128 = 0;
+    let mut endpoint_sum: i128 = 0;
+    let mut squared_width_sum: u128 = 0;
+    for (slot, interval) in evidence.observation_intervals.iter().enumerate() {
+        if evidence.usable_mask & (1 << slot) == 0 {
+            continue;
+        }
+        let Some(interval) = interval else {
+            continue;
+        };
+        let low = i128::from(interval.low_q);
+        let high = i128::from(interval.high_q);
+        let width = (high - low) as u128;
+        pooled_count += 1;
+        endpoint_sum += low + high;
+        squared_width_sum += width * width;
+    }
+    if pooled_count == 0 {
+        return Ok(None);
+    }
+    let m_2k = confidence_multiplier_95_df15(2 * u16::from(positive_rung_count))
+        .map_err(|_| CommissionError::InvalidSchedule)?;
+    let m_family =
+        confidence_multiplier_95_df15(family_size).map_err(|_| CommissionError::InvalidSchedule)?;
+    let spread = libm::sqrtf(squared_width_sum as f32);
+    let half_width = (m_2k * spread) / ((2.0 * pooled_count as f32) * m_family);
+    let half_width = libm::ceilf(half_width) as i128;
+    let divisor = 2 * pooled_count;
+    let low_pool = endpoint_sum.div_euclid(divisor) - half_width;
+    let high_pool = -((-endpoint_sum).div_euclid(divisor)) + half_width;
+    let low_q = i32::try_from(low_pool).map_err(|_| CommissionError::TargetRateInvalid)?;
+    let high_q = i32::try_from(high_pool).map_err(|_| CommissionError::TargetRateInvalid)?;
+    ExactRateInterval::new(low_q, high_q)
+        .map(Some)
+        .map_err(|_| CommissionError::TargetRateInvalid)
 }
 
 fn record_diverted_target_terminus(
