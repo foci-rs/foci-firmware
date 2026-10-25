@@ -177,6 +177,7 @@ pub(crate) struct OuterSafetyLimits {
     velocity_ceiling_milli_counts_per_s: Option<u64>,
     ceiling_latched: bool,
     primitive_peak_milli_counts_per_s: u64,
+    skip_next_peak_window: bool,
     pub(crate) budget: OuterMotionBudget,
 }
 
@@ -208,6 +209,7 @@ impl OuterSafetyLimits {
             velocity_ceiling_milli_counts_per_s: None,
             ceiling_latched: false,
             primitive_peak_milli_counts_per_s: 0,
+            skip_next_peak_window: false,
             budget,
         }
     }
@@ -480,6 +482,7 @@ impl OuterSafetyLimits {
         self.max_local_position_excursion = 0;
         self.ceiling_latched = false;
         self.primitive_peak_milli_counts_per_s = 0;
+        self.skip_next_peak_window = false;
         Ok(())
     }
 
@@ -520,6 +523,15 @@ impl OuterSafetyLimits {
         self.primitive_peak_milli_counts_per_s
     }
 
+    /// Zero the primitive peak without opening a new primitive, so a caller can isolate the peak
+    /// of one leg. The next two-sample window spans the reset and is kept out of the peak; its
+    /// cap and ceiling evaluation is unchanged.
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub(crate) fn reset_primitive_peak(&mut self) {
+        self.primitive_peak_milli_counts_per_s = 0;
+        self.skip_next_peak_window = true;
+    }
+
     #[cfg(test)]
     pub(crate) fn force_ceiling_latch_for_test(&mut self) {
         self.ceiling_latched = true;
@@ -531,9 +543,13 @@ impl OuterSafetyLimits {
         }
         let milli_counts_per_s =
             clamp_u128_to_u64(window_counts * 1_000_000_000 / window_elapsed_us);
-        self.primitive_peak_milli_counts_per_s = self
-            .primitive_peak_milli_counts_per_s
-            .max(milli_counts_per_s);
+        if self.skip_next_peak_window {
+            self.skip_next_peak_window = false;
+        } else {
+            self.primitive_peak_milli_counts_per_s = self
+                .primitive_peak_milli_counts_per_s
+                .max(milli_counts_per_s);
+        }
         if let Some(ceiling) = self.velocity_ceiling_milli_counts_per_s
             && window_counts * 1_000_000_000 >= u128::from(ceiling) * window_elapsed_us
         {
@@ -1579,6 +1595,96 @@ mod tests {
             safety.begin_primitive(103_000).unwrap();
             assert_eq!(safety.primitive_peak_milli_counts_per_s(), 0);
             assert!(!safety.ceiling_latched());
+        });
+    }
+
+    #[test]
+    fn reset_primitive_peak_excludes_the_straddling_window_from_the_peak_only() {
+        pollster::block_on(async {
+            let mut safety = envelope_armed_safety(1_450, 3_450);
+            safety.begin_primitive(100_000).unwrap();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101_000;
+            backend.mechanical_encoder_position_counts_value = 10;
+            check_outer_safety(&mut safety, &mut backend).await.unwrap();
+            backend.elapsed_us_value = 102_000;
+            backend.mechanical_encoder_position_counts_value = 14;
+            check_outer_safety(&mut safety, &mut backend).await.unwrap();
+            assert_eq!(safety.primitive_peak_milli_counts_per_s(), 7_000_000);
+
+            safety.reset_primitive_peak();
+            assert_eq!(safety.primitive_peak_milli_counts_per_s(), 0);
+
+            backend.elapsed_us_value = 103_000;
+            backend.mechanical_encoder_position_counts_value = 30;
+            check_outer_safety(&mut safety, &mut backend).await.unwrap();
+            assert_eq!(
+                safety.primitive_peak_milli_counts_per_s(),
+                0,
+                "the window straddling the reset stays out of the peak"
+            );
+
+            backend.elapsed_us_value = 104_000;
+            backend.mechanical_encoder_position_counts_value = 40;
+            check_outer_safety(&mut safety, &mut backend).await.unwrap();
+            assert_eq!(
+                safety.primitive_peak_milli_counts_per_s(),
+                13_000_000,
+                "26 counts over 2 ms is 13 counts/ms"
+            );
+        });
+    }
+
+    #[test]
+    fn reset_primitive_peak_still_evaluates_the_straddling_window_against_the_cap() {
+        pollster::block_on(async {
+            let mut safety = envelope_armed_safety(1_450, 3_450);
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 102_500;
+            backend.mechanical_encoder_position_counts_value = 35;
+            check_outer_safety(&mut safety, &mut backend).await.unwrap();
+
+            safety.reset_primitive_peak();
+
+            backend.elapsed_us_value = 105_000;
+            backend.mechanical_encoder_position_counts_value = 70;
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("velocity observation should succeed")
+                .expect("14.0 counts/ms must still exceed the 13.8 counts/ms envelope");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+            assert_eq!(safety.primitive_peak_milli_counts_per_s(), 0);
+        });
+    }
+
+    #[test]
+    fn reset_primitive_peak_leaves_primitive_state_alone() {
+        pollster::block_on(async {
+            let mut safety = envelope_armed_safety(5_000, 7_500);
+            let cap = safety.active_velocity_cap_milli_counts_per_s(100_000);
+            safety.set_velocity_ceiling(Some(cap * 4 / 5));
+            safety.begin_primitive(100_000).unwrap();
+            let mut backend = MockBackend::new();
+            for (t, pos) in [(101_000, 24), (102_000, 48)] {
+                backend.elapsed_us_value = t;
+                backend.mechanical_encoder_position_counts_value = pos;
+                check_outer_safety(&mut safety, &mut backend).await.unwrap();
+            }
+            assert!(safety.ceiling_latched());
+
+            let start_position = safety.primitive_start_position;
+            let start_us = safety.primitive_start_us;
+            let excursion = safety.max_local_position_excursion();
+            let observation = safety.last_accepted_observation();
+
+            safety.reset_primitive_peak();
+
+            assert_eq!(safety.primitive_start_position, start_position);
+            assert_eq!(safety.primitive_start_us, start_us);
+            assert_eq!(safety.max_local_position_excursion(), excursion);
+            assert_eq!(safety.last_accepted_observation(), observation);
+            assert!(safety.ceiling_latched());
         });
     }
 
