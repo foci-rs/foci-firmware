@@ -6,9 +6,9 @@ use super::integral_sweep::{
     advance_integral_cursor, analyze_rung, combined_slot_transition_us, integral_fault_terminal,
     integral_i_at, integral_recovery_current_contact_policy, integral_rung_count,
     integral_slot_direction, opening_recovery_lower_rate_q, plan_integral_recovery,
-    pooled_deficit_interval, positive_directional_floors_exist,
+    pooled_deficit_interval, positive_directional_floors_exist, record_diverted_target_terminus,
     record_integral_observation_rest_selection, record_integral_recovery_rest,
-    record_integral_recovery_rest_selection, record_integral_target_if_reached,
+    record_integral_recovery_rest_selection, record_integral_target_if_reached, retain_rung,
     step_velocity_integral_with_trace, terminate_on_current_headroom,
 };
 use super::recovery::{
@@ -2827,4 +2827,158 @@ fn pooled_interval_is_absent_without_eligible_consensus() {
     let mut evidence = eligible_evidence([Some((0, 1)); 4], 0b1111);
     evidence.classification = IntegralRungClass::AmbiguousConsensus;
     assert_eq!(pooled_deficit_interval(&evidence, 56, 12).unwrap(), None);
+}
+
+fn regression_plan() -> VelocityIntegralExecutionPlan {
+    let mut plan = plan();
+    plan.target_velocity_rpm = 264;
+    plan.encoder_counts_per_rev = 4_000;
+    plan.positive_rung_count = 12;
+    plan.family_size = 56;
+    plan
+}
+
+fn regression_pair_evidence() -> [IntegralRungEvidence; 2] {
+    let forward = [
+        Some((-369_600, 404_800)),
+        Some((-404_800, 404_800)),
+        Some((-440_000, 404_800)),
+        Some((-492_800, 422_400)),
+    ];
+    let reverse = forward.map(|interval| interval.map(|(low, high)| (-high, -low)));
+    let mut fwd = eligible_evidence(forward, 0b1111);
+    fwd.interval = Some(ExactRateInterval::new(-369_600, 404_800).unwrap());
+    let mut rev = eligible_evidence(reverse, 0b1111);
+    rev.direction = VelocityDirection::Reverse;
+    rev.interval = Some(ExactRateInterval::new(-404_800, 369_600).unwrap());
+    [fwd, rev]
+}
+
+#[test]
+fn pooled_decision_passes_where_the_consensus_component_fails() {
+    let plan = regression_plan();
+    let [fwd, rev] = regression_pair_evidence();
+
+    let mut legacy = VelocityIntegralRuntime::new(1, plan);
+    legacy.rung_index = 10;
+    assert!(
+        !record_integral_target_if_reached(
+            &mut legacy,
+            [fwd.interval.unwrap(), rev.interval.unwrap()]
+        )
+        .unwrap()
+    );
+    assert_eq!(legacy.target_terminus, None);
+
+    let mut pooled = VelocityIntegralRuntime::new(1, plan);
+    pooled.rung_index = 10;
+    let intervals = [
+        pooled_deficit_interval(&fwd, 56, 12).unwrap().unwrap(),
+        pooled_deficit_interval(&rev, 56, 12).unwrap().unwrap(),
+    ];
+    assert!(record_integral_target_if_reached(&mut pooled, intervals).unwrap());
+    assert_eq!(pooled.target_terminus, Some(9));
+}
+
+#[test]
+fn pooled_decision_still_rejects_a_mean_below_the_target() {
+    let forward = [
+        Some((52_800, 827_200)),
+        Some((-52_800, 756_800)),
+        Some((-105_600, 739_200)),
+        Some((-176_000, 739_200)),
+    ];
+    let reverse = forward.map(|interval| interval.map(|(low, high)| (-high, -low)));
+    let fwd = eligible_evidence(forward, 0b1111);
+    let mut rev = eligible_evidence(reverse, 0b1111);
+    rev.direction = VelocityDirection::Reverse;
+    let plan = regression_plan();
+
+    let mut legacy = VelocityIntegralRuntime::new(1, plan);
+    legacy.rung_index = 10;
+    let components = [
+        ExactRateInterval::new(52_800, 739_200).unwrap(),
+        ExactRateInterval::new(-739_200, -52_800).unwrap(),
+    ];
+    assert!(!record_integral_target_if_reached(&mut legacy, components).unwrap());
+    assert_eq!(legacy.target_terminus, None);
+
+    let mut data = VelocityIntegralRuntime::new(1, plan);
+    data.rung_index = 10;
+    let intervals = [
+        pooled_deficit_interval(&fwd, 56, 12).unwrap().unwrap(),
+        pooled_deficit_interval(&rev, 56, 12).unwrap().unwrap(),
+    ];
+    assert!(!record_integral_target_if_reached(&mut data, intervals).unwrap());
+    assert_eq!(data.target_terminus, None);
+}
+
+#[test]
+fn live_retain_rung_records_the_terminus_from_the_pooled_interval() {
+    let mut data = VelocityIntegralRuntime::new(1, regression_plan());
+    data.rung_index = 10;
+    let mut workspace = TransientBuffer::new();
+
+    retain_rung(&mut data, &mut workspace, regression_pair_evidence()).unwrap();
+
+    assert_eq!(data.target_terminus, Some(9));
+    assert_eq!(data.eligible_masks, [1 << 9, 1 << 9]);
+}
+
+#[test]
+fn diverted_path_records_the_same_terminus_from_retained_rung_intervals() {
+    let mut data = VelocityIntegralRuntime::new(1, regression_plan());
+    data.rung_index = 10;
+    data.rung_classes = [VelocityObservationClass::Eligible; 8];
+    for (direction, evidence) in regression_pair_evidence().iter().enumerate() {
+        for (index, interval) in evidence.observation_intervals.iter().enumerate() {
+            let slot = usize::from(data.plan.slot_order.slot_for(index, direction));
+            data.rung_intervals[slot] = interval.unwrap();
+        }
+    }
+
+    record_diverted_target_terminus(&mut data).unwrap();
+
+    assert_eq!(data.target_terminus, Some(9));
+}
+
+#[test]
+fn mixed_classification_rung_takes_no_decision() {
+    let [fwd, mut rev] = regression_pair_evidence();
+    rev.classification = IntegralRungClass::AmbiguousConsensus;
+    rev.interval = None;
+    let mut data = VelocityIntegralRuntime::new(1, regression_plan());
+    data.rung_index = 10;
+    let mut workspace = TransientBuffer::new();
+
+    retain_rung(&mut data, &mut workspace, [fwd, rev]).unwrap();
+
+    assert_eq!(data.target_terminus, None);
+    assert_eq!(data.eligible_masks, [1 << 9, 0]);
+}
+
+#[test]
+fn anchor_and_bookend_rungs_never_pool() {
+    let plan = regression_plan();
+    let mut workspace = TransientBuffer::new();
+
+    let mut anchor = VelocityIntegralRuntime::new(1, plan);
+    anchor.rung_index = 0;
+    let evidence = regression_pair_evidence().map(|mut evidence| {
+        evidence.kind = IntegralRungKind::OpeningAnchor;
+        evidence
+    });
+    retain_rung(&mut anchor, &mut workspace, evidence).unwrap();
+    assert_eq!(anchor.target_terminus, None);
+    assert_eq!(anchor.opening_direction_mask, 3);
+
+    let mut bookend = VelocityIntegralRuntime::new(1, plan);
+    bookend.rung_index = plan.positive_rung_count + 1;
+    let evidence = regression_pair_evidence().map(|mut evidence| {
+        evidence.kind = IntegralRungKind::ClosingBookend;
+        evidence
+    });
+    retain_rung(&mut bookend, &mut workspace, evidence).unwrap();
+    assert_eq!(bookend.target_terminus, None);
+    assert_eq!(bookend.bookend_available_mask, 3);
 }

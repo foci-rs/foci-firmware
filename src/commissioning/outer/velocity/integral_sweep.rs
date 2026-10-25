@@ -272,12 +272,24 @@ pub(super) fn pooled_deficit_interval(
         .map_err(|_| CommissionError::TargetRateInvalid)
 }
 
-fn record_diverted_target_terminus(
+pub(super) fn record_diverted_target_terminus(
     data: &mut VelocityIntegralRuntime,
 ) -> Result<(), CommissionError> {
     let forward = analyze_rung(data, VelocityDirection::Forward)?;
     let reverse = analyze_rung(data, VelocityDirection::Reverse)?;
-    if let [Some(forward), Some(reverse)] = [forward.interval, reverse.interval] {
+    record_pooled_target_if_reached(data, &[forward, reverse])
+}
+
+fn record_pooled_target_if_reached(
+    data: &mut VelocityIntegralRuntime,
+    directions: &[IntegralRungEvidence; 2],
+) -> Result<(), CommissionError> {
+    let plan = data.plan;
+    let forward =
+        pooled_deficit_interval(&directions[0], plan.family_size, plan.positive_rung_count)?;
+    let reverse =
+        pooled_deficit_interval(&directions[1], plan.family_size, plan.positive_rung_count)?;
+    if let [Some(forward), Some(reverse)] = [forward, reverse] {
         record_integral_target_if_reached(data, [forward, reverse])?;
     }
     Ok(())
@@ -772,7 +784,7 @@ fn resolve_analyzed_directions(
     }
 }
 
-fn retain_rung(
+pub(super) fn retain_rung(
     data: &mut VelocityIntegralRuntime,
     workspace: &mut TransientBuffer,
     directions: [IntegralRungEvidence; 2],
@@ -809,10 +821,7 @@ fn retain_rung(
                     data.eligible_masks[direction] |= bit;
                 }
             }
-            if let [Some(forward), Some(reverse)] = [directions[0].interval, directions[1].interval]
-            {
-                record_integral_target_if_reached(data, [forward, reverse])?;
-            }
+            record_pooled_target_if_reached(data, &directions)?;
         }
         IntegralRungKind::ClosingBookend => {
             for (direction, evidence) in directions.iter().enumerate() {
