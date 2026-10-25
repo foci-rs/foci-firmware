@@ -61,6 +61,9 @@ pub(crate) enum BreakawayTerminalCause {
     ConfirmationNoTransitionCapableCandidate = 27,
     /// Every band-admissible, transition-capable rung exceeded the step peak bound.
     ConfirmationNoDampedCandidate = 28,
+    /// Every band-admissible, transition-capable, damped rung sat at or above the nomination
+    /// ceiling.
+    ConfirmationNoRungBelowCeiling = 29,
 }
 
 const REQUIRED_HALF_WIDTH_FRACTION: f32 = 1.0 / 15.0;
@@ -163,6 +166,9 @@ pub(crate) fn confirmation_zero_stroke_cause(
         ),
         BandConfirmationOutcome::TargetBandNoDampedCandidate { .. } => {
             (BreakawayTerminalCause::ConfirmationNoDampedCandidate, 0)
+        }
+        BandConfirmationOutcome::TargetBandNoRungBelowCeiling { .. } => {
+            (BreakawayTerminalCause::ConfirmationNoRungBelowCeiling, 0)
         }
         BandConfirmationOutcome::TargetBandNotReachedAtAuthority => (
             BreakawayTerminalCause::ConfirmationTargetBandNotReachedAtAuthority,

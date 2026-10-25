@@ -2222,6 +2222,12 @@ pub(crate) enum BandConfirmationOutcome {
         /// Rungs excluded by the step peak bound.
         excluded: u8,
     },
+    /// Every band-admissible, transition-capable, damped rung sat at or above the nomination
+    /// ceiling.
+    TargetBandNoRungBelowCeiling {
+        /// The nomination ceiling that excluded every remaining rung.
+        ceiling: u16,
+    },
     TargetBandNotReachedAtAuthority,
     TargetBandConfirmationInconclusive(BandConfirmationFailureCause),
     ConfirmationEvidenceExcluded,
@@ -2290,9 +2296,10 @@ pub(crate) fn begin_band_confirmation(
                 BandConfirmationOutcome::TargetBandNoDampedCandidate { excluded },
             );
         }
-        Err(NominationRejection::NoRungBelowCeiling { .. }) => {
+        Err(NominationRejection::NoRungBelowCeiling { ceiling }) => {
+            defmt::info!("nomination: no rung below ceiling p={}", ceiling);
             return BandConfirmationEntry::Done(
-                BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery,
+                BandConfirmationOutcome::TargetBandNoRungBelowCeiling { ceiling },
             );
         }
     };
@@ -3281,6 +3288,7 @@ fn confirmation_terminal(outcome: BandConfirmationOutcome) -> BreakawayCampaignO
         BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery
         | BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate
         | BandConfirmationOutcome::TargetBandNoDampedCandidate { .. }
+        | BandConfirmationOutcome::TargetBandNoRungBelowCeiling { .. }
         | BandConfirmationOutcome::TargetBandNotReachedAtAuthority
         | BandConfirmationOutcome::TargetBandConfirmationInconclusive(_)
         | BandConfirmationOutcome::ConfirmationEvidenceExcluded => {
@@ -4041,6 +4049,7 @@ fn confirmation_done_advance<B: CommissioningBackend>(
         BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery
         | BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate
         | BandConfirmationOutcome::TargetBandNoDampedCandidate { .. }
+        | BandConfirmationOutcome::TargetBandNoRungBelowCeiling { .. }
         | BandConfirmationOutcome::TargetBandNotReachedAtAuthority => {
             let terminal = confirmation_zero_stroke_terminal_report(
                 session.plan.plan_digest,

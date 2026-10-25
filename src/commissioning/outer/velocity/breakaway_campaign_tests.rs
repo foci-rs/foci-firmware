@@ -3297,6 +3297,44 @@ fn an_all_over_bound_band_ends_in_no_damped_candidate_with_the_count() {
 }
 
 #[test]
+fn a_band_wholly_at_or_above_the_ceiling_ends_in_no_rung_below_ceiling() {
+    let mut inputs = integral_inputs(2_448);
+    inputs.nomination_p_below = 500;
+    let mut evidence_sequence = 0_u16;
+    let mut nomination_evidence = NominationEvidence::default();
+
+    let continuation = route_discovery_outcome(
+        AdditiveDiscoveryOutcome::TargetBandSelected(peaked_discovery_rungs(&[(500, 0), (512, 0)])),
+        42,
+        &inputs,
+        &mut evidence_sequence,
+        &mut nomination_evidence,
+    );
+
+    let EmitContinuation::Terminal {
+        campaign_terminal,
+        done: BreakawayCampaignOutcome::Terminal { error, safety },
+    } = continuation
+    else {
+        panic!("a band wholly at or above the ceiling must close the campaign before motion");
+    };
+    assert_eq!(
+        campaign_terminal.phase,
+        BreakawayPhase::ProportionalBandConfirmation as u8
+    );
+    assert_eq!(
+        campaign_terminal.terminal_cause,
+        BreakawayTerminalCause::ConfirmationNoRungBelowCeiling as u8
+    );
+    assert_eq!(campaign_terminal.accepted, 0);
+    assert_eq!(campaign_terminal.error_code, 0);
+    assert_eq!(campaign_terminal.nominated_step_peak_permille, 0);
+    assert_eq!(campaign_terminal.overshoot_excluded_rungs, 0);
+    assert_eq!(error, CommissionError::VelocityValidationFailed);
+    assert!(safety.is_none());
+}
+
+#[test]
 fn discovery_rest_refusal_keeps_its_specific_terminal_status() {
     let session = AdditiveDiscoverySession::new(
         discovery_request(),

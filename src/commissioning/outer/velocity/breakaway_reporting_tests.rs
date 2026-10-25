@@ -904,6 +904,32 @@ fn confirmation_zero_stroke_cause_maps_every_zero_stroke_variant() {
 }
 
 #[test]
+fn no_rung_below_ceiling_maps_to_cause_29_in_the_confirmation_phase() {
+    let outcome = BandConfirmationOutcome::TargetBandNoRungBelowCeiling { ceiling: 500 };
+
+    let (cause, has_fault) = confirmation_zero_stroke_cause(&outcome);
+    let report = campaign_terminal_report(
+        BreakawayPhase::ProportionalBandConfirmation,
+        cause,
+        false,
+        0,
+        0,
+        NominationEvidence::default(),
+        12,
+        9,
+    );
+
+    assert_eq!(
+        cause,
+        BreakawayTerminalCause::ConfirmationNoRungBelowCeiling
+    );
+    assert_eq!(has_fault, 0);
+    assert_eq!(report.terminal_cause, 29);
+    assert_eq!(report.accepted, 0);
+    assert_eq!(report.error_code, 0);
+}
+
+#[test]
 fn no_damped_candidate_maps_to_cause_28_in_the_confirmation_phase() {
     let outcome = BandConfirmationOutcome::TargetBandNoDampedCandidate { excluded: 3 };
 
