@@ -905,7 +905,10 @@ fn confirmation_zero_stroke_cause_maps_every_zero_stroke_variant() {
 
 #[test]
 fn no_rung_below_ceiling_maps_to_cause_29_in_the_confirmation_phase() {
-    let outcome = BandConfirmationOutcome::TargetBandNoRungBelowCeiling { ceiling: 500 };
+    let outcome = BandConfirmationOutcome::TargetBandNoRungBelowCeiling {
+        ceiling: 500,
+        excluded: 1,
+    };
 
     let (cause, has_fault) = confirmation_zero_stroke_cause(&outcome);
     let report = campaign_terminal_report(

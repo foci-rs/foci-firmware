@@ -1520,7 +1520,10 @@ fn a_ceiling_at_the_lowest_admissible_rung_rejects_with_the_ceiling() {
         nominate_transition_capable_candidate_from_bounds(&rungs(), u16::MAX, 731).unwrap_err();
     assert_eq!(
         rejection,
-        NominationRejection::NoRungBelowCeiling { ceiling: 731 }
+        NominationRejection::NoRungBelowCeiling {
+            ceiling: 731,
+            excluded: 0,
+        }
     );
 }
 

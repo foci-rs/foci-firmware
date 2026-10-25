@@ -2227,6 +2227,8 @@ pub(crate) enum BandConfirmationOutcome {
     TargetBandNoRungBelowCeiling {
         /// The nomination ceiling that excluded every remaining rung.
         ceiling: u16,
+        /// Rungs excluded by the step peak bound.
+        excluded: u8,
     },
     TargetBandNotReachedAtAuthority,
     TargetBandConfirmationInconclusive(BandConfirmationFailureCause),
@@ -2296,10 +2298,10 @@ pub(crate) fn begin_band_confirmation(
                 BandConfirmationOutcome::TargetBandNoDampedCandidate { excluded },
             );
         }
-        Err(NominationRejection::NoRungBelowCeiling { ceiling }) => {
+        Err(NominationRejection::NoRungBelowCeiling { ceiling, excluded }) => {
             defmt::info!("nomination: no rung below ceiling p={}", ceiling);
             return BandConfirmationEntry::Done(
-                BandConfirmationOutcome::TargetBandNoRungBelowCeiling { ceiling },
+                BandConfirmationOutcome::TargetBandNoRungBelowCeiling { ceiling, excluded },
             );
         }
     };
@@ -3638,7 +3640,9 @@ fn route_discovery_outcome(
                 BandConfirmationOutcome::SafetyFault { error, .. } => error.status_code(),
                 _ => 0,
             };
-            if let BandConfirmationOutcome::TargetBandNoDampedCandidate { excluded } = outcome {
+            if let BandConfirmationOutcome::TargetBandNoDampedCandidate { excluded }
+            | BandConfirmationOutcome::TargetBandNoRungBelowCeiling { excluded, .. } = outcome
+            {
                 *nomination_evidence = NominationEvidence {
                     nominated_step_peak_permille: 0,
                     overshoot_excluded_rungs: excluded,

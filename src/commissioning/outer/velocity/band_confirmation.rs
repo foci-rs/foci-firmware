@@ -499,6 +499,8 @@ pub enum NominationRejection {
     NoRungBelowCeiling {
         /// The nomination ceiling that excluded every remaining rung.
         ceiling: u16,
+        /// Number of rungs excluded by the step peak bound.
+        excluded: u8,
     },
 }
 
@@ -576,6 +578,7 @@ pub fn nominate_transition_capable_candidate_from_bounds(
         }
         Err(TargetBandUnconfirmableFromDiscovery) => Err(NominationRejection::NoRungBelowCeiling {
             ceiling: nomination_p_below,
+            excluded,
         }),
     }
 }

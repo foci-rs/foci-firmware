@@ -3304,7 +3304,11 @@ fn a_band_wholly_at_or_above_the_ceiling_ends_in_no_rung_below_ceiling() {
     let mut nomination_evidence = NominationEvidence::default();
 
     let continuation = route_discovery_outcome(
-        AdditiveDiscoveryOutcome::TargetBandSelected(peaked_discovery_rungs(&[(500, 0), (512, 0)])),
+        AdditiveDiscoveryOutcome::TargetBandSelected(peaked_discovery_rungs(&[
+            (500, 0),
+            (512, 0),
+            (524, 1_450),
+        ])),
         42,
         &inputs,
         &mut evidence_sequence,
@@ -3329,7 +3333,14 @@ fn a_band_wholly_at_or_above_the_ceiling_ends_in_no_rung_below_ceiling() {
     assert_eq!(campaign_terminal.accepted, 0);
     assert_eq!(campaign_terminal.error_code, 0);
     assert_eq!(campaign_terminal.nominated_step_peak_permille, 0);
-    assert_eq!(campaign_terminal.overshoot_excluded_rungs, 0);
+    assert_eq!(campaign_terminal.overshoot_excluded_rungs, 1);
+    assert_eq!(
+        nomination_evidence,
+        NominationEvidence {
+            nominated_step_peak_permille: 0,
+            overshoot_excluded_rungs: 1,
+        }
+    );
     assert_eq!(error, CommissionError::VelocityValidationFailed);
     assert!(safety.is_none());
 }
