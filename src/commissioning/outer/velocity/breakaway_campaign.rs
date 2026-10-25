@@ -2244,7 +2244,7 @@ pub(crate) fn begin_band_confirmation(
     target_velocity_rpm: TmcMechanicalRpm,
     planned_velocity_mrev_s: u32,
     transition_ceiling: u16,
-    _nomination_p_below: u16,
+    nomination_p_below: u16,
 ) -> BandConfirmationEntry {
     let rungs = match discovery_outcome {
         AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand => {
@@ -2272,6 +2272,7 @@ pub(crate) fn begin_band_confirmation(
     let candidate = match nominate_transition_capable_candidate_from_bounds(
         rungs.as_slice(),
         transition_ceiling,
+        nomination_p_below,
     ) {
         Ok(candidate) => candidate,
         Err(NominationRejection::Unconfirmable) => {
@@ -2287,6 +2288,11 @@ pub(crate) fn begin_band_confirmation(
         Err(NominationRejection::NoDampedCandidate { excluded }) => {
             return BandConfirmationEntry::Done(
                 BandConfirmationOutcome::TargetBandNoDampedCandidate { excluded },
+            );
+        }
+        Err(NominationRejection::NoRungBelowCeiling { .. }) => {
+            return BandConfirmationEntry::Done(
+                BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery,
             );
         }
     };

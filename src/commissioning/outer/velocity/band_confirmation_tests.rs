@@ -314,7 +314,7 @@ fn transition_ceiling_excludes_the_over_ceiling_top_rung() {
         step_peak_permille: 0,
     };
     let nominated =
-        nominate_transition_capable_candidate_from_bounds(&[capable, over_ceiling], 897)
+        nominate_transition_capable_candidate_from_bounds(&[capable, over_ceiling], 897, 0)
             .expect("a transition-capable in-band rung exists");
     assert_eq!(nominated.p, gain(863));
 }
@@ -329,7 +329,7 @@ fn transition_ceiling_rejects_when_every_in_band_rung_is_over_ceiling() {
         step_peak_permille: 0,
     };
     assert_eq!(
-        nominate_transition_capable_candidate_from_bounds(&[over_ceiling], 897),
+        nominate_transition_capable_candidate_from_bounds(&[over_ceiling], 897, 0),
         Err(NominationRejection::NoTransitionCapableCandidate)
     );
 }
@@ -344,7 +344,7 @@ fn transition_ceiling_reports_unconfirmable_when_no_rung_is_band_admissible() {
         step_peak_permille: 0,
     };
     assert_eq!(
-        nominate_transition_capable_candidate_from_bounds(&[out_of_band], 897),
+        nominate_transition_capable_candidate_from_bounds(&[out_of_band], 897, 0),
         Err(NominationRejection::Unconfirmable)
     );
 }
@@ -365,7 +365,7 @@ fn an_unconstrained_ceiling_nominates_the_highest_rung_like_the_primitive() {
         upper_percent: 78.0,
         step_peak_permille: 0,
     };
-    let nominated = nominate_transition_capable_candidate_from_bounds(&[lower, top], u16::MAX)
+    let nominated = nominate_transition_capable_candidate_from_bounds(&[lower, top], u16::MAX, 0)
         .expect("the highest in-band rung");
     assert_eq!(nominated.p, gain(925));
 }
@@ -1448,7 +1448,7 @@ fn admission_skips_rungs_over_the_step_peak_bound() {
         peaked_rung(750, 1390),
         peaked_rung(800, 1450),
     ];
-    let nominated = nominate_transition_capable_candidate_from_bounds(&bounds, 900)
+    let nominated = nominate_transition_capable_candidate_from_bounds(&bounds, 900, 0)
         .expect("a damped rung exists");
     assert_eq!(nominated.p, gain(750));
     assert_eq!(nominated.overshoot_excluded_rungs, 1);
@@ -1457,8 +1457,9 @@ fn admission_skips_rungs_over_the_step_peak_bound() {
 
 #[test]
 fn an_unscored_rung_is_admitted() {
-    let nominated = nominate_transition_capable_candidate_from_bounds(&[peaked_rung(800, 0)], 900)
-        .expect("an unscored rung passes");
+    let nominated =
+        nominate_transition_capable_candidate_from_bounds(&[peaked_rung(800, 0)], 900, 0)
+            .expect("an unscored rung passes");
     assert_eq!(nominated.p, gain(800));
     assert_eq!(nominated.step_peak_permille, 0);
     assert_eq!(nominated.overshoot_excluded_rungs, 0);
@@ -1467,7 +1468,7 @@ fn an_unscored_rung_is_admitted() {
 #[test]
 fn a_rung_exactly_at_the_bound_is_admitted() {
     let nominated =
-        nominate_transition_capable_candidate_from_bounds(&[peaked_rung(800, 1400)], 900)
+        nominate_transition_capable_candidate_from_bounds(&[peaked_rung(800, 1400)], 900, 0)
             .expect("the bound is inclusive");
     assert_eq!(nominated.p, gain(800));
 }
@@ -1476,7 +1477,7 @@ fn a_rung_exactly_at_the_bound_is_admitted() {
 fn all_band_rungs_over_the_bound_reject_as_no_damped_candidate() {
     let bounds = [peaked_rung(700, 1450), peaked_rung(750, 1500)];
     assert_eq!(
-        nominate_transition_capable_candidate_from_bounds(&bounds, 900),
+        nominate_transition_capable_candidate_from_bounds(&bounds, 900, 0),
         Err(NominationRejection::NoDampedCandidate { excluded: 2 })
     );
 }
@@ -1485,8 +1486,59 @@ fn all_band_rungs_over_the_bound_reject_as_no_damped_candidate() {
 fn transition_ceiling_rejection_precedes_the_damping_rejection() {
     let bounds = [peaked_rung(925, 1450), peaked_rung(950, 1500)];
     assert_eq!(
-        nominate_transition_capable_candidate_from_bounds(&bounds, 897),
+        nominate_transition_capable_candidate_from_bounds(&bounds, 897, 0),
         Err(NominationRejection::NoTransitionCapableCandidate)
+    );
+}
+
+fn rungs() -> [DiscoveryRungNominationBounds; 4] {
+    [
+        peaked_rung(731, 0),
+        peaked_rung(786, 0),
+        peaked_rung(841, 0),
+        peaked_rung(896, 0),
+    ]
+}
+
+#[test]
+fn a_ceiling_nominates_the_highest_admissible_rung_strictly_below_it() {
+    let nominated =
+        nominate_transition_capable_candidate_from_bounds(&rungs(), u16::MAX, 896).unwrap();
+    assert_eq!(nominated.p.raw(), 841);
+}
+
+#[test]
+fn a_zero_ceiling_is_unconstrained() {
+    let nominated =
+        nominate_transition_capable_candidate_from_bounds(&rungs(), u16::MAX, 0).unwrap();
+    assert_eq!(nominated.p.raw(), 896);
+}
+
+#[test]
+fn a_ceiling_at_the_lowest_admissible_rung_rejects_with_the_ceiling() {
+    let rejection =
+        nominate_transition_capable_candidate_from_bounds(&rungs(), u16::MAX, 731).unwrap_err();
+    assert_eq!(
+        rejection,
+        NominationRejection::NoRungBelowCeiling { ceiling: 731 }
+    );
+}
+
+#[test]
+fn the_ceiling_does_not_change_the_damping_exclusion_count() {
+    let mut bounds = rungs();
+    bounds[3].step_peak_permille = 1450;
+
+    let unconstrained =
+        nominate_transition_capable_candidate_from_bounds(&bounds, u16::MAX, 0).unwrap();
+    let ceilinged =
+        nominate_transition_capable_candidate_from_bounds(&bounds, u16::MAX, 841).unwrap();
+
+    assert_eq!(ceilinged.p.raw(), 786);
+    assert_eq!(ceilinged.overshoot_excluded_rungs, 1);
+    assert_eq!(
+        ceilinged.overshoot_excluded_rungs,
+        unconstrained.overshoot_excluded_rungs
     );
 }
 
@@ -1495,7 +1547,7 @@ fn unconfirmable_precedes_both() {
     let mut out_of_band = peaked_rung(925, 1450);
     out_of_band.lower_percent = 69.0;
     assert_eq!(
-        nominate_transition_capable_candidate_from_bounds(&[out_of_band], 897),
+        nominate_transition_capable_candidate_from_bounds(&[out_of_band], 897, 0),
         Err(NominationRejection::Unconfirmable)
     );
 }

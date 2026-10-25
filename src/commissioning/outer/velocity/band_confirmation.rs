@@ -494,17 +494,27 @@ pub enum NominationRejection {
         /// Number of rungs excluded by the step peak bound.
         excluded: u8,
     },
+    /// Band-admissible, transition-capable, damped rungs existed, but none had a proportional
+    /// gain strictly below the nomination ceiling.
+    NoRungBelowCeiling {
+        /// The nomination ceiling that excluded every remaining rung.
+        ceiling: u16,
+    },
 }
 
 /// Nominate the highest band-admissible rung whose proportional gain is transition-capable
 /// (`p <= transition_ceiling`, where `transition_ceiling` is
 /// `super::integral_plan::max_transition_capable_p` for the live acquisition context) and whose
-/// step peak is at or under [`STEP_PEAK_ADMISSION_PERMILLE`] (`0`, unscored, passes).
+/// step peak is at or under [`STEP_PEAK_ADMISSION_PERMILLE`] (`0`, unscored, passes), and whose
+/// proportional gain is strictly below `nomination_p_below` (`0` is unconstrained).
 ///
-/// The rejection names the first predicate that emptied the candidate set.
+/// The ceiling filters only the nominated set; `overshoot_excluded_rungs` counts damping
+/// exclusions as if it were absent. The rejection names the first predicate that emptied the
+/// candidate set.
 pub fn nominate_transition_capable_candidate_from_bounds(
     bounds: &[DiscoveryRungNominationBounds],
     transition_ceiling: u16,
+    nomination_p_below: u16,
 ) -> Result<NominatedConfirmationCandidate, NominationRejection> {
     let band_admissible = |entry: &&DiscoveryRungNominationBounds| {
         entry.nominatable
@@ -513,6 +523,9 @@ pub fn nominate_transition_capable_candidate_from_bounds(
     let capable = |entry: &&DiscoveryRungNominationBounds| entry.p.raw() <= transition_ceiling;
     let damped = |entry: &&DiscoveryRungNominationBounds| {
         entry.step_peak_permille <= STEP_PEAK_ADMISSION_PERMILLE
+    };
+    let below = |entry: &&DiscoveryRungNominationBounds| {
+        nomination_p_below == 0 || entry.p.raw() < nomination_p_below
     };
 
     if !bounds.iter().any(|entry| band_admissible(&entry)) {
@@ -532,6 +545,7 @@ pub fn nominate_transition_capable_candidate_from_bounds(
         .filter(capable)
         .filter(|entry| !damped(entry))
         .count();
+    let damped_count = capable_count - excluded;
     let excluded = u8::try_from(excluded).unwrap_or(u8::MAX);
     defmt::info!(
         "nomination damping screen: overshoot_excluded_rungs={}",
@@ -543,6 +557,7 @@ pub fn nominate_transition_capable_candidate_from_bounds(
             .filter(band_admissible)
             .filter(capable)
             .filter(damped)
+            .filter(below)
             .map(|entry| {
                 (
                     entry.p,
@@ -556,9 +571,12 @@ pub fn nominate_transition_capable_candidate_from_bounds(
             overshoot_excluded_rungs: excluded,
             ..candidate
         }),
-        Err(TargetBandUnconfirmableFromDiscovery) => {
+        Err(TargetBandUnconfirmableFromDiscovery) if damped_count == 0 => {
             Err(NominationRejection::NoDampedCandidate { excluded })
         }
+        Err(TargetBandUnconfirmableFromDiscovery) => Err(NominationRejection::NoRungBelowCeiling {
+            ceiling: nomination_p_below,
+        }),
     }
 }
 
