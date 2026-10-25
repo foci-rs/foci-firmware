@@ -3051,9 +3051,9 @@ mod tests {
     }
 
     #[test]
-    fn a_reversal_peaking_at_the_envelope_fraction_rejects_with_the_peak_cause() {
+    fn a_reversal_peaking_one_band_under_the_cap_rejects_with_the_peak_cause() {
         let (terminal, _parts) =
-            drive_tracked(burst_motion(CapturePhase::Reverse, STEADY_DELTA * 3 / 2, 5));
+            drive_tracked(burst_motion(CapturePhase::Reverse, STEADY_DELTA * 9 / 5, 5));
 
         assert!(terminal.safety_fault.is_none());
         assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
@@ -3099,6 +3099,49 @@ mod tests {
             );
             assert!(!direction.peak_unscored);
             assert_eq!(direction.trip_count, 0);
+        }
+    }
+
+    #[test]
+    fn a_window_exactly_at_the_cap_is_retained_and_rejected_by_the_gate() {
+        // 180 RPM plans 3000 mrev/s, so the moving cap is 3000 + 2000 = 5000 mrev/s, which at
+        // 4000 counts per revolution is exactly 20 counts per tick over the 2-tick window.
+        let point = AcceptancePoint {
+            target_velocity_rpm: 180,
+            ..recovery_point()
+        };
+        let (terminal, _parts) = drive_parts(
+            RunParts::new(point),
+            Envelope::Tracked,
+            burst_motion(CapturePhase::Reverse, 20, 2),
+        );
+
+        assert!(terminal.safety_fault.is_none());
+        assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED);
+    }
+
+    #[test]
+    fn the_gate_bound_sits_under_the_integer_cap_for_every_leg_target() {
+        for rpm in 1..=10_000 {
+            let point = AcceptancePoint {
+                target_velocity_rpm: rpm,
+                ..recovery_point()
+            };
+            let Ok(planned) = planned_velocity_mrev_s(&point) else {
+                continue;
+            };
+            let leg = leg_amplitude_rpm(&point);
+            if leg == 0 {
+                continue;
+            }
+            let cap =
+                OuterSafetyLimits::envelope_mrev_s(planned).expect("cap for planned velocity");
+            let ratio_permille = u64::from(cap) * 60 / u64::try_from(leg).expect("positive leg");
+            assert!(
+                ratio_permille > u64::from(REVERSAL_PEAK_REJECT_PERMILLE),
+                "rpm {rpm}: cap {cap} mrev/s, leg {leg} RPM, ratio {ratio_permille} permille"
+            );
         }
     }
 
@@ -3183,7 +3226,7 @@ mod tests {
         };
         assert_eq!(terminal_of(&session).cause, ROBUSTNESS_CAUSE_IAE_EXCEEDED);
 
-        session.peak_rate_permille[0] = 1_600;
+        session.peak_rate_permille[0] = REVERSAL_PEAK_REJECT_PERMILLE;
         session.peak_scored_cycles[0] = ROBUSTNESS_CYCLES_PER_DIRECTION as u8;
         let terminal = terminal_of(&session);
 

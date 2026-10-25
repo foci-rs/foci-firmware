@@ -320,7 +320,7 @@ impl OuterSafetyLimits {
             .min(self.positive_position_window)
     }
 
-    fn envelope_mrev_s(planned_velocity_mrev_s: u32) -> Result<u32, CommissionError> {
+    pub(crate) fn envelope_mrev_s(planned_velocity_mrev_s: u32) -> Result<u32, CommissionError> {
         if planned_velocity_mrev_s == 0 {
             return Err(CommissionError::InvalidSchedule);
         }

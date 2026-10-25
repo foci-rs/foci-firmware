@@ -390,10 +390,19 @@ pub(crate) const TRIP_IAE: u8 = 1 << 2;
 /// reaches [`REVERSAL_PEAK_REJECT_PERMILLE`].
 pub(crate) const TRIP_PEAK: u8 = 1 << 3;
 
+/// Outer-safety cap in permille of the probe-leg target. The legs run at
+/// [`ROBUSTNESS_LEG_AMPLITUDE_PCT`] of the campaign amplitude under a moving cap of at least
+/// `ENVELOPE_PROPORTIONAL_NUM / ENVELOPE_PROPORTIONAL_DEN` times that amplitude.
+const CAP_PERMILLE_OF_LEG_TARGET: u32 = 1000 * ENVELOPE_PROPORTIONAL_NUM * 100
+    / (ENVELOPE_PROPORTIONAL_DEN * ROBUSTNESS_LEG_AMPLITUDE_PCT as u32);
+
 /// Reversal velocity peak, in permille of the leg target, at which a direction is rejected:
-/// the outer-safety envelope fraction.
+/// one settle band under the outer-safety cap. The per-tick cap check faults on a window
+/// strictly above the cap before the gate scores the leg, so the gate owns the band just
+/// under it and names the rung there. This is a fault margin, not a production limit: a
+/// planner-shaped reversal never approaches it.
 pub(crate) const REVERSAL_PEAK_REJECT_PERMILLE: u16 =
-    (1000 * ENVELOPE_PROPORTIONAL_NUM / ENVELOPE_PROPORTIONAL_DEN) as u16;
+    (CAP_PERMILLE_OF_LEG_TARGET - 10 * ROBUSTNESS_BAND_FRACTION_PCT) as u16;
 
 /// Settle-band half-width, as a percentage of `|target_rate_q|`.
 pub(crate) const ROBUSTNESS_BAND_FRACTION_PCT: u32 = 5;
@@ -413,7 +422,8 @@ pub(crate) const ROBUSTNESS_IAE_REFERENCE_WINDOW_US: u32 = 500_000;
 pub(crate) const ROBUSTNESS_TRIP_TIME_HEADROOM_US: u32 = 100_000;
 
 /// Probe-leg cruise target as a percentage of the campaign amplitude; at 85% the envelope cap
-/// sits at 1.76x of the leg target, so a reversal the gate rejects at 1.5x stays under the cap.
+/// sits at about 1.76x of the leg target, and [`REVERSAL_PEAK_REJECT_PERMILLE`] one settle
+/// band under it.
 pub(crate) const ROBUSTNESS_LEG_AMPLITUDE_PCT: i32 = 85;
 
 /// Bounded retry count for an inconclusive probe leg.
@@ -513,8 +523,8 @@ mod tests {
     use crate::commissioning::outer::state::VelocityObservationRing;
 
     #[test]
-    fn the_reversal_peak_bound_is_the_envelope_fraction() {
-        assert_eq!(REVERSAL_PEAK_REJECT_PERMILLE, 1500);
+    fn the_reversal_peak_bound_is_one_settle_band_under_the_cap() {
+        assert_eq!(REVERSAL_PEAK_REJECT_PERMILLE, 1714);
     }
 
     #[test]
