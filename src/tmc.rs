@@ -166,6 +166,8 @@ pub enum TmcRequestKind {
         homing_speed_mrev_s: u32,
         /// Machine acceleration, mrev/s^2; the stroke ramp rate.
         max_accel_mrev_s2: u32,
+        /// Nominate only rungs with P strictly below this raw gain; 0 is unconstrained.
+        nomination_p_below: u16,
     },
     /// 0 = disabled, 10..1000 Hz = enabled.
     SetVelocityFilter {
@@ -404,6 +406,8 @@ pub struct TuneParameters {
     pub homing_speed_mrev_s: u32,
     /// Machine acceleration, mrev/s^2; the stroke ramp rate.
     pub max_accel_mrev_s2: u32,
+    /// Nominate only rungs with P strictly below this raw gain; 0 is unconstrained.
+    pub nomination_p_below: u16,
 }
 
 /// Build a `Tune` request with an explicit firmware-owned acquisition action.
@@ -430,6 +434,7 @@ pub fn tmc_tune_with_action(
         max_duration_ms,
         homing_speed_mrev_s,
         max_accel_mrev_s2,
+        nomination_p_below,
     } = parameters;
     TmcRequest::new_with_autotune_action(
         channel,
@@ -452,6 +457,7 @@ pub fn tmc_tune_with_action(
             max_duration_ms,
             homing_speed_mrev_s,
             max_accel_mrev_s2,
+            nomination_p_below,
         },
     )
 }

@@ -991,6 +991,7 @@ fn plan_velocity_integral_response_from_source(
         negative_position_headroom_mrev: motion_budget.negative_position_headroom_mrev,
         positive_position_headroom_mrev: motion_budget.positive_position_headroom_mrev,
         max_duration_ms: motion_budget.max_duration_ms,
+        nomination_p_below: 0,
     };
     if encoder_counts_per_rev == 0
         || motion_request.requested_velocity_mrev_s == 0

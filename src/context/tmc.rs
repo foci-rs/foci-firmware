@@ -124,6 +124,7 @@ mod tests {
                     max_duration_ms: 3000,
                     homing_speed_mrev_s: 4_375,
                     max_accel_mrev_s2: 200_000,
+                    nomination_p_below: 0,
                 },
             ),
             TmcRequest::new(0, TmcRequestKind::SelfTest { oid: 4 }),

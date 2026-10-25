@@ -49,6 +49,7 @@ fn request() -> VelocitySweepRequest {
         negative_position_headroom_mrev: 7_025,
         positive_position_headroom_mrev: 7_025,
         max_duration_ms: 3_000,
+        nomination_p_below: 0,
     }
 }
 

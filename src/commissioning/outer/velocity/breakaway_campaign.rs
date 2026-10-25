@@ -2244,6 +2244,7 @@ pub(crate) fn begin_band_confirmation(
     target_velocity_rpm: TmcMechanicalRpm,
     planned_velocity_mrev_s: u32,
     transition_ceiling: u16,
+    _nomination_p_below: u16,
 ) -> BandConfirmationEntry {
     let rungs = match discovery_outcome {
         AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand => {
@@ -3008,6 +3009,7 @@ pub(crate) struct BreakawayCampaignInputs {
     pwm_hz: u32,
     encoder_counts_per_rev: u32,
     ceiling_binding_source: u8,
+    nomination_p_below: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3024,6 +3026,7 @@ pub(crate) struct BreakawayCampaignRequest {
     pub(crate) run_sequence: u32,
     pub(crate) pwm_hz: u32,
     pub(crate) encoder_counts_per_rev: u32,
+    pub(crate) nomination_p_below: u16,
 }
 
 #[derive(Debug, defmt::Format)]
@@ -3099,6 +3102,7 @@ impl BreakawayCampaign {
                 pwm_hz: request.pwm_hz,
                 encoder_counts_per_rev: request.encoder_counts_per_rev,
                 ceiling_binding_source,
+                nomination_p_below: request.nomination_p_below,
             },
             phase: BreakawayCampaignPhase::Probe {
                 state: BreakawayProbeState::PlannedProbe,
@@ -3138,6 +3142,11 @@ impl BreakawayCampaign {
 
     pub(crate) const fn phase(&self) -> &BreakawayCampaignPhase {
         &self.phase
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn nomination_p_below(&self) -> u16 {
+        self.inputs.nomination_p_below
     }
 }
 
@@ -3196,6 +3205,7 @@ pub(crate) fn plan_breakaway_campaign_command(
         run_sequence,
         pwm_hz,
         encoder_counts_per_rev,
+        nomination_p_below: request.nomination_p_below,
     })?;
     Ok((campaign, workflow))
 }
@@ -3593,6 +3603,7 @@ fn route_discovery_outcome(
             inputs.target_velocity_rpm,
             inputs.planned_velocity_mrev_s,
             transition_ceiling,
+            inputs.nomination_p_below,
         ),
         Err(_) => BandConfirmationEntry::Done(BandConfirmationOutcome::SafetyFault {
             error: CommissionError::CampaignPlanInvalid,

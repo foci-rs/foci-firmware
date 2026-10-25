@@ -25,6 +25,7 @@ fn request() -> VelocitySweepRequest {
         negative_position_headroom_mrev: 50_000,
         positive_position_headroom_mrev: 50_000,
         max_duration_ms: 60_000,
+        nomination_p_below: 0,
     }
 }
 
@@ -38,6 +39,7 @@ fn live_recovery_request() -> VelocitySweepRequest {
         negative_position_headroom_mrev: 7_025,
         positive_position_headroom_mrev: 7_025,
         max_duration_ms: 3_000,
+        nomination_p_below: 0,
     }
 }
 
@@ -574,4 +576,30 @@ fn build_gain_ladder_p_wrapper_byte_identical_after_generify() {
             4, 6, 8, 12, 16, 23, 32, 46, 64, 91, 128, 181, 256, 362, 512, 724, 1024
         ]
     );
+}
+
+#[test]
+fn the_nomination_ceiling_does_not_enter_the_plan_digest() {
+    let base = live_recovery_request();
+    let ceiled = VelocitySweepRequest {
+        nomination_p_below: 896,
+        ..base
+    };
+
+    let plan_a = plan_proportional_velocity_sweep(
+        base,
+        4_000,
+        2_816,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
+    let plan_b = plan_proportional_velocity_sweep(
+        ceiled,
+        4_000,
+        2_816,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
+
+    assert_eq!(plan_a.digest(), plan_b.digest());
 }

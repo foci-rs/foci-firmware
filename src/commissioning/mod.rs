@@ -929,6 +929,18 @@ impl CommissioningEngine {
     }
 
     #[cfg(test)]
+    pub(crate) fn breakaway_nomination_p_below_for_test(&self) -> Option<u16> {
+        let EngineMode::Outer {
+            phase: crate::commissioning::outer::OuterPhase::BreakawayCampaign { campaign, .. },
+            ..
+        } = &self.engine_mode
+        else {
+            return None;
+        };
+        Some(campaign.nomination_p_below())
+    }
+
+    #[cfg(test)]
     pub(crate) fn outer_budget_for_test(
         &self,
     ) -> Option<crate::commissioning::outer::OuterMotionBudget> {
@@ -1610,7 +1622,7 @@ mod tests {
             "the gain-floor capture buffer must stay inside the existing variant slack"
         );
         assert_eq!(size_of::<crate::commissioning::types::OuterResult>(), 92);
-        assert_eq!(size_of::<CommissioningEngine>(), 5_920);
+        assert_eq!(size_of::<CommissioningEngine>(), 5_936);
         assert!(size_of::<CommissioningEngine>() <= 5_936);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
@@ -2038,6 +2050,7 @@ mod tests {
             negative_position_headroom_mrev: params.negative_position_headroom_mrev,
             positive_position_headroom_mrev: params.positive_position_headroom_mrev,
             max_duration_ms: params.max_duration_ms,
+            nomination_p_below: 0,
         };
         let (campaign, _workflow) =
             plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, 43)
@@ -2081,6 +2094,7 @@ mod tests {
             negative_position_headroom_mrev: params.negative_position_headroom_mrev,
             positive_position_headroom_mrev: params.positive_position_headroom_mrev,
             max_duration_ms: params.max_duration_ms,
+            nomination_p_below: 0,
         };
         let (campaign, _workflow) =
             plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, run_sequence)
@@ -2125,6 +2139,7 @@ mod tests {
             run_sequence: 42,
             pwm_hz: 25_000,
             encoder_counts_per_rev: 0,
+            nomination_p_below: 0,
         });
 
         assert!(matches!(result, Err(CommissionError::CampaignPlanInvalid)));
@@ -2151,6 +2166,7 @@ mod tests {
             run_sequence: 42,
             pwm_hz: 25_000,
             encoder_counts_per_rev: 4_000,
+            nomination_p_below: 0,
         })
         .expect("campaign planning does not consume the runtime velocity envelope");
 
@@ -2297,6 +2313,7 @@ mod tests {
             negative_position_headroom_mrev: params.negative_position_headroom_mrev,
             positive_position_headroom_mrev: params.positive_position_headroom_mrev,
             max_duration_ms: params.max_duration_ms,
+            nomination_p_below: 0,
         };
         let (campaign, workflow) =
             plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, 42)
@@ -2345,6 +2362,7 @@ mod tests {
             negative_position_headroom_mrev: params.negative_position_headroom_mrev,
             positive_position_headroom_mrev: params.positive_position_headroom_mrev,
             max_duration_ms: params.max_duration_ms,
+            nomination_p_below: 0,
         };
         let (campaign, _workflow) =
             plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, 42)

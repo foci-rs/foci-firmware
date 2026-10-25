@@ -179,6 +179,7 @@ pub fn breakaway_campaign_engine() -> crate::commissioning::CommissioningEngine 
         negative_position_headroom_mrev: params.negative_position_headroom_mrev,
         positive_position_headroom_mrev: params.positive_position_headroom_mrev,
         max_duration_ms: params.max_duration_ms,
+        nomination_p_below: 0,
     };
     let (campaign, _workflow) =
         crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command(

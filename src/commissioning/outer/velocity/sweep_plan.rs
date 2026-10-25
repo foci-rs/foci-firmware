@@ -150,6 +150,8 @@ pub struct VelocitySweepRequest {
     ///
     /// Bounds one moving-plus-settle primitive, not the aggregate campaign duration.
     pub max_duration_ms: u16,
+    /// Nominate only rungs with P strictly below this raw gain; 0 is unconstrained.
+    pub nomination_p_below: u16,
 }
 
 /// Complete immutable motion plan produced before the first sweep stroke.

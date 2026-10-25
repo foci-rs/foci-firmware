@@ -88,6 +88,7 @@ fn plan_request() -> crate::commissioning::outer::velocity::sweep_plan::Velocity
         negative_position_headroom_mrev: params.negative_position_headroom_mrev,
         positive_position_headroom_mrev: params.positive_position_headroom_mrev,
         max_duration_ms: params.max_duration_ms,
+        nomination_p_below: 0,
     }
 }
 

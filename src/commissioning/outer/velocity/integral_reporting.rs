@@ -867,6 +867,7 @@ mod tests {
                 negative_position_headroom_mrev: 20_000,
                 positive_position_headroom_mrev: 20_000,
                 max_duration_ms: 60_000,
+                nomination_p_below: 0,
             },
         };
 
@@ -1005,6 +1006,7 @@ mod tests {
                 negative_position_headroom_mrev: 20_000,
                 positive_position_headroom_mrev: 20_000,
                 max_duration_ms: 60_000,
+                nomination_p_below: 0,
             },
         };
 

@@ -1833,6 +1833,7 @@ fn begin_band_confirmation_refuses_when_the_only_in_band_rung_is_over_ceiling() 
         TmcMechanicalRpm::from_register(100),
         4_394,
         897,
+        0,
     );
     assert!(matches!(
         entry,
@@ -1850,6 +1851,7 @@ fn begin_band_confirmation_admits_an_in_band_rung_at_the_ceiling() {
         TmcMechanicalRpm::from_register(100),
         4_394,
         925,
+        0,
     );
     assert!(matches!(entry, BandConfirmationEntry::Ready(_)));
 }
@@ -1865,8 +1867,14 @@ fn run_confirmation(
     std::vec::Vec<VelocityDirection>,
 ) {
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let entry =
-        begin_band_confirmation(discovery_outcome, 42, target_velocity_rpm, 4_394, u16::MAX);
+    let entry = begin_band_confirmation(
+        discovery_outcome,
+        42,
+        target_velocity_rpm,
+        4_394,
+        u16::MAX,
+        0,
+    );
     let mut session = match entry {
         BandConfirmationEntry::Ready(session) => session,
         BandConfirmationEntry::Done(outcome) => {
@@ -1957,6 +1965,7 @@ fn confirmation_retains_inherited_safety_contract_through_recovery() {
         TmcMechanicalRpm::from_register(100),
         4_394,
         u16::MAX,
+        0,
     );
     let mut session = match entry {
         BandConfirmationEntry::Ready(session) => session,
@@ -2039,6 +2048,7 @@ fn target_band_unconfirmable_from_discovery_spends_zero_confirmation_strokes() {
         target_velocity_rpm,
         4_394,
         u16::MAX,
+        0,
     );
 
     assert!(matches!(
@@ -2057,6 +2067,7 @@ fn target_band_not_reached_at_authority_consumes_current_headroom_before_band() 
         target_velocity_rpm,
         4_394,
         u16::MAX,
+        0,
     );
 
     assert!(matches!(
@@ -2211,6 +2222,7 @@ fn wrong_direction_short_circuits_confirmation_without_recovering() {
         target_velocity_rpm,
         4_394,
         u16::MAX,
+        0,
     );
     let mut session = match entry {
         BandConfirmationEntry::Ready(session) => session,
@@ -2294,6 +2306,7 @@ fn an_unconfirmed_settle_reports_confirmation_evidence_excluded() {
         target_velocity_rpm,
         4_394,
         u16::MAX,
+        0,
     );
     let mut session = match entry {
         BandConfirmationEntry::Ready(session) => session,
@@ -2379,6 +2392,7 @@ fn campaign_request() -> BreakawayCampaignRequest {
         run_sequence: 7,
         pwm_hz: 25_000,
         encoder_counts_per_rev: 4_000,
+        nomination_p_below: 0,
     }
 }
 
@@ -2401,6 +2415,7 @@ fn integral_inputs(usable_torque_limit: u16) -> BreakawayCampaignInputs {
         encoder_counts_per_rev: 4_000,
         ceiling_binding_source:
             crate::commissioning::outer::velocity::sweep_plan::CEILING_BINDING_CURRENT_LIMIT,
+        nomination_p_below: 0,
     }
 }
 
@@ -3482,6 +3497,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
         TmcMechanicalRpm::from_register(100),
         4_394,
         u16::MAX,
+        0,
     ) else {
         panic!("the crafted discovery rungs must nominate a confirmable candidate");
     };
@@ -3615,6 +3631,7 @@ fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_integral_digest
         TmcMechanicalRpm::from_register(100),
         4_394,
         u16::MAX,
+        0,
     ) else {
         panic!("the crafted discovery rungs must nominate a confirmable candidate");
     };
@@ -4153,6 +4170,7 @@ async fn engine_hand_off_events() -> std::vec::Vec<HandOffEvent> {
         TmcMechanicalRpm::from_register(100),
         4_394,
         u16::MAX,
+        0,
     ) else {
         panic!("the crafted discovery rungs must nominate a confirmable candidate");
     };

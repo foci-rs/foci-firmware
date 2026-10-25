@@ -671,6 +671,7 @@ where
                     max_duration_ms,
                     homing_speed_mrev_s,
                     max_accel_mrev_s2,
+                    nomination_p_below,
                 },
             ..
         } => {
@@ -692,6 +693,7 @@ where
                 max_duration_ms,
                 homing_speed_mrev_s,
                 max_accel_mrev_s2,
+                nomination_p_below,
             };
             if let Some(status) = tune_reject_reason(board, runtime) {
                 emit_commission_phase_failure::<Board, Spi>(board, oid, status);
@@ -935,6 +937,7 @@ struct TuneRequestFields {
     max_duration_ms: u16,
     homing_speed_mrev_s: u32,
     max_accel_mrev_s2: u32,
+    nomination_p_below: u16,
 }
 
 #[inline(never)]
@@ -983,6 +986,7 @@ where
         max_duration_ms,
         homing_speed_mrev_s,
         max_accel_mrev_s2,
+        nomination_p_below,
         ..
     } = fields;
     let current_limit = board
@@ -1022,6 +1026,7 @@ where
         negative_position_headroom_mrev,
         positive_position_headroom_mrev,
         max_duration_ms,
+        nomination_p_below,
     };
     let tune_route = match autotune_action {
         crate::tmc::AutotuneAction::IntegralResume => {
@@ -1297,6 +1302,7 @@ where
         max_duration_ms,
         homing_speed_mrev_s,
         max_accel_mrev_s2,
+        nomination_p_below: _,
     } = fields;
     let tmc_state = board.tmc_state();
     tmc_state
@@ -1921,13 +1927,21 @@ mod tests {
                 max_duration_ms: 3000,
                 homing_speed_mrev_s: 4_375,
                 max_accel_mrev_s2: 200_000,
+                nomination_p_below: 0,
             },
         )
     }
 
-    fn tune_request_with_action(action: crate::tmc::AutotuneAction) -> TmcRequest {
+    fn tune_request_with_action(action: crate::tmc::AutotuneAction, ceiling: u16) -> TmcRequest {
         let mut request = tune_request();
         request.autotune_action = action;
+        let TmcRequestKind::Tune {
+            nomination_p_below, ..
+        } = &mut request.kind
+        else {
+            unreachable!()
+        };
+        *nomination_p_below = ceiling;
         request
     }
 
@@ -1942,6 +1956,7 @@ mod tests {
             negative_position_headroom_mrev,
             positive_position_headroom_mrev,
             max_duration_ms,
+            nomination_p_below,
             ..
         } = tune_request().kind
         else {
@@ -1956,6 +1971,7 @@ mod tests {
             negative_position_headroom_mrev,
             positive_position_headroom_mrev,
             max_duration_ms,
+            nomination_p_below,
         }
     }
 
@@ -2538,7 +2554,7 @@ mod tests {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request(
-            tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded),
+            tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded, 0),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut tmc,
@@ -2577,7 +2593,7 @@ mod tests {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request(
-            tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded),
+            tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded, 0),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut tmc,
@@ -2622,7 +2638,7 @@ mod tests {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request(
-            tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded),
+            tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded, 0),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut tmc,
@@ -2664,7 +2680,7 @@ mod tests {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request(
-            tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded),
+            tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded, 0),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut tmc,
@@ -2702,7 +2718,7 @@ mod tests {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request_with_stages(
-            tune_request_with_action(crate::tmc::AutotuneAction::RobustnessReversal),
+            tune_request_with_action(crate::tmc::AutotuneAction::RobustnessReversal, 0),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut integral,
@@ -2759,7 +2775,7 @@ mod tests {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request_with_stages(
-            tune_request_with_action(crate::tmc::AutotuneAction::PositionTune),
+            tune_request_with_action(crate::tmc::AutotuneAction::PositionTune, 0),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut integral,
@@ -2842,8 +2858,9 @@ mod tests {
         );
     }
 
-    fn resumable_integral_plan()
-    -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
+    fn resumable_integral_plan(
+        request: crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest,
+    ) -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
         use crate::commission_dispatch::test_support::breakaway_confirmation_for_test;
         use crate::commissioning::outer::OuterMotionBudget;
         use crate::commissioning::outer::velocity::integral_plan::{
@@ -2851,7 +2868,6 @@ mod tests {
             plan_breakaway_velocity_integral_response,
         };
 
-        let request = velocity_sweep_request();
         let confirmation = breakaway_confirmation_for_test();
 
         let context = AcquisitionContext {
@@ -2907,12 +2923,12 @@ mod tests {
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
         let mut integral = IntegralRetentionSlot::new();
-        let plan = resumable_integral_plan();
+        let plan = resumable_integral_plan(velocity_sweep_request());
         crate::commission_dispatch::integral::install_authority_from_plan(0, &mut integral, plan);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request_with_stages(
-            tune_request_with_action(crate::tmc::AutotuneAction::IntegralResume),
+            tune_request_with_action(crate::tmc::AutotuneAction::IntegralResume, 0),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut integral,
@@ -2986,13 +3002,13 @@ mod tests {
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
         let mut integral = IntegralRetentionSlot::new();
-        let plan = resumable_integral_plan();
+        let plan = resumable_integral_plan(velocity_sweep_request());
         let retained = crate::commission_dispatch::integral::install_authority_from_plan(
             0,
             &mut integral,
             plan,
         );
-        let mut request = tune_request_with_action(crate::tmc::AutotuneAction::IntegralResume);
+        let mut request = tune_request_with_action(crate::tmc::AutotuneAction::IntegralResume, 0);
         let TmcRequestKind::Tune {
             max_stroke_travel_mrev,
             ..
@@ -3038,6 +3054,101 @@ mod tests {
     }
 
     #[fixture_test]
+    async fn the_tune_request_carries_the_nomination_ceiling_into_the_sweep_request() {
+        for ceiling in [896, 0] {
+            let mut board = RecordingBoard::skip_tick_tail();
+            let tmc_state = tmc_channel0();
+            tmc_state
+                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+                .expect("valid motion scale");
+            tmc_state.store_current_limit(current_limit(2_816), Relaxed);
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            runtime.set_motor_enabled_for_test(true);
+            runtime.set_calibrated_for_test(true);
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            handle_tmc_control_request(
+                tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded, ceiling),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            let engine = runtime
+                .take_commission_engine()
+                .expect("the dispatch installs a breakaway campaign");
+            assert_eq!(
+                engine.breakaway_nomination_p_below_for_test(),
+                Some(ceiling)
+            );
+        }
+    }
+
+    #[fixture_test]
+    async fn an_authority_retained_under_a_ceiling_accepts_an_unceiled_integral_resume() {
+        use crate::commissioning::outer::velocity::integral_reproduction::{
+            IntegralRetentionSlot, IntegralRetentionSlotState,
+        };
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut integral = IntegralRetentionSlot::new();
+        let ceiled = crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest {
+            nomination_p_below: 896,
+            ..velocity_sweep_request()
+        };
+        let retained = crate::commission_dispatch::integral::install_authority_from_plan(
+            0,
+            &mut integral,
+            resumable_integral_plan(ceiled),
+        );
+        assert_eq!(integral.state(), IntegralRetentionSlotState::AuthorityOnly);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request_with_stages(
+            tune_request_with_action(crate::tmc::AutotuneAction::IntegralResume, 0),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut integral,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert!(
+            board
+                .replies
+                .iter()
+                .all(|reply| !matches!(reply, ReplyPayload::VelocityIntegralRefusal { .. }))
+        );
+        assert!(
+            board
+                .replies
+                .iter()
+                .any(|reply| matches!(reply, ReplyPayload::VelocityIntegralPlan { .. }))
+        );
+        assert_eq!(integral.authority(), Some(retained));
+        let engine = runtime
+            .take_commission_engine()
+            .expect("an accepted resume installs the integral engine");
+        assert_eq!(
+            engine.current_phase_id(),
+            Some(
+                crate::commissioning::vocabulary_generated::CommissionPhase::
+                    IntegralGainResponseCharacterization
+            )
+        );
+    }
+
+    #[fixture_test]
     async fn resume_of_an_unplannable_request_still_names_the_retained_plan() {
         use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
         use crate::commissioning::types::VelocityIntegralOutcome;
@@ -3054,9 +3165,9 @@ mod tests {
         let retained = crate::commission_dispatch::integral::install_authority_from_plan(
             0,
             &mut integral,
-            resumable_integral_plan(),
+            resumable_integral_plan(velocity_sweep_request()),
         );
-        let mut request = tune_request_with_action(crate::tmc::AutotuneAction::IntegralResume);
+        let mut request = tune_request_with_action(crate::tmc::AutotuneAction::IntegralResume, 0);
         let TmcRequestKind::Tune {
             max_duration_ms, ..
         } = &mut request.kind
@@ -3364,7 +3475,7 @@ mod tests {
         let mut integral = IntegralRetentionSlot::new();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         handle_tmc_control_request_with_stages(
-            tune_request_with_action(crate::tmc::AutotuneAction::PositionTune),
+            tune_request_with_action(crate::tmc::AutotuneAction::PositionTune, 0),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut integral,
@@ -3384,7 +3495,7 @@ mod tests {
         tmc_channel0().commission_in_flight.store(true, Relaxed);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(offset_addr));
         let outcome = handle_tmc_control_request_with_stages(
-            tune_request_with_action(crate::tmc::AutotuneAction::PositionTune),
+            tune_request_with_action(crate::tmc::AutotuneAction::PositionTune, 0),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut integral,
