@@ -72,7 +72,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ticket_worst_case_reports_1530() {
+    fn a_33_counts_per_ms_peak_reports_about_1530() {
         let ratio = peak_permille(33_000_000, RPM, CPR);
         assert!((1527..=1547).contains(&ratio), "{ratio}");
     }

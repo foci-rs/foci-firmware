@@ -1895,7 +1895,7 @@ mod tests {
         IntegralPlanIdentity, IntegralRetentionSlot,
     };
     use crate::commissioning::outer::velocity::robustness_metrics::{
-        REVERSAL_PEAK_REJECT_PERMILLE, ROBUSTNESS_MAX_RETRIES, ROBUSTNESS_THRESHOLDS,
+        ROBUSTNESS_MAX_RETRIES, ROBUSTNESS_THRESHOLDS,
     };
     use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use crate::commissioning::types::OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY;

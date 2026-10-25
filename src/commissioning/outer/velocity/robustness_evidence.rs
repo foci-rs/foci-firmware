@@ -126,11 +126,6 @@ mod tests {
 
     #[test]
     fn summary_cause_ranks_peak_after_time_and_before_residual_and_iae() {
-        use crate::commission_dispatch::robustness::*;
-        use crate::commissioning::outer::velocity::robustness_metrics::{
-            TRIP_IAE, TRIP_PEAK, TRIP_RESIDUAL, TRIP_TIME,
-        };
-
         assert_eq!(
             summary_cause(TRIP_PEAK | TRIP_IAE, 0, false, false),
             ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED

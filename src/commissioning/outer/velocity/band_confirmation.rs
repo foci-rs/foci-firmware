@@ -513,7 +513,7 @@ pub fn nominate_transition_capable_candidate_from_bounds(
     };
     let capable = |entry: &&DiscoveryRungNominationBounds| entry.p.raw() <= transition_ceiling;
     let damped = |entry: &&DiscoveryRungNominationBounds| {
-        entry.step_peak_permille == 0 || entry.step_peak_permille <= STEP_PEAK_ADMISSION_PERMILLE
+        entry.step_peak_permille <= STEP_PEAK_ADMISSION_PERMILLE
     };
 
     if !bounds.iter().any(|entry| band_admissible(&entry)) {
