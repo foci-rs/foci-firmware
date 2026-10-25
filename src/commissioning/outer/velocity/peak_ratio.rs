@@ -72,9 +72,8 @@ mod tests {
     }
 
     #[test]
-    fn a_33_counts_per_ms_peak_reports_about_1530() {
-        let ratio = peak_permille(33_000_000, RPM, CPR);
-        assert!((1527..=1547).contains(&ratio), "{ratio}");
+    fn a_33_counts_per_ms_peak_reports_1537() {
+        assert_eq!(peak_permille(33_000_000, RPM, CPR), 1537);
     }
 
     #[test]
@@ -91,10 +90,13 @@ mod tests {
 
     #[test]
     fn extreme_valid_inputs_do_not_wrap() {
-        let cpr = i32::MAX as u32;
-        let t = u64::try_from(target_milli_counts_per_s(60_000, cpr)).unwrap();
-        assert_eq!(peak_permille(t, 60_000, cpr), 1000);
-        assert_eq!(peak_permille(2 * t, 60_000, cpr), 2000);
+        // The largest rpm at u32::MAX counts/rev whose doubled target still fits the u64 peak.
+        let cpr = u32::MAX;
+        let rpm = 128_849_018;
+        assert!(u128::from(rpm) * u128::from(cpr) * 1000 > u128::from(u64::MAX));
+        let t = u64::try_from(target_milli_counts_per_s(rpm, cpr)).unwrap();
+        assert_eq!(peak_permille(t, rpm, cpr), 1000);
+        assert_eq!(peak_permille(2 * t, rpm, cpr), 2000);
     }
 
     #[test]
@@ -124,6 +126,11 @@ mod tests {
         assert!(!peak_scorable(RPM, CPR, 1000));
         assert!(!peak_scorable(RPM, CPR, 900));
         assert!(!peak_scorable(0, CPR, 1400));
+    }
+
+    #[test]
+    fn zero_counts_per_rev_is_never_scorable() {
+        assert!(!peak_scorable(RPM, 0, 1400));
     }
 
     #[test]
