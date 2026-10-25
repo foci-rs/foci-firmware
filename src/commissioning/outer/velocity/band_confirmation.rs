@@ -231,6 +231,11 @@ pub struct NominatedConfirmationCandidate {
     pub p: PidPGain,
     /// `M_i = min(L_i - 70, 80 - U_i)` for the nominated rung, in percent.
     pub margin_percent: f32,
+    /// Largest step velocity peak of the nominated rung, in permille of target; `0` when unscored.
+    pub step_peak_permille: u16,
+    /// Rungs that were band-admissible and transition-capable but exceeded
+    /// [`STEP_PEAK_ADMISSION_PERMILLE`].
+    pub overshoot_excluded_rungs: u8,
 }
 
 /// Reported when no discovery rung's pointwise margin `M_i` reaches zero.
@@ -411,14 +416,15 @@ fn select_nominated_candidate<I>(
     candidates: I,
 ) -> Result<NominatedConfirmationCandidate, TargetBandUnconfirmableFromDiscovery>
 where
-    I: Iterator<Item = (PidPGain, f32)>,
+    I: Iterator<Item = (PidPGain, f32, u16)>,
 {
     let mut best: Option<NominatedConfirmationCandidate> = None;
-    for (p, margin_percent) in candidates {
+    for (p, margin_percent, step_peak_permille) in candidates {
         defmt::info!(
-            "nomination screen: p_raw={} margin_percent={}",
+            "nomination screen: p_raw={} margin_percent={} step_peak_permille={}",
             p.raw(),
             margin_percent,
+            step_peak_permille,
         );
         if margin_percent < 0.0 {
             continue;
@@ -428,7 +434,12 @@ where
             Some(current) => p.raw() > current.p.raw(),
         };
         if replace {
-            best = Some(NominatedConfirmationCandidate { p, margin_percent });
+            best = Some(NominatedConfirmationCandidate {
+                p,
+                margin_percent,
+                step_peak_permille,
+                overshoot_excluded_rungs: 0,
+            });
         }
     }
     best.ok_or(TargetBandUnconfirmableFromDiscovery)
@@ -444,7 +455,7 @@ pub fn nominate_confirmation_candidate(
         .expect("confirmation family size 8 is within the audited multiplier table");
     select_nominated_candidate(rungs.iter().filter_map(|rung| {
         rung_confirmable_margin_percent(rung, multiplier)
-            .map(|margin_percent| (rung.p, margin_percent))
+            .map(|margin_percent| (rung.p, margin_percent, 0))
     }))
 }
 
@@ -463,6 +474,7 @@ pub fn nominate_confirmation_candidate_from_bounds(
                 (
                     entry.p,
                     margin_percent_from_bounds(entry.lower_percent, entry.upper_percent),
+                    entry.step_peak_permille,
                 )
             }),
     )
@@ -477,35 +489,72 @@ pub enum NominationRejection {
     /// the Integral transition-capability ceiling, so admitting any would clip the
     /// current clamp during Integral. Refused before motion.
     NoTransitionCapableCandidate,
+    /// Band-admissible, transition-capable rungs existed, but every one's step peak exceeded
+    /// [`STEP_PEAK_ADMISSION_PERMILLE`].
+    NoDampedCandidate {
+        /// Number of rungs excluded by the step peak bound.
+        excluded: u8,
+    },
 }
 
 /// Nominate the highest band-admissible rung whose proportional gain is transition-capable
-/// (`p <= transition_ceiling`), where `transition_ceiling` is
-/// `super::integral_plan::max_transition_capable_p` for the live acquisition context.
+/// (`p <= transition_ceiling`, where `transition_ceiling` is
+/// `super::integral_plan::max_transition_capable_p` for the live acquisition context) and whose
+/// step peak is at or under [`STEP_PEAK_ADMISSION_PERMILLE`] (`0`, unscored, passes).
+///
+/// The rejection names the first predicate that emptied the candidate set.
 pub fn nominate_transition_capable_candidate_from_bounds(
     bounds: &[DiscoveryRungNominationBounds],
     transition_ceiling: u16,
 ) -> Result<NominatedConfirmationCandidate, NominationRejection> {
-    let capable = select_nominated_candidate(
+    let band_admissible = |entry: &&DiscoveryRungNominationBounds| {
+        entry.nominatable
+            && margin_percent_from_bounds(entry.lower_percent, entry.upper_percent) >= 0.0
+    };
+    let capable = |entry: &&DiscoveryRungNominationBounds| entry.p.raw() <= transition_ceiling;
+    let damped = |entry: &&DiscoveryRungNominationBounds| {
+        entry.step_peak_permille == 0 || entry.step_peak_permille <= STEP_PEAK_ADMISSION_PERMILLE
+    };
+
+    if !bounds.iter().any(|entry| band_admissible(&entry)) {
+        return Err(NominationRejection::Unconfirmable);
+    }
+    let capable_count = bounds
+        .iter()
+        .filter(band_admissible)
+        .filter(capable)
+        .count();
+    if capable_count == 0 {
+        return Err(NominationRejection::NoTransitionCapableCandidate);
+    }
+    let excluded = bounds
+        .iter()
+        .filter(band_admissible)
+        .filter(capable)
+        .filter(|entry| !damped(entry))
+        .count();
+    let excluded = u8::try_from(excluded).unwrap_or(u8::MAX);
+    let nominated = select_nominated_candidate(
         bounds
             .iter()
-            .filter(|entry| entry.nominatable && entry.p.raw() <= transition_ceiling)
+            .filter(band_admissible)
+            .filter(capable)
+            .filter(damped)
             .map(|entry| {
                 (
                     entry.p,
                     margin_percent_from_bounds(entry.lower_percent, entry.upper_percent),
+                    entry.step_peak_permille,
                 )
             }),
     );
-    match capable {
-        Ok(candidate) => Ok(candidate),
+    match nominated {
+        Ok(candidate) => Ok(NominatedConfirmationCandidate {
+            overshoot_excluded_rungs: excluded,
+            ..candidate
+        }),
         Err(TargetBandUnconfirmableFromDiscovery) => {
-            match nominate_confirmation_candidate_from_bounds(bounds) {
-                Ok(_) => Err(NominationRejection::NoTransitionCapableCandidate),
-                Err(TargetBandUnconfirmableFromDiscovery) => {
-                    Err(NominationRejection::Unconfirmable)
-                }
-            }
+            Err(NominationRejection::NoDampedCandidate { excluded })
         }
     }
 }

@@ -2268,6 +2268,11 @@ pub(crate) fn begin_band_confirmation(
                 BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate,
             );
         }
+        Err(NominationRejection::NoDampedCandidate { .. }) => {
+            return BandConfirmationEntry::Done(
+                BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery,
+            );
+        }
     };
     let plan = match plan_band_confirmation(discovery_plan_digest, candidate.p) {
         Ok(plan) => plan,
@@ -4090,6 +4095,8 @@ fn emit_phase_planned_event(campaign: &mut BreakawayCampaign) -> Option<Breakawa
             let nomination = NominatedConfirmationCandidate {
                 p: session.plan.nominated_p,
                 margin_percent: session.nominated_margin_percent,
+                step_peak_permille: 0,
+                overshoot_excluded_rungs: 0,
             };
             let planned =
                 confirmation_plan_report(&session.plan, &nomination, inputs.run_sequence, sequence);

@@ -1430,3 +1430,72 @@ fn rung_nomination_bounds_carries_the_step_peak() {
 
     assert_eq!(bounds.step_peak_permille, 1234);
 }
+
+fn peaked_rung(p: u16, step_peak_permille: u16) -> DiscoveryRungNominationBounds {
+    DiscoveryRungNominationBounds {
+        p: gain(p),
+        nominatable: true,
+        lower_percent: 72.0,
+        upper_percent: 78.0,
+        step_peak_permille,
+    }
+}
+
+#[test]
+fn admission_skips_rungs_over_the_step_peak_bound() {
+    let bounds = [
+        peaked_rung(700, 1300),
+        peaked_rung(750, 1390),
+        peaked_rung(800, 1450),
+    ];
+    let nominated = nominate_transition_capable_candidate_from_bounds(&bounds, 900)
+        .expect("a damped rung exists");
+    assert_eq!(nominated.p, gain(750));
+    assert_eq!(nominated.overshoot_excluded_rungs, 1);
+    assert_eq!(nominated.step_peak_permille, 1390);
+}
+
+#[test]
+fn an_unscored_rung_is_admitted() {
+    let nominated = nominate_transition_capable_candidate_from_bounds(&[peaked_rung(800, 0)], 900)
+        .expect("an unscored rung passes");
+    assert_eq!(nominated.p, gain(800));
+    assert_eq!(nominated.step_peak_permille, 0);
+    assert_eq!(nominated.overshoot_excluded_rungs, 0);
+}
+
+#[test]
+fn a_rung_exactly_at_the_bound_is_admitted() {
+    let nominated =
+        nominate_transition_capable_candidate_from_bounds(&[peaked_rung(800, 1400)], 900)
+            .expect("the bound is inclusive");
+    assert_eq!(nominated.p, gain(800));
+}
+
+#[test]
+fn all_band_rungs_over_the_bound_reject_as_no_damped_candidate() {
+    let bounds = [peaked_rung(700, 1450), peaked_rung(750, 1500)];
+    assert_eq!(
+        nominate_transition_capable_candidate_from_bounds(&bounds, 900),
+        Err(NominationRejection::NoDampedCandidate { excluded: 2 })
+    );
+}
+
+#[test]
+fn transition_ceiling_rejection_precedes_the_damping_rejection() {
+    let bounds = [peaked_rung(925, 1450), peaked_rung(950, 1500)];
+    assert_eq!(
+        nominate_transition_capable_candidate_from_bounds(&bounds, 897),
+        Err(NominationRejection::NoTransitionCapableCandidate)
+    );
+}
+
+#[test]
+fn unconfirmable_precedes_both() {
+    let mut out_of_band = peaked_rung(925, 1450);
+    out_of_band.lower_percent = 69.0;
+    assert_eq!(
+        nominate_transition_capable_candidate_from_bounds(&[out_of_band], 897),
+        Err(NominationRejection::Unconfirmable)
+    );
+}

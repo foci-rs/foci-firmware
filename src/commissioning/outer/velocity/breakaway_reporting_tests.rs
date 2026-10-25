@@ -575,6 +575,8 @@ fn confirmation_plan_report_carries_band_and_margin() {
     let nomination = NominatedConfirmationCandidate {
         p: gain(724),
         margin_percent: 4.5,
+        step_peak_permille: 0,
+        overshoot_excluded_rungs: 0,
     };
 
     let report = confirmation_plan_report(&plan, &nomination, 8, 0);
