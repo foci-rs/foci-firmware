@@ -130,6 +130,8 @@ struct PendingCycle {
     metrics: ReversalMetrics,
     /// Wire triple mirroring this cycle's ledger slot.
     wire: CycleWire,
+    /// Scored reversal peak in permille of the leg target; 0 when not scored.
+    peak_permille: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
@@ -901,12 +903,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         counts_per_rev,
                         REVERSAL_PEAK_REJECT_PERMILLE,
                     );
-                    if peak != 0 {
-                        session.peak_rate_permille[direction] =
-                            session.peak_rate_permille[direction].max(peak);
-                        session.peak_scored_cycles[direction] =
-                            session.peak_scored_cycles[direction].saturating_add(1);
-                    }
                     session.pending_cycle = Some(PendingCycle {
                         metrics,
                         wire: CycleWire {
@@ -914,6 +910,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                             overshoot_counts: overshoot,
                             forward_settle_ms: to_ms_saturating(metrics.forward_settle_time_us),
                         },
+                        peak_permille: peak,
                     });
                     *state = RobustnessReversalState::ZeroCommand {
                         retry_available: true,
@@ -1007,12 +1004,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     if confirmation.confirmed_rest {
                         safety.end_primitive();
                         if let Some(pending) = session.pending_cycle.take() {
-                            apply_cycle_record(
-                                state,
-                                session,
-                                CycleRecord::Conclusive(pending.metrics),
-                                Some(pending.wire),
-                            );
+                            apply_pending_cycle(state, session, pending);
                             StepResult::ReadyNow
                         } else if session.held_route.is_some() {
                             enter_origin_recovery(state, session, safety, backend, counts_per_rev)
@@ -1481,13 +1473,23 @@ fn route_action(
     }
 }
 
-fn apply_cycle_record(
+fn apply_pending_cycle(
     state: &mut RobustnessReversalState,
     session: &mut RobustnessReversalSession,
-    record: CycleRecord,
-    wire: Option<CycleWire>,
+    pending: PendingCycle,
 ) {
-    let action = record_cycle(session, record, wire);
+    let direction = session.direction;
+    let action = record_cycle(
+        session,
+        CycleRecord::Conclusive(pending.metrics),
+        Some(pending.wire),
+    );
+    if pending.peak_permille != 0 && action != LedgerAction::RetryTail {
+        session.peak_rate_permille[direction] =
+            session.peak_rate_permille[direction].max(pending.peak_permille);
+        session.peak_scored_cycles[direction] =
+            session.peak_scored_cycles[direction].saturating_add(1);
+    }
     route_action(state, session, action);
 }
 
@@ -2837,7 +2839,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_cycle_record_tail_arms_skip_grace_then_latch_and_continue() {
+    fn apply_pending_cycle_tail_arms_skip_grace_then_latch_and_continue() {
         const TAIL_MS: u32 = 900;
         let tail = cycle_metrics_with_iae(TAIL_MS, TAIL_IAE_Q);
         let tail_wire = CycleWire {
@@ -2845,18 +2847,18 @@ mod tests {
             overshoot_counts: 3,
             forward_settle_ms: 12,
         };
+        let tail_cycle = PendingCycle {
+            metrics: tail,
+            wire: tail_wire,
+            peak_permille: 0,
+        };
 
         let mut state = RobustnessReversalState::EstablishWriteGain;
         let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
         assert_eq!(session.direction, 0);
         assert_eq!(session.cycle_cursor[0], 0);
 
-        apply_cycle_record(
-            &mut state,
-            &mut session,
-            CycleRecord::Conclusive(tail),
-            Some(tail_wire),
-        );
+        apply_pending_cycle(&mut state, &mut session, tail_cycle);
         assert_eq!(state, RobustnessReversalState::EstablishWriteGain);
         assert_eq!(session.direction, 0, "RetryTail retries the same direction");
         assert_eq!(session.cycle_cursor[0], 0, "RetryTail does not advance");
@@ -2876,12 +2878,7 @@ mod tests {
             "the ledger still carries the displaced tail in max"
         );
 
-        apply_cycle_record(
-            &mut state,
-            &mut session,
-            CycleRecord::Conclusive(tail),
-            Some(tail_wire),
-        );
+        apply_pending_cycle(&mut state, &mut session, tail_cycle);
         assert_eq!(
             state,
             RobustnessReversalState::EstablishWriteGain,
@@ -3064,6 +3061,43 @@ mod tests {
             assert!(direction.peak_rate_permille >= REVERSAL_PEAK_REJECT_PERMILLE);
             assert!(!direction.peak_unscored);
             assert_eq!(direction.trip_count, 1);
+        }
+    }
+
+    #[test]
+    fn a_retried_tail_reversal_does_not_count_toward_the_peak_gate() {
+        let mut parts = RunParts::new(recovery_point());
+        for ledger in &mut parts.session.ledgers {
+            *ledger = CycleLedger::new(1_000_000_000);
+        }
+        let mut reverse_legs = 0_u32;
+        let (terminal, parts) = drive_parts(parts, Envelope::Tracked, |phase, tick, target| {
+            if target == 0 {
+                return 0;
+            }
+            if phase == CapturePhase::Reverse && tick == 0 {
+                reverse_legs += 1;
+            }
+            if phase == CapturePhase::Reverse && reverse_legs == 1 && tick < 5 {
+                target.signum() * STEADY_DELTA * 3 / 2
+            } else {
+                target.signum() * STEADY_DELTA
+            }
+        });
+
+        assert!(terminal.safety_fault.is_none());
+        assert_eq!(parts.session.ledgers[0].tail_count(), 1);
+        assert!(parts.session.displaced_tail_wires[0].is_some());
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_PASS);
+        for direction in terminal.evidence.directions {
+            assert!(
+                direction.peak_rate_permille < REVERSAL_PEAK_REJECT_PERMILLE,
+                "peak {} permille",
+                direction.peak_rate_permille
+            );
+            assert!(!direction.peak_unscored);
+            assert_eq!(direction.trip_count, 0);
         }
     }
 
