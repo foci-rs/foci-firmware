@@ -3168,7 +3168,7 @@ mod tests {
             trip_count: 0,
             retry_count: 1,
             inconclusive: false,
-            peak_unscored: false,
+            peak_unscored: true,
         };
         let example_cycles: [Option<CycleWire>; 5] = [
             Some(CycleWire {
@@ -3324,7 +3324,7 @@ mod tests {
             trip_count: 0,
             retry_count: 0,
             inconclusive: true,
-            peak_unscored: false,
+            peak_unscored: true,
         };
         let terminal = RobustnessReversalTerminal {
             schema_revision: ROBUSTNESS_SCHEMA_REVISION,
