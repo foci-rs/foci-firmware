@@ -10,7 +10,10 @@ use crate::commissioning::outer::velocity::breakaway_plan::{
     plan_upward_breakaway_probe,
 };
 use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
-use foci_tmc4671::{pid::PidPGain, registers::STATUS_FLAGS};
+use foci_tmc4671::{
+    pid::PidPGain,
+    registers::{PID_VELOCITY_P_VELOCITY_I, STATUS_FLAGS},
+};
 
 fn gain(raw: u16) -> PidPGain {
     PidPGain::new(raw).expect("raw gain within PidPGain range")
@@ -3172,6 +3175,61 @@ fn a_nominated_campaign_terminal_carries_the_step_peak_and_excluded_count() {
     else {
         panic!("a finished confirmation must close the campaign");
     };
+    assert_eq!(campaign_terminal.nominated_step_peak_permille, 1_300);
+    assert_eq!(campaign_terminal.overshoot_excluded_rungs, 1);
+}
+
+#[test]
+fn the_campaign_hands_its_own_nomination_evidence_to_the_confirmation_terminal() {
+    let mut campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign request");
+    let mut session = AdditiveDiscoverySession::new(
+        discovery_request(),
+        false,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+    )
+    .expect("valid discovery session");
+    session.in_band = peaked_discovery_rungs(&[(500, 1_300), (512, 1_450)]);
+    let cursor = session.in_band.count();
+    campaign.phase = BreakawayCampaignPhase::Discovery {
+        state: AdditiveDiscoveryState::StreamMargins { cursor },
+        session,
+    };
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    backend.fail_on_write = Some(PID_VELOCITY_P_VELOCITY_I.addr());
+
+    let mut confirmation_planned = None;
+    let mut campaign_terminal = None;
+    for _ in 0..64 {
+        let step = pollster::block_on(step_breakaway_campaign(
+            &mut campaign,
+            &mut workspace,
+            &mut safety,
+            &mut backend,
+        ));
+        match step {
+            BreakawayCampaignStep::Event(BreakawayCampaignEvent::ConfirmationPlanned(planned)) => {
+                confirmation_planned = Some(planned);
+            }
+            BreakawayCampaignStep::Event(BreakawayCampaignEvent::CampaignTerminal(terminal)) => {
+                campaign_terminal = Some(terminal);
+            }
+            BreakawayCampaignStep::Done(_) => break,
+            _ => {}
+        }
+    }
+
+    assert!(
+        confirmation_planned.is_some(),
+        "the campaign must enter confirmation"
+    );
+    let campaign_terminal = campaign_terminal.expect("the campaign must emit its terminal");
+    assert_eq!(
+        campaign_terminal.phase,
+        BreakawayPhase::ProportionalBandConfirmation as u8
+    );
     assert_eq!(campaign_terminal.nominated_step_peak_permille, 1_300);
     assert_eq!(campaign_terminal.overshoot_excluded_rungs, 1);
 }
