@@ -3110,8 +3110,17 @@ mod tests {
             target_velocity_rpm: 180,
             ..recovery_point()
         };
+        let mut parts = RunParts::new(point);
+        parts
+            .safety
+            .configure_velocity_envelope(planned_velocity_mrev_s(&point).expect("planned"))
+            .expect("envelope for the 180 RPM point");
+        assert_eq!(
+            parts.safety.moving_velocity_cap_milli_counts_per_s(),
+            20_000_000
+        );
         let (terminal, _parts) = drive_parts(
-            RunParts::new(point),
+            parts,
             Envelope::Tracked,
             burst_motion(CapturePhase::Reverse, 20, 2),
         );
