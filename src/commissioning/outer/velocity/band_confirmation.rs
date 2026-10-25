@@ -534,6 +534,10 @@ pub fn nominate_transition_capable_candidate_from_bounds(
         .filter(|entry| !damped(entry))
         .count();
     let excluded = u8::try_from(excluded).unwrap_or(u8::MAX);
+    defmt::info!(
+        "nomination damping screen: overshoot_excluded_rungs={}",
+        excluded
+    );
     let nominated = select_nominated_candidate(
         bounds
             .iter()

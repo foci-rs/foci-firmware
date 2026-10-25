@@ -827,8 +827,10 @@ mod breakaway_reply_wire_tests {
             integral_plan_digest_low: 7,
             integral_plan_digest_high: 8,
             error_code: 9,
+            nominated_step_peak_permille: 10,
+            overshoot_excluded_rungs: 11,
         };
-        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     }
 }
 
@@ -1129,6 +1131,11 @@ pub struct FociBreakawayCampaignTerminal {
     /// `CommissionError::status_code()` for a campaign terminal that carries a
     /// causally-relevant error, or `0` when the terminal carries no error.
     pub error_code: u8,
+    /// Step velocity peak of the nominated confirmation rung, in permille of target, or `0`
+    /// when no rung was nominated or it was unscored.
+    pub nominated_step_peak_permille: u16,
+    /// Rungs excluded from nomination for exceeding the step peak bound.
+    pub overshoot_excluded_rungs: u8,
 }
 
 /// Which `p_top` candidate bound the additive-discovery authority ceiling.

@@ -2199,6 +2199,16 @@ struct PendingConfirmationRecord {
     classifier_inputs: ObservationClassifierInputs,
 }
 
+/// Nomination evidence carried on the campaign terminal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, defmt::Format)]
+pub(crate) struct NominationEvidence {
+    /// Step velocity peak of the nominated rung, in permille of target; `0` when none was
+    /// nominated or it was unscored.
+    pub nominated_step_peak_permille: u16,
+    /// Rungs excluded from nomination for exceeding the step peak bound.
+    pub overshoot_excluded_rungs: u8,
+}
+
 #[derive(Debug, defmt::Format)]
 pub(crate) enum BandConfirmationOutcome {
     Accepted {
@@ -2207,6 +2217,11 @@ pub(crate) enum BandConfirmationOutcome {
     },
     TargetBandUnconfirmableFromDiscovery,
     TargetBandNoTransitionCapableCandidate,
+    /// Every band-admissible, transition-capable rung exceeded the step peak bound.
+    TargetBandNoDampedCandidate {
+        /// Rungs excluded by the step peak bound.
+        excluded: u8,
+    },
     TargetBandNotReachedAtAuthority,
     TargetBandConfirmationInconclusive(BandConfirmationFailureCause),
     ConfirmationEvidenceExcluded,
@@ -2268,9 +2283,9 @@ pub(crate) fn begin_band_confirmation(
                 BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate,
             );
         }
-        Err(NominationRejection::NoDampedCandidate { .. }) => {
+        Err(NominationRejection::NoDampedCandidate { excluded }) => {
             return BandConfirmationEntry::Done(
-                BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery,
+                BandConfirmationOutcome::TargetBandNoDampedCandidate { excluded },
             );
         }
     };
@@ -2289,12 +2304,17 @@ pub(crate) fn begin_band_confirmation(
             safety: None,
         });
     }
-    BandConfirmationEntry::Ready(BandConfirmationSession::new(
+    let mut session = BandConfirmationSession::new(
         plan,
         candidate.margin_percent,
         target_velocity_rpm,
         planned_velocity_mrev_s,
-    ))
+    );
+    session.nomination_evidence = NominationEvidence {
+        nominated_step_peak_permille: candidate.step_peak_permille,
+        overshoot_excluded_rungs: candidate.overshoot_excluded_rungs,
+    };
+    BandConfirmationEntry::Ready(session)
 }
 
 #[derive(Debug, defmt::Format)]
@@ -2308,6 +2328,7 @@ pub(crate) struct BandConfirmationSession {
     pending_lower_rate_q: Option<u64>,
     pending_record: Option<PendingConfirmationRecord>,
     nominated_margin_percent: f32,
+    nomination_evidence: NominationEvidence,
 }
 
 impl BandConfirmationSession {
@@ -2327,6 +2348,7 @@ impl BandConfirmationSession {
             pending_lower_rate_q: None,
             pending_record: None,
             nominated_margin_percent,
+            nomination_evidence: NominationEvidence::default(),
         }
     }
 
@@ -3029,6 +3051,7 @@ pub(crate) struct BreakawayCampaign {
     pending_event: Option<crate::commissioning::types::BreakawayCampaignTerminal>,
     pending_done: Option<BreakawayCampaignOutcome>,
     pending_phase_terminal: Option<crate::commissioning::types::AdditiveDiscoveryTerminal>,
+    nomination_evidence: NominationEvidence,
 }
 
 impl BreakawayCampaign {
@@ -3085,6 +3108,7 @@ impl BreakawayCampaign {
             pending_event: None,
             pending_done: None,
             pending_phase_terminal: None,
+            nomination_evidence: NominationEvidence::default(),
         })
     }
 
@@ -3240,6 +3264,7 @@ fn confirmation_terminal(outcome: BandConfirmationOutcome) -> BreakawayCampaignO
         }
         BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery
         | BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate
+        | BandConfirmationOutcome::TargetBandNoDampedCandidate { .. }
         | BandConfirmationOutcome::TargetBandNotReachedAtAuthority
         | BandConfirmationOutcome::TargetBandConfirmationInconclusive(_)
         | BandConfirmationOutcome::ConfirmationEvidenceExcluded => {
@@ -3421,12 +3446,14 @@ fn margin_step(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn campaign_terminal_event(
     phase: BreakawayPhase,
     terminal_cause: super::breakaway_reporting::BreakawayTerminalCause,
     accepted: bool,
     integral_plan_digest: u64,
     error_code: u8,
+    nomination: NominationEvidence,
     inputs: &BreakawayCampaignInputs,
     evidence_sequence: &mut u16,
 ) -> crate::commissioning::types::BreakawayCampaignTerminal {
@@ -3437,6 +3464,7 @@ fn campaign_terminal_event(
         accepted,
         integral_plan_digest,
         error_code,
+        nomination,
         inputs.run_sequence,
         sequence,
     )
@@ -3501,6 +3529,7 @@ pub(crate) fn breakaway_campaign_fault_terminal(
         false,
         0,
         error.status_code(),
+        campaign.nomination_evidence,
         &campaign.inputs,
         &mut campaign.evidence_sequence,
     );
@@ -3531,6 +3560,7 @@ fn discovery_construction_fault(
         false,
         0,
         CommissionError::DiscoveryBandNotSelected.status_code(),
+        NominationEvidence::default(),
         inputs,
         evidence_sequence,
     );
@@ -3548,6 +3578,7 @@ fn route_discovery_outcome(
     discovery_plan_digest: u64,
     inputs: &BreakawayCampaignInputs,
     evidence_sequence: &mut u16,
+    nomination_evidence: &mut NominationEvidence,
 ) -> EmitContinuation {
     let entry = match max_transition_capable_p(
         inputs.target_velocity_rpm.raw(),
@@ -3570,6 +3601,7 @@ fn route_discovery_outcome(
     };
     match entry {
         BandConfirmationEntry::Ready(session) => {
+            *nomination_evidence = session.nomination_evidence;
             EmitContinuation::EnterPhase(BreakawayCampaignPhase::Confirmation {
                 state: BandConfirmationState::PlannedConfirmation,
                 session,
@@ -3581,12 +3613,19 @@ fn route_discovery_outcome(
                 BandConfirmationOutcome::SafetyFault { error, .. } => error.status_code(),
                 _ => 0,
             };
+            if let BandConfirmationOutcome::TargetBandNoDampedCandidate { excluded } = outcome {
+                *nomination_evidence = NominationEvidence {
+                    nominated_step_peak_permille: 0,
+                    overshoot_excluded_rungs: excluded,
+                };
+            }
             let campaign_terminal = campaign_terminal_event(
                 BreakawayPhase::ProportionalBandConfirmation,
                 cause,
                 false,
                 0,
                 error_code,
+                *nomination_evidence,
                 inputs,
                 evidence_sequence,
             );
@@ -3729,6 +3768,7 @@ fn enter_discovery(
                 false,
                 0,
                 error_code,
+                NominationEvidence::default(),
                 inputs,
                 evidence_sequence,
             );
@@ -3779,6 +3819,7 @@ fn probe_failure_advance(
         false,
         0,
         error_code,
+        NominationEvidence::default(),
         inputs,
         evidence_sequence,
     );
@@ -3796,6 +3837,7 @@ fn discovery_done_advance(
     session: &AdditiveDiscoverySession,
     inputs: &BreakawayCampaignInputs,
     evidence_sequence: &mut u16,
+    nomination_evidence: &mut NominationEvidence,
 ) -> CampaignAdvance {
     let sequence = next_sequence(evidence_sequence);
     let terminal = discovery_terminal_report(
@@ -3822,9 +3864,13 @@ fn discovery_done_advance(
     let plan_digest = session.plan.plan_digest;
     let next = match outcome {
         AdditiveDiscoveryOutcome::TargetBandSelected(_)
-        | AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand => {
-            route_discovery_outcome(outcome, plan_digest, inputs, evidence_sequence)
-        }
+        | AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand => route_discovery_outcome(
+            outcome,
+            plan_digest,
+            inputs,
+            evidence_sequence,
+            nomination_evidence,
+        ),
         AdditiveDiscoveryOutcome::TargetBandSkipped
         | AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
         | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded => {
@@ -3835,6 +3881,7 @@ fn discovery_done_advance(
                 false,
                 0,
                 0,
+                *nomination_evidence,
                 inputs,
                 evidence_sequence,
             );
@@ -3853,6 +3900,7 @@ fn discovery_done_advance(
                 false,
                 0,
                 0,
+                *nomination_evidence,
                 inputs,
                 evidence_sequence,
             );
@@ -3875,6 +3923,7 @@ fn discovery_done_advance(
                 false,
                 0,
                 error.status_code(),
+                *nomination_evidence,
                 inputs,
                 evidence_sequence,
             );
@@ -3923,6 +3972,7 @@ fn confirmation_done_advance<B: CommissioningBackend>(
     inputs: &BreakawayCampaignInputs,
     safety: &OuterSafetyLimits,
     backend: &B,
+    nomination_evidence: NominationEvidence,
     evidence_sequence: &mut u16,
 ) -> CampaignAdvance {
     let sequence = next_sequence(evidence_sequence);
@@ -3973,6 +4023,7 @@ fn confirmation_done_advance<B: CommissioningBackend>(
         }
         BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery
         | BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate
+        | BandConfirmationOutcome::TargetBandNoDampedCandidate { .. }
         | BandConfirmationOutcome::TargetBandNotReachedAtAuthority => {
             let terminal = confirmation_zero_stroke_terminal_report(
                 session.plan.plan_digest,
@@ -4024,6 +4075,7 @@ fn confirmation_done_advance<B: CommissioningBackend>(
         accepted,
         integral_plan_digest,
         error_code,
+        nomination_evidence,
         inputs,
         evidence_sequence,
     );
@@ -4095,8 +4147,8 @@ fn emit_phase_planned_event(campaign: &mut BreakawayCampaign) -> Option<Breakawa
             let nomination = NominatedConfirmationCandidate {
                 p: session.plan.nominated_p,
                 margin_percent: session.nominated_margin_percent,
-                step_peak_permille: 0,
-                overshoot_excluded_rungs: 0,
+                step_peak_permille: session.nomination_evidence.nominated_step_peak_permille,
+                overshoot_excluded_rungs: session.nomination_evidence.overshoot_excluded_rungs,
             };
             let planned =
                 confirmation_plan_report(&session.plan, &nomination, inputs.run_sequence, sequence);
@@ -4148,6 +4200,7 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
             inputs,
             phase,
             evidence_sequence,
+            nomination_evidence,
             ..
         } = &mut *campaign;
         match phase {
@@ -4257,7 +4310,13 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                         ))
                     }
                     AdditiveDiscoveryStep::Done(outcome) => {
-                        discovery_done_advance(outcome, session, inputs, evidence_sequence)
+                        discovery_done_advance(
+                            outcome,
+                            session,
+                            inputs,
+                            evidence_sequence,
+                            nomination_evidence,
+                        )
                     }
                 }
             }
@@ -4307,6 +4366,7 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                     inputs,
                     safety,
                     backend,
+                    *nomination_evidence,
                     evidence_sequence,
                 ),
             },

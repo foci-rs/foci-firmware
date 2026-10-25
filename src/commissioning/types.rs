@@ -854,6 +854,12 @@ pub struct BreakawayCampaignTerminal {
     /// `CommissionError::status_code()` for a campaign terminal that carries a causally-relevant
     /// error beyond `terminal_cause` alone, or `0` when the terminal carries no error.
     pub error_code: u8,
+    /// Step velocity peak of the nominated confirmation rung, in permille of target; `0` when no
+    /// rung was nominated or the nominated rung was unscored.
+    pub nominated_step_peak_permille: u16,
+    /// Band-admissible, transition-capable rungs excluded from nomination for exceeding the step
+    /// peak bound; `0` when nomination never ran.
+    pub overshoot_excluded_rungs: u8,
 }
 
 /// Which `p_top` candidate bound the additive-discovery authority ceiling: the current-limit-

@@ -21,6 +21,7 @@ use super::band_confirmation::{
 use super::band_confirmation::{DiscoveryObservationAtom, observation_interval_percent};
 use super::breakaway_campaign::{
     AdditiveDiscoveryOutcome, BandConfirmationOutcome, BreakawayProbeOutcome, CollectedObservation,
+    NominationEvidence,
 };
 use super::breakaway_plan::{
     AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, UpwardBreakawayProbePlan,
@@ -58,6 +59,8 @@ pub(crate) enum BreakawayTerminalCause {
     ConfirmationInternalFault = 25,
     ConfirmationIntegralPlanRefused = 26,
     ConfirmationNoTransitionCapableCandidate = 27,
+    /// Every band-admissible, transition-capable rung exceeded the step peak bound.
+    ConfirmationNoDampedCandidate = 28,
 }
 
 const REQUIRED_HALF_WIDTH_FRACTION: f32 = 1.0 / 15.0;
@@ -158,6 +161,9 @@ pub(crate) fn confirmation_zero_stroke_cause(
             BreakawayTerminalCause::ConfirmationNoTransitionCapableCandidate,
             0,
         ),
+        BandConfirmationOutcome::TargetBandNoDampedCandidate { .. } => {
+            (BreakawayTerminalCause::ConfirmationNoDampedCandidate, 0)
+        }
         BandConfirmationOutcome::TargetBandNotReachedAtAuthority => (
             BreakawayTerminalCause::ConfirmationTargetBandNotReachedAtAuthority,
             0,
@@ -774,12 +780,14 @@ pub(crate) fn confirmation_zero_stroke_terminal_report(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn campaign_terminal_report(
     phase: BreakawayPhase,
     terminal_cause: BreakawayTerminalCause,
     accepted: bool,
     integral_plan_digest: u64,
     error_code: u8,
+    nomination: NominationEvidence,
     run_sequence: u32,
     evidence_sequence: u16,
 ) -> BreakawayCampaignTerminal {
@@ -791,6 +799,8 @@ pub(crate) fn campaign_terminal_report(
         accepted: u8::from(accepted),
         integral_plan_digest,
         error_code,
+        nominated_step_peak_permille: nomination.nominated_step_peak_permille,
+        overshoot_excluded_rungs: nomination.overshoot_excluded_rungs,
     }
 }
 

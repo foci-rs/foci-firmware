@@ -198,6 +198,8 @@ enum ReplyEvent {
         integral_plan_digest_low: u32,
         integral_plan_digest_high: u32,
         error_code: u8,
+        nominated_step_peak_permille: u16,
+        overshoot_excluded_rungs: u8,
     },
 }
 
@@ -420,6 +422,8 @@ impl CommissionReplySink for ReplyRecorder {
             integral_plan_digest_low: report.integral_plan_digest_low,
             integral_plan_digest_high: report.integral_plan_digest_high,
             error_code: report.error_code,
+            nominated_step_peak_permille: report.nominated_step_peak_permille,
+            overshoot_excluded_rungs: report.overshoot_excluded_rungs,
         });
     }
 }
@@ -606,6 +610,8 @@ fn emit_breakaway_campaign_terminal_splits_the_integral_digest() {
             accepted: 1,
             integral_plan_digest: 0x0000_0006_0000_0005,
             error_code: 65,
+            nominated_step_peak_permille: 1_390,
+            overshoot_excluded_rungs: 2,
         },
     );
 
@@ -618,6 +624,8 @@ fn emit_breakaway_campaign_terminal_splits_the_integral_digest() {
             integral_plan_digest_low: 5,
             integral_plan_digest_high: 6,
             error_code: 65,
+            nominated_step_peak_permille: 1_390,
+            overshoot_excluded_rungs: 2,
         }]
     );
 }

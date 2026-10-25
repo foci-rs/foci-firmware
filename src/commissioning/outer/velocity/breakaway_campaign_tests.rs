@@ -1164,7 +1164,13 @@ fn a_discovery_terminal_carries_only_the_rung_zero_diagnostic_and_the_terminal()
         });
     let inputs = integral_inputs(2_448);
     let mut evidence_sequence = 3_u16;
-    let advance = discovery_done_advance(outcome, &session, &inputs, &mut evidence_sequence);
+    let advance = discovery_done_advance(
+        outcome,
+        &session,
+        &inputs,
+        &mut evidence_sequence,
+        &mut NominationEvidence::default(),
+    );
     let CampaignAdvance::Emit { now, next } = advance else {
         panic!("expected an Emit advance");
     };
@@ -1207,7 +1213,13 @@ fn a_discovery_safety_fault_never_seeds_confirmation_from_a_retained_rung() {
     };
     let inputs = integral_inputs(2_448);
     let mut evidence_sequence = 3_u16;
-    let advance = discovery_done_advance(outcome, &session, &inputs, &mut evidence_sequence);
+    let advance = discovery_done_advance(
+        outcome,
+        &session,
+        &inputs,
+        &mut evidence_sequence,
+        &mut NominationEvidence::default(),
+    );
     let CampaignAdvance::Emit { now, next } = advance else {
         panic!("expected an Emit advance");
     };
@@ -1264,7 +1276,13 @@ fn a_discovery_internal_fault_carries_the_underlying_error_on_the_closure() {
     };
     let inputs = integral_inputs(2_448);
     let mut evidence_sequence = 3_u16;
-    let advance = discovery_done_advance(outcome, &session, &inputs, &mut evidence_sequence);
+    let advance = discovery_done_advance(
+        outcome,
+        &session,
+        &inputs,
+        &mut evidence_sequence,
+        &mut NominationEvidence::default(),
+    );
     let CampaignAdvance::Emit { next, .. } = advance else {
         panic!("expected an Emit advance");
     };
@@ -1761,6 +1779,10 @@ fn confirmation_plan(p_raw: u16) -> BandConfirmationPlan {
 }
 
 fn confirmable_discovery_rungs(p_raw: u16) -> CollectedInBandRungs {
+    peaked_discovery_rungs(&[(p_raw, 0)])
+}
+
+fn peaked_discovery_rungs(rungs: &[(u16, u16)]) -> CollectedInBandRungs {
     const MEAN: i64 = 750_000;
     const VARIANCE: u128 = 58_752_225;
     const TARGET: i64 = 1_000_000;
@@ -1784,17 +1806,19 @@ fn confirmable_discovery_rungs(p_raw: u16) -> CollectedInBandRungs {
         target_rate_q: TARGET,
         direction: VelocityDirection::Reverse,
     };
-    let rung = DiscoveryRungNominationInput {
-        p: gain(p_raw),
-        forward_consensus: full_consensus,
-        forward_observations: [Some(forward_atom); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-        reverse_consensus: full_consensus,
-        reverse_observations: [Some(reverse_atom); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-    };
     let mut collected = CollectedInBandRungs::new();
-    collected
-        .push(rung_nomination_bounds(&rung, 0))
-        .expect("one rung fits");
+    for &(p_raw, step_peak_permille) in rungs {
+        let rung = DiscoveryRungNominationInput {
+            p: gain(p_raw),
+            forward_consensus: full_consensus,
+            forward_observations: [Some(forward_atom); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+            reverse_consensus: full_consensus,
+            reverse_observations: [Some(reverse_atom); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        };
+        collected
+            .push(rung_nomination_bounds(&rung, step_peak_permille))
+            .expect("rung fits");
+    }
     collected
 }
 
@@ -2860,6 +2884,7 @@ fn a_confirmed_accept_whose_integral_plan_build_is_refused_reports_a_distinct_ca
         &inputs,
         &safety,
         &backend,
+        NominationEvidence::default(),
         &mut evidence_sequence,
     );
 
@@ -2944,6 +2969,7 @@ fn confirmation_evidence_excluded_after_a_recorded_stroke_reports_partial_eviden
         &inputs,
         &safety,
         &backend,
+        NominationEvidence::default(),
         &mut evidence_sequence,
     );
     let CampaignAdvance::Emit { now, next } = advance else {
@@ -3015,6 +3041,7 @@ fn safety_fault_after_a_recorded_stroke_reports_partial_evidence_not_empty() {
         &inputs,
         &safety,
         &backend,
+        NominationEvidence::default(),
         &mut evidence_sequence,
     );
     let CampaignAdvance::Emit { now, next } = advance else {
@@ -3084,6 +3111,7 @@ fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_band_not_select
         42,
         &inputs,
         &mut evidence_sequence,
+        &mut NominationEvidence::default(),
     );
     let EmitContinuation::Terminal {
         campaign_terminal,
@@ -3099,6 +3127,100 @@ fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_band_not_select
         CommissionError::DiscoveryBandNotSelected.status_code(),
         "a routed zero-stroke fault carries its CommissionError"
     );
+}
+
+#[test]
+fn a_nominated_campaign_terminal_carries_the_step_peak_and_excluded_count() {
+    let inputs = integral_inputs(2_448);
+    let mut evidence_sequence = 0_u16;
+    let mut nomination_evidence = NominationEvidence::default();
+
+    let continuation = route_discovery_outcome(
+        AdditiveDiscoveryOutcome::TargetBandSelected(peaked_discovery_rungs(&[
+            (500, 1_300),
+            (512, 1_450),
+        ])),
+        42,
+        &inputs,
+        &mut evidence_sequence,
+        &mut nomination_evidence,
+    );
+    let EmitContinuation::EnterPhase(BreakawayCampaignPhase::Confirmation { session, .. }) =
+        continuation
+    else {
+        panic!("a damped in-band rung must enter confirmation");
+    };
+    let advance = confirmation_done_advance(
+        BandConfirmationOutcome::TargetBandConfirmationInconclusive(
+            BandConfirmationFailureCause::ResponseLocation,
+        ),
+        &session,
+        &inputs,
+        &test_safety(),
+        &test_backend(),
+        nomination_evidence,
+        &mut evidence_sequence,
+    );
+
+    assert_eq!(session.plan.nominated_p, gain(500));
+    let CampaignAdvance::Emit {
+        next: EmitContinuation::Terminal {
+            campaign_terminal, ..
+        },
+        ..
+    } = advance
+    else {
+        panic!("a finished confirmation must close the campaign");
+    };
+    assert_eq!(campaign_terminal.nominated_step_peak_permille, 1_300);
+    assert_eq!(campaign_terminal.overshoot_excluded_rungs, 1);
+}
+
+#[test]
+fn an_all_over_bound_band_ends_in_no_damped_candidate_with_the_count() {
+    let inputs = integral_inputs(2_448);
+    let mut evidence_sequence = 0_u16;
+    let mut nomination_evidence = NominationEvidence::default();
+
+    let continuation = route_discovery_outcome(
+        AdditiveDiscoveryOutcome::TargetBandSelected(peaked_discovery_rungs(&[
+            (500, 1_450),
+            (512, 1_500),
+        ])),
+        42,
+        &inputs,
+        &mut evidence_sequence,
+        &mut nomination_evidence,
+    );
+
+    let EmitContinuation::Terminal {
+        campaign_terminal,
+        done: BreakawayCampaignOutcome::Terminal { error, safety },
+    } = continuation
+    else {
+        panic!("an all-overshooting band must close the campaign before motion");
+    };
+    assert_eq!(
+        campaign_terminal.phase,
+        BreakawayPhase::ProportionalBandConfirmation as u8
+    );
+    assert_eq!(
+        campaign_terminal.terminal_cause,
+        BreakawayTerminalCause::ConfirmationNoDampedCandidate as u8
+    );
+    assert_eq!(campaign_terminal.accepted, 0);
+    assert_eq!(campaign_terminal.error_code, 0);
+    assert_eq!(campaign_terminal.nominated_step_peak_permille, 0);
+    assert_eq!(campaign_terminal.overshoot_excluded_rungs, 2);
+    assert_eq!(
+        nomination_evidence,
+        NominationEvidence {
+            nominated_step_peak_permille: 0,
+            overshoot_excluded_rungs: 2,
+        }
+    );
+    assert_eq!(error, CommissionError::VelocityValidationFailed);
+    assert!(safety.is_none());
 }
 
 #[test]
@@ -3120,6 +3242,7 @@ fn discovery_rest_refusal_keeps_its_specific_terminal_status() {
         &session,
         &inputs,
         &mut evidence_sequence,
+        &mut NominationEvidence::default(),
     );
 
     let CampaignAdvance::Emit {
@@ -3315,6 +3438,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
             pending_event: None,
             pending_done: None,
             pending_phase_terminal: None,
+            nomination_evidence: NominationEvidence::default(),
         },
         workspace: BreakawayProbeWorkspace::new(),
         safety: test_safety(),
@@ -3447,6 +3571,7 @@ fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_integral_digest
             pending_event: None,
             pending_done: None,
             pending_phase_terminal: None,
+            nomination_evidence: NominationEvidence::default(),
         },
         workspace: BreakawayProbeWorkspace::new(),
         safety: test_safety(),
@@ -4001,6 +4126,7 @@ async fn engine_hand_off_events() -> std::vec::Vec<HandOffEvent> {
             pending_event: None,
             pending_done: None,
             pending_phase_terminal: None,
+            nomination_evidence: NominationEvidence::default(),
         },
     )
     .expect("valid breakaway safety configuration");

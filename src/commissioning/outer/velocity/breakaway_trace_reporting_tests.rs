@@ -471,6 +471,8 @@ fn encode_campaign_terminal_has_stable_frame_layout() {
         accepted: 1,
         integral_plan_digest: 0x1122_3344_5566_7788,
         error_code: 0,
+        nominated_step_peak_permille: 0,
+        overshoot_excluded_rungs: 0,
     };
     let record = encode_campaign_terminal(report);
     let expected = Expected::new()
@@ -667,6 +669,8 @@ fn every_encoder_uses_a_distinct_local_tag() {
             accepted: 0,
             integral_plan_digest: 0,
             error_code: 0,
+            nominated_step_peak_permille: 0,
+            overshoot_excluded_rungs: 0,
         })
         .as_bytes()[0],
         encode_probe_decision(BreakawayProbeDecision {

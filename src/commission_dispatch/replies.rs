@@ -172,7 +172,7 @@ macro_rules! __commission_reply_manifest {
                 name: foci_breakaway_campaign_terminal,
                 doc: "Emit the canonical closure record for one complete breakaway campaign.",
                 reply: foci_firmware::ankyra::replies::FociBreakawayCampaignTerminal,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, phase: u8, terminal_cause: u8, accepted: u8, integral_plan_digest_low: u32, integral_plan_digest_high: u32, error_code: u8 },
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, phase: u8, terminal_cause: u8, accepted: u8, integral_plan_digest_low: u32, integral_plan_digest_high: u32, error_code: u8, nominated_step_peak_permille: u16, overshoot_excluded_rungs: u8 },
             }
         }
     };
@@ -466,6 +466,8 @@ pub fn emit_breakaway_campaign_terminal<S: CommissionReplySink>(
         integral_plan_digest_low: report.integral_plan_digest as u32,
         integral_plan_digest_high: (report.integral_plan_digest >> 32) as u32,
         error_code: report.error_code,
+        nominated_step_peak_permille: report.nominated_step_peak_permille,
+        overshoot_excluded_rungs: report.overshoot_excluded_rungs,
     });
 }
 

@@ -6,7 +6,8 @@ use super::super::band_confirmation::{
     plan_band_confirmation,
 };
 use super::super::breakaway_campaign::{
-    AdditiveDiscoveryOutcome, BandConfirmationOutcome, ObservationClassifierInputs,
+    AdditiveDiscoveryOutcome, BandConfirmationOutcome, NominationEvidence,
+    ObservationClassifierInputs,
 };
 use super::super::breakaway_plan::{
     AdditiveDiscoveryRequest, BreakawayProbeContext, plan_additive_discovery_ladder,
@@ -903,6 +904,60 @@ fn confirmation_zero_stroke_cause_maps_every_zero_stroke_variant() {
 }
 
 #[test]
+fn no_damped_candidate_maps_to_cause_28_in_the_confirmation_phase() {
+    let outcome = BandConfirmationOutcome::TargetBandNoDampedCandidate { excluded: 3 };
+
+    let (cause, has_fault) = confirmation_zero_stroke_cause(&outcome);
+    let report = campaign_terminal_report(
+        BreakawayPhase::ProportionalBandConfirmation,
+        cause,
+        false,
+        0,
+        0,
+        NominationEvidence {
+            nominated_step_peak_permille: 0,
+            overshoot_excluded_rungs: 3,
+        },
+        12,
+        9,
+    );
+
+    assert_eq!(cause, BreakawayTerminalCause::ConfirmationNoDampedCandidate);
+    assert_eq!(
+        BreakawayTerminalCause::ConfirmationNoDampedCandidate as u8,
+        28
+    );
+    assert_eq!(has_fault, 0);
+    assert_eq!(
+        report.phase,
+        BreakawayPhase::ProportionalBandConfirmation as u8
+    );
+    assert_eq!(report.terminal_cause, 28);
+    assert_eq!(report.accepted, 0);
+    assert_eq!(report.error_code, 0);
+}
+
+#[test]
+fn campaign_terminal_report_carries_the_nomination_evidence() {
+    let report = campaign_terminal_report(
+        BreakawayPhase::ProportionalBandConfirmation,
+        BreakawayTerminalCause::ConfirmationResponseLocation,
+        false,
+        0,
+        0,
+        NominationEvidence {
+            nominated_step_peak_permille: 1_390,
+            overshoot_excluded_rungs: 2,
+        },
+        12,
+        9,
+    );
+
+    assert_eq!(report.nominated_step_peak_permille, 1_390);
+    assert_eq!(report.overshoot_excluded_rungs, 2);
+}
+
+#[test]
 fn campaign_terminal_report_carries_owning_phase_and_integral_digest() {
     let report = campaign_terminal_report(
         BreakawayPhase::ProportionalBandConfirmation,
@@ -910,6 +965,7 @@ fn campaign_terminal_report_carries_owning_phase_and_integral_digest() {
         true,
         0x7788,
         0,
+        NominationEvidence::default(),
         12,
         9,
     );
@@ -934,6 +990,7 @@ fn campaign_terminal_report_zeroes_integral_digest_on_failure() {
         false,
         0,
         0,
+        NominationEvidence::default(),
         12,
         9,
     );
@@ -950,6 +1007,7 @@ fn campaign_terminal_report_names_the_owning_discovery_phase() {
         false,
         0,
         0,
+        NominationEvidence::default(),
         13,
         1,
     );
