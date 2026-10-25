@@ -1332,6 +1332,7 @@ mod velocity_sweep_reply_tests {
                 velocity_ceiling_reached: u8::MAX,
                 peak_velocity_mrev_s: u16::MAX,
                 tune_step: u8::MAX,
+                motor_disarmed: u8::MAX,
             },
             "tune_result",
         );
@@ -1424,6 +1425,9 @@ pub struct FociTuneResult {
     /// Position-tune sub-state at exit: 0 none, 1 homing stroke, 2 motion stroke,
     /// 3 restore wait, 4 standstill hold.
     pub tune_step: u8,
+    /// 1 when the firmware disarmed the motor as part of this terminal, 0 when
+    /// it left the motor armed and holding.
+    pub motor_disarmed: u8,
 }
 
 /// Non-terminal `PositionTune` fragment.
@@ -1471,6 +1475,7 @@ mod tune_result_reply_wire_tests {
             velocity_ceiling_reached: 17,
             peak_velocity_mrev_s: 18,
             tune_step: 19,
+            motor_disarmed: 20,
         }
     }
 
@@ -1502,7 +1507,7 @@ mod tune_result_reply_wire_tests {
         assert_eq!(
             encoded,
             &[
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
             ],
             "terminal fields must serialize in declared order"
         );
@@ -1545,6 +1550,7 @@ mod tune_result_reply_wire_tests {
             velocity_ceiling_reached: 1,
             peak_velocity_mrev_s: 15_210,
             tune_step: 3,
+            motor_disarmed: 0,
         };
         let evidence = FociTunePositionEvidence {
             oid: 1,
@@ -1586,6 +1592,7 @@ mod tune_result_reply_wire_tests {
         let velocity_ceiling_reached = u8::read(&mut cursor).expect("velocity_ceiling_reached");
         let peak_velocity_mrev_s = u16::read(&mut cursor).expect("peak_velocity_mrev_s");
         let tune_step = u8::read(&mut cursor).expect("tune_step");
+        let motor_disarmed = u8::read(&mut cursor).expect("motor_disarmed");
 
         assert_eq!(status, 12);
         assert_eq!(predicted_start_p, 0);
@@ -1594,6 +1601,7 @@ mod tune_result_reply_wire_tests {
         assert_eq!(velocity_ceiling_reached, 1);
         assert_eq!(peak_velocity_mrev_s, 15_210);
         assert_eq!(tune_step, 3);
+        assert_eq!(motor_disarmed, 0);
         assert!(
             cursor.is_empty(),
             "every terminal field must have been decoded"

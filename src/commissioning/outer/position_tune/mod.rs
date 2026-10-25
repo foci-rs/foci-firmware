@@ -810,6 +810,7 @@ fn position_tune_terminal(state: &PositionTuneState, accepted: RungMeasurement) 
         provenance: TuneProvenance::default(),
         position_tune,
         position_tune_outcome_code: 0,
+        motor_disarmed: false,
     })
 }
 

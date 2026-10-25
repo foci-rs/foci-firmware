@@ -1889,6 +1889,7 @@ mod tests {
             provenance: crate::commissioning::types::TuneProvenance::default(),
             position_tune: crate::commissioning::types::PositionTuneProvenance::default(),
             position_tune_outcome_code: 0,
+            motor_disarmed: false,
         }
     }
 

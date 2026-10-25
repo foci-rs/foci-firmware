@@ -1216,6 +1216,7 @@ fn sample_outer_result_for_dispatch() -> OuterResult {
         provenance: crate::commissioning::types::TuneProvenance::default(),
         position_tune: crate::commissioning::types::PositionTuneProvenance::default(),
         position_tune_outcome_code: 0,
+        motor_disarmed: false,
     }
 }
 
@@ -1284,6 +1285,7 @@ async fn outer_done_success_disarms_and_publishes_tuned_gains() {
             assert_eq!(status, 0);
             assert_eq!(result.velocity_p, outer.velocity_p);
             assert_eq!(result.position_p, outer.position_p);
+            assert!(result.motor_disarmed);
             assert!(actions.stop_trace);
             assert_eq!(actions.stepper, StepperPostAction::Stop);
         }
@@ -2227,6 +2229,114 @@ async fn outer_failed_unstable_drift_preserves_upstream_error() {
     }
 
     tmc_state().motor_armed.store(false, Ordering::Relaxed);
+}
+
+#[fixture_test]
+async fn cancelled_outer_tune_reports_the_motor_disarmed() {
+    let mut backend = MockBackend::new();
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(CommissioningEngine::new_commission(
+        0,
+        CommissionProfile::Balanced,
+    ));
+    let mut machine =
+        TerminalRestoreMachine::start_cancelled(EngineKind::OuterTune, state.channel, 4095);
+
+    let outcome =
+        super::drive_restore_machine(&mut machine, &mut engine, &mut backend, &mut state, None)
+            .await;
+
+    match outcome {
+        CommissionOutcome::Terminal {
+            reply: ReplyPayload::TuneResult { result, .. },
+            ..
+        } => assert!(result.motor_disarmed),
+        _ => panic!("expected TuneResult"),
+    }
+}
+
+#[fixture_test]
+async fn outer_failed_unstable_restore_reports_the_motor_disarmed() {
+    use core::sync::atomic::Ordering;
+    let mut backend = MockBackend::new();
+    backend.read_position_actual_sequence.push(100).unwrap();
+    backend.read_position_actual_sequence.push(120).unwrap();
+
+    let (_, _, mut gains) = fresh_state_locals();
+    let mut cal = true;
+    let mut en = true;
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(robustness_reversal_engine());
+    let err = crate::autotune::CommissionError::NoCurrent;
+
+    seed_stability_clock(&mut backend);
+
+    let outcome = drive_commission_result(
+        StepResult::OuterFailed(err),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+    )
+    .await;
+
+    match outcome {
+        CommissionOutcome::Terminal {
+            reply: ReplyPayload::TuneResult { result, .. },
+            actions,
+        } => {
+            assert_eq!(actions.stepper, StepperPostAction::Stop);
+            assert!(result.motor_disarmed);
+        }
+        _ => panic!("expected TuneResult"),
+    }
+
+    tmc_state().motor_armed.store(false, Ordering::Relaxed);
+}
+
+#[fixture_test]
+async fn outer_failed_stable_restore_reports_the_motor_still_armed() {
+    use core::sync::atomic::Ordering;
+    let mut backend = MockBackend::new();
+    backend.read_position_actual_sequence.push(1000).unwrap();
+    backend.read_position_actual_sequence.push(1001).unwrap();
+    backend.read_position_actual_sequence.push(1000).unwrap();
+    backend.read_position_actual_sequence.push(999).unwrap();
+    backend.read_position_actual_sequence.push(1000).unwrap();
+
+    let (_, _, mut gains) = fresh_state_locals();
+    let mut cal = true;
+    let mut en = true;
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(robustness_reversal_engine());
+    let err = crate::autotune::CommissionError::VelocityValidationFailed;
+    seed_motor_sentinel(&mut backend).await;
+
+    seed_stability_clock(&mut backend);
+
+    let outcome = drive_commission_result(
+        StepResult::OuterFailed(err),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+    )
+    .await;
+
+    match outcome {
+        CommissionOutcome::Terminal {
+            reply: ReplyPayload::TuneResult { result, .. },
+            actions,
+        } => {
+            assert_eq!(actions.stepper, StepperPostAction::ArmPreservePosition);
+            assert!(!result.motor_disarmed);
+        }
+        _ => panic!("expected TuneResult"),
+    }
+
+    tmc_state().motor_armed.store(false, Ordering::Relaxed);
+    clear_motor_sentinel();
 }
 
 #[fixture_test]

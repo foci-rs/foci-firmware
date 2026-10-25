@@ -1369,6 +1369,8 @@ pub struct OuterResult {
     /// Wire code of the specific `PositionTuneOutcome` behind a
     /// `CommissionError::PositionTuneFailed`.
     pub position_tune_outcome_code: u8,
+    /// True when the firmware disarmed the motor as part of this terminal.
+    pub motor_disarmed: bool,
 }
 
 impl Default for OuterResult {
@@ -1388,6 +1390,7 @@ impl Default for OuterResult {
             provenance: TuneProvenance::default(),
             position_tune: PositionTuneProvenance::default(),
             position_tune_outcome_code: 0,
+            motor_disarmed: false,
         }
     }
 }

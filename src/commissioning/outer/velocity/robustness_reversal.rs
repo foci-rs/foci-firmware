@@ -1845,6 +1845,7 @@ pub(crate) fn robustness_pass_outer_result(
         provenance,
         position_tune: crate::commissioning::types::PositionTuneProvenance::default(),
         position_tune_outcome_code: 0,
+        motor_disarmed: false,
     }
 }
 

@@ -769,6 +769,10 @@ impl TerminalRestoreMachine {
                     };
                     state.tmc.commission_in_flight.store(false, Relaxed);
                     let consumed = self.take_engine(engine);
+                    let result = OuterResult {
+                        motor_disarmed: true,
+                        ..result
+                    };
                     return RestoreStep::Done(CommissionOutcome::Terminal {
                         reply: ReplyPayload::TuneResult {
                             oid: consumed.oid(),
@@ -1406,6 +1410,7 @@ impl TerminalRestoreMachine {
         let mut result = zero_outer_result();
         result.position_tune_outcome_code = position_tune_outcome_code;
         result.position_tune = position_tune_provenance;
+        result.motor_disarmed = matches!(actions.stepper, StepperPostAction::Stop);
 
         CommissionOutcome::Terminal {
             reply: ReplyPayload::TuneResult {
@@ -1570,7 +1575,10 @@ impl TerminalRestoreMachine {
                 ReplyPayload::TuneResult {
                     oid,
                     status,
-                    result: zero_outer_result(),
+                    result: OuterResult {
+                        motor_disarmed: true,
+                        ..zero_outer_result()
+                    },
                     safety_fault: None,
                     robustness_evidence: None,
                 }
