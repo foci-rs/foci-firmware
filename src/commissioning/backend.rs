@@ -242,6 +242,12 @@ pub trait CommissionBoardConfig {
     /// Returns `None` until the complete motion scale has been configured.
     fn configured_physical_step_width(&self) -> Option<u32>;
 
+    /// Published logical planner steps per mechanical revolution, the unit of the step queue
+    /// the stimulus feeds.
+    ///
+    /// Returns `None` until the complete motion scale has been configured.
+    fn configured_planner_steps_per_rev(&self) -> Option<u32>;
+
     fn mechanical_encoder_quadrature_counts_per_rev(&self) -> u32;
 
     /// Configured motor electrical pole-pair count.
@@ -366,6 +372,9 @@ pub trait CommissionTmcSpiAccess {
 /// Opt-in access to a production TMC channel state for shared backend impls.
 pub trait CommissionTmcStateAccess {
     fn tmc_state(&self) -> &'static crate::state::tmc::TmcChannelState;
+
+    /// The channel's stepper state, which publishes the logical planner scale.
+    fn stepper_state(&self) -> Option<&'static crate::state::stepper::StepperChannelState>;
 }
 
 /// Opt-in enable-pin hook for shared motor-control backend impls.
@@ -550,6 +559,10 @@ impl<'a, Spi, Pin, Hooks> CommissionTmcStateAccess
 {
     fn tmc_state(&self) -> &'static crate::state::tmc::TmcChannelState {
         self.tmc_state
+    }
+
+    fn stepper_state(&self) -> Option<&'static crate::state::stepper::StepperChannelState> {
+        crate::state::stepper::stepper_channel(self.channel)
     }
 }
 
@@ -853,6 +866,11 @@ where
 
     fn configured_physical_step_width(&self) -> Option<u32> {
         self.tmc_state().physical_step_width()
+    }
+
+    fn configured_planner_steps_per_rev(&self) -> Option<u32> {
+        self.stepper_state()?
+            .planner_steps_per_rev(self.tmc_state())
     }
 
     fn mechanical_encoder_quadrature_counts_per_rev(&self) -> u32 {

@@ -404,11 +404,9 @@ async fn predict<B: CommissioningBackend>(
         bounds::margin_permille(state.profile),
     )?;
     state.ff_permille = backend.velocity_feedforward_gain_permille();
-    let steps_per_rev = 65_536
-        / backend
-            .configured_physical_step_width()
-            .filter(|width| *width > 0)
-            .ok_or(PositionTuneOutcome::ConfigurationInvalid)?;
+    let steps_per_rev = backend
+        .configured_planner_steps_per_rev()
+        .ok_or(PositionTuneOutcome::ConfigurationInvalid)?;
     let excursion_mrev = budget.max_stroke_travel_mrev / 2;
     let request = |speed_mrev_s: u32| StrokeRequest {
         speed_mrev_s,
@@ -524,11 +522,9 @@ async fn arm_stroke<B: CommissioningBackend>(
         state.feedforward_paths_active = backend.feedforward_path_flags();
     }
 
-    let steps_per_rev = 65_536
-        / backend
-            .configured_physical_step_width()
-            .filter(|width| *width > 0)
-            .ok_or(PositionTuneOutcome::ConfigurationInvalid)?;
+    let steps_per_rev = backend
+        .configured_planner_steps_per_rev()
+        .ok_or(PositionTuneOutcome::ConfigurationInvalid)?;
     let request = stroke_request(
         leg.speed_mrev_s,
         &safety.budget,
@@ -1093,6 +1089,7 @@ mod tests {
         backend.current_limit_value = current_limit(5_000);
         backend.mechanical_encoder_quadrature_counts_per_rev_value = 4_000;
         backend.configured_physical_width = Some(8);
+        backend.configured_planner_steps = Some(8_192);
         let _ = backend.registers.insert(
             PID_VELOCITY_P_VELOCITY_I.addr(),
             PidGainPair::new(PidPGain::new(350).unwrap(), PidIGain::ZERO).register_value(),
@@ -1247,6 +1244,37 @@ mod tests {
             homing_cap.expect("a homing stroke armed"),
             motion_cap.expect("a motion stroke armed")
         );
+    }
+
+    #[fixture_test]
+    fn strokes_are_planned_in_logical_planner_steps() {
+        let mut backend = position_tune_backend();
+        backend.configured_planner_steps = Some(6_400);
+        let mut phase = position_tune_phase();
+        let mut workspace = TransientBuffer::new();
+
+        predicted_start_of(&mut phase, &mut backend);
+        let _ = pollster::block_on(step_position_tune(&mut phase, &mut workspace, &mut backend));
+
+        let mut forward_steps = 0_u32;
+        let mut reverse_steps = 0_u32;
+        let mut forward = None;
+        for op in backend.stimulus_log.iter() {
+            match *op {
+                StimulusOp::SetDirection(direction) => forward = Some(direction),
+                StimulusOp::Queue(segment) if forward == Some(true) => {
+                    forward_steps += u32::from(segment.count);
+                }
+                StimulusOp::Queue(segment) if forward == Some(false) => {
+                    reverse_steps += u32::from(segment.count);
+                }
+                _ => {}
+            }
+        }
+        let excursion_mrev = position_tune_budget().max_stroke_travel_mrev / 2;
+        let expected_steps = excursion_mrev * 6_400 / 1_000;
+        assert_eq!(forward_steps, expected_steps);
+        assert_eq!(reverse_steps, expected_steps);
     }
 
     #[fixture_test]

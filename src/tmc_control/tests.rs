@@ -3952,6 +3952,7 @@ fn position_tune_cancel_backend() -> MockBackend {
     backend.current_limit_value = current_limit(5_000);
     backend.mechanical_encoder_quadrature_counts_per_rev_value = 4_000;
     backend.configured_physical_width = Some(8);
+    backend.configured_planner_steps = Some(8_192);
     let _ = backend.registers.insert(
         PID_VELOCITY_P_VELOCITY_I.addr(),
         foci_tmc4671::pid::PidGainPair::new(

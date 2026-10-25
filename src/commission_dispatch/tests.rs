@@ -1999,6 +1999,7 @@ async fn position_tune_failure_carries_real_rung_evidence_through_the_dispatch_p
     backend.current_limit_value = current_limit(5_000);
     backend.mechanical_encoder_quadrature_counts_per_rev_value = 4_000;
     backend.configured_physical_width = Some(8);
+    backend.configured_planner_steps = Some(8_192);
     let _ = backend.registers.insert(
         PID_VELOCITY_P_VELOCITY_I.addr(),
         PidGainPair::new(PidPGain::new(350).unwrap(), PidIGain::ZERO).register_value(),

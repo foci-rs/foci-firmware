@@ -288,6 +288,7 @@ pub struct MockBackend {
     pub dsadc_mdec_register_value: u32,
     pub excitation_voltage_value: u16,
     pub configured_physical_width: Option<u32>,
+    pub configured_planner_steps: Option<u32>,
     pub mechanical_encoder_quadrature_counts_per_rev_value: u32,
     pub adc_offsets_ready_value: bool,
     pub adc_vm_offset_value: Option<crate::state::tmc::AdcVmOffsetSnapshot>,
@@ -384,6 +385,7 @@ impl MockBackend {
             dsadc_mdec_register_value: 0,
             excitation_voltage_value: 1024,
             configured_physical_width: None,
+            configured_planner_steps: None,
             mechanical_encoder_quadrature_counts_per_rev_value: 4000,
             adc_offsets_ready_value: true,
             adc_vm_offset_value: None,
@@ -932,6 +934,10 @@ impl CommissionBoardConfig for MockBackend {
 
     fn configured_physical_step_width(&self) -> Option<u32> {
         self.configured_physical_width
+    }
+
+    fn configured_planner_steps_per_rev(&self) -> Option<u32> {
+        self.configured_planner_steps
     }
 
     fn mechanical_encoder_quadrature_counts_per_rev(&self) -> u32 {
