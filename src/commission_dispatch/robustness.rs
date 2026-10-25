@@ -66,6 +66,9 @@ pub const ROBUSTNESS_CAUSE_UNEXPECTED_STATE: u8 = 20;
 pub const ROBUSTNESS_CAUSE_ORIGIN_RECOVERY_FAULT: u8 = 21;
 /// The outer dispatch aborted the run for a reason outside this phase's step loop.
 pub const ROBUSTNESS_CAUSE_DISPATCH_ABORT: u8 = 22;
+/// At least one direction's maximum scored reversal velocity peak reached the envelope
+/// fraction of its leg target.
+pub const ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED: u8 = 23;
 
 /// Definitive rejection of a robustness-reversal preflight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -170,11 +173,12 @@ fn zero_robustness_evidence() -> RobustnessEvidence {
         median_reconvergence_ms: 0,
         max_reconvergence_ms: 0,
         median_forward_settle_ms: 0,
-        overshoot_peak_counts: 0,
+        peak_rate_permille: 0,
         valid_cycles: 0,
         trip_count: 0,
         retry_count: 0,
         inconclusive: false,
+        peak_unscored: true,
     };
     RobustnessEvidence {
         directions: [direction, direction],

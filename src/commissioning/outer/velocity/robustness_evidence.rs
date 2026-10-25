@@ -5,12 +5,12 @@
 //! per-cycle triples.
 
 use super::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION;
-use super::robustness_metrics::{TRIP_IAE, TRIP_RESIDUAL, TRIP_TIME, worse_of};
+use super::robustness_metrics::{TRIP_IAE, TRIP_PEAK, TRIP_RESIDUAL, TRIP_TIME, worse_of};
 use super::robustness_reporting::CycleWire;
 use crate::commission_dispatch::robustness::{
     ROBUSTNESS_CAUSE_IAE_EXCEEDED, ROBUSTNESS_CAUSE_PASS,
     ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE, ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED,
-    ROBUSTNESS_CAUSE_RESIDUAL_EXCEEDED,
+    ROBUSTNESS_CAUSE_RESIDUAL_EXCEEDED, ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED,
 };
 
 /// One reversal direction's cycle-summary robustness evidence, as reported
@@ -23,9 +23,9 @@ pub struct RobustnessDirectionSummary {
     pub max_reconvergence_ms: u16,
     /// Median forward-settle time across valid cycles, in milliseconds.
     pub median_forward_settle_ms: u16,
-    /// Saturating count of cycles whose settled tail overshot the target
-    /// before converging.
-    pub overshoot_peak_counts: u16,
+    /// Maximum reversal velocity peak over scored valid cycles, in permille of the leg target;
+    /// 0 = not scored.
+    pub peak_rate_permille: u16,
     /// Count of cycle slots that filled with conclusive evidence.
     pub valid_cycles: u8,
     /// 1 if this direction contributed a rejection (median threshold trip or latched tail),
@@ -35,6 +35,8 @@ pub struct RobustnessDirectionSummary {
     pub retry_count: u8,
     /// True when this direction never reached the minimum valid-cycle floor.
     pub inconclusive: bool,
+    /// True when no valid cycle's reversal peak was scored, so `peak_rate_permille` is 0.
+    pub peak_unscored: bool,
 }
 
 /// Both reversal directions' robustness evidence for one candidate.
@@ -59,7 +61,7 @@ pub struct RobustnessEvidence {
 /// Derive the primary `ROBUSTNESS_CAUSE_*` from both directions tripped masks
 /// and inconclusive flags.
 ///
-/// Priority: first tripped threshold cause (time > residual > IAE), then
+/// Priority: first tripped threshold cause (time > peak > residual > IAE), then
 /// `RECONVERGENCE_INCONCLUSIVE` if either direction is inconclusive, else `PASS`.
 /// Never returns `ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY` or the internal-fault causes.
 pub(crate) fn summary_cause(
@@ -71,6 +73,8 @@ pub(crate) fn summary_cause(
     let combined = worse_of(tripped_a, tripped_b);
     if combined & TRIP_TIME != 0 {
         ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED
+    } else if combined & TRIP_PEAK != 0 {
+        ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED
     } else if combined & TRIP_RESIDUAL != 0 {
         ROBUSTNESS_CAUSE_RESIDUAL_EXCEEDED
     } else if combined & TRIP_IAE != 0 {
@@ -117,6 +121,27 @@ mod tests {
         assert_eq!(
             summary_cause(TRIP_IAE, 0, false, false),
             ROBUSTNESS_CAUSE_IAE_EXCEEDED
+        );
+    }
+
+    #[test]
+    fn summary_cause_ranks_peak_after_time_and_before_residual_and_iae() {
+        use crate::commission_dispatch::robustness::*;
+        use crate::commissioning::outer::velocity::robustness_metrics::{
+            TRIP_IAE, TRIP_PEAK, TRIP_RESIDUAL, TRIP_TIME,
+        };
+
+        assert_eq!(
+            summary_cause(TRIP_PEAK | TRIP_IAE, 0, false, false),
+            ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED
+        );
+        assert_eq!(
+            summary_cause(TRIP_TIME | TRIP_PEAK, 0, false, false),
+            ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED
+        );
+        assert_eq!(
+            summary_cause(TRIP_PEAK, TRIP_RESIDUAL, false, false),
+            ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED
         );
     }
 }

@@ -7,6 +7,8 @@
 use crate::autotune::velocity_measurement::VELOCITY_RATE_Q_SCALE;
 use crate::autotune::velocity_measurement::VelocityObservationSource;
 
+use super::sweep_plan::{ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM};
+
 const MICROS_PER_SECOND: i128 = 1_000_000;
 
 const OVERSHOOT_SCALE_Q: i64 = 1_000_000 * VELOCITY_RATE_Q_SCALE;
@@ -384,6 +386,14 @@ pub(crate) const TRIP_TIME: u8 = 1 << 0;
 pub(crate) const TRIP_RESIDUAL: u8 = 1 << 1;
 /// Bit set in `tripped_mask` when `recovery_iae_q` exceeds `iae_max_q`.
 pub(crate) const TRIP_IAE: u8 = 1 << 2;
+/// Bit set in a direction's tripped mask when its maximum scored reversal velocity peak
+/// reaches [`REVERSAL_PEAK_REJECT_PERMILLE`].
+pub(crate) const TRIP_PEAK: u8 = 1 << 3;
+
+/// Reversal velocity peak, in permille of the leg target, at which a direction is rejected:
+/// the outer-safety envelope fraction.
+pub(crate) const REVERSAL_PEAK_REJECT_PERMILLE: u16 =
+    (1000 * ENVELOPE_PROPORTIONAL_NUM / ENVELOPE_PROPORTIONAL_DEN) as u16;
 
 /// Settle-band half-width, as a percentage of `|target_rate_q|`.
 pub(crate) const ROBUSTNESS_BAND_FRACTION_PCT: u32 = 5;
@@ -403,6 +413,9 @@ pub(crate) const ROBUSTNESS_IAE_REFERENCE_WINDOW_US: u32 = 500_000;
 pub(crate) const ROBUSTNESS_TRIP_TIME_HEADROOM_US: u32 = 100_000;
 
 /// Probe-leg cruise target as a percentage of the campaign amplitude.
+///
+/// Legs at 85% put the cap at 1.76x of the leg target while the gate rejects at 1.5x, so a
+/// reversal rejected by the gate is still 15% or more below the cap.
 pub(crate) const ROBUSTNESS_LEG_AMPLITUDE_PCT: i32 = 85;
 
 /// Bounded retry count for an inconclusive probe leg.
@@ -500,6 +513,11 @@ pub(crate) fn worse_of(a: u8, b: u8) -> u8 {
 mod tests {
     use super::*;
     use crate::commissioning::outer::state::VelocityObservationRing;
+
+    #[test]
+    fn the_reversal_peak_bound_is_the_envelope_fraction() {
+        assert_eq!(REVERSAL_PEAK_REJECT_PERMILLE, 1500);
+    }
 
     #[test]
     fn band_entry_reports_first_stable_dwell_and_ignores_earlier_excursions() {

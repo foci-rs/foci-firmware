@@ -526,7 +526,6 @@ impl OuterSafetyLimits {
     /// Zero the primitive peak without opening a new primitive, so a caller can isolate the peak
     /// of one leg. The next two-sample window spans the reset and is kept out of the peak; its
     /// cap and ceiling evaluation is unchanged.
-    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) fn reset_primitive_peak(&mut self) {
         self.primitive_peak_milli_counts_per_s = 0;
         self.skip_next_peak_window = true;

@@ -3163,11 +3163,12 @@ mod tests {
             median_reconvergence_ms: 4,
             max_reconvergence_ms: 4,
             median_forward_settle_ms: 3,
-            overshoot_peak_counts: 0,
+            peak_rate_permille: 0,
             valid_cycles: 1,
             trip_count: 0,
             retry_count: 1,
             inconclusive: false,
+            peak_unscored: false,
         };
         let example_cycles: [Option<CycleWire>; 5] = [
             Some(CycleWire {
@@ -3318,11 +3319,12 @@ mod tests {
             median_reconvergence_ms: 0,
             max_reconvergence_ms: 0,
             median_forward_settle_ms: 0,
-            overshoot_peak_counts: 0,
+            peak_rate_permille: 0,
             valid_cycles: 1,
             trip_count: 0,
             retry_count: 0,
             inconclusive: true,
+            peak_unscored: false,
         };
         let terminal = RobustnessReversalTerminal {
             schema_revision: ROBUSTNESS_SCHEMA_REVISION,

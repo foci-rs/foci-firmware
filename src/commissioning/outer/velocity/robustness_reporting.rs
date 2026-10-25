@@ -7,9 +7,9 @@ use crate::commissioning::types::RobustnessReversalTerminal;
 /// Independent robustness evidence schema revision.
 ///
 /// Packed as a `u8` on the wire; kept `u16` for schema comparisons elsewhere.
-pub const ROBUSTNESS_SCHEMA_REVISION: u16 = 4;
+pub const ROBUSTNESS_SCHEMA_REVISION: u16 = 5;
 
-/// Bytes in the compact schema-4 robustness-terminal reply payload.
+/// Bytes in the compact schema-5 robustness-terminal reply payload.
 pub const ROBUSTNESS_TERMINAL_REPLY_BYTES: usize = 51;
 
 /// Scale factor from wire IAE encoding to internal microseconds.
@@ -23,7 +23,8 @@ fn saturating_i64_to_i32(value: i64) -> i32 {
 
 /// Encode the compact robustness-terminal ordinary reply payload.
 ///
-/// Layout: 15-byte header, 12 bytes per reversal direction, 12-byte run-level tail
+/// Layout: 15-byte header, 12 bytes per reversal direction (byte 11 is a flags byte: bit 0
+/// `inconclusive`, bit 1 `peak_unscored`), 12-byte run-level tail
 /// (`plant_rate_q` i64, `iae_max_q` i32 scaled by [`IAE_WIRE_TO_INTERNAL_US_PER_S`]).
 /// Off-terminal medians are carried by the detailed reply instead.
 pub(crate) fn encode_robustness_terminal_reply(
@@ -68,7 +69,7 @@ pub(crate) fn encode_robustness_terminal_reply(
         push_reply(
             &mut bytes,
             &mut offset,
-            &direction.overshoot_peak_counts.to_le_bytes(),
+            &direction.peak_rate_permille.to_le_bytes(),
         );
         push_reply(
             &mut bytes,
@@ -77,7 +78,7 @@ pub(crate) fn encode_robustness_terminal_reply(
                 direction.valid_cycles,
                 direction.trip_count,
                 direction.retry_count,
-                u8::from(direction.inconclusive),
+                u8::from(direction.inconclusive) | (u8::from(direction.peak_unscored) << 1),
             ],
         );
     }
@@ -92,7 +93,7 @@ pub(crate) fn encode_robustness_terminal_reply(
     bytes
 }
 
-/// Bytes in the schema-4 per-cycle robustness-evidence payload.
+/// Bytes in the schema-5 per-cycle robustness-evidence payload.
 pub(crate) const ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES: usize = 51;
 
 const CYCLE_SLOT_UNFILLED: u16 = 0xFFFF;
@@ -108,7 +109,7 @@ pub(crate) struct CycleWire {
     pub forward_settle_ms: u16,
 }
 
-/// Encode one direction's schema-4 per-cycle robustness-evidence payload.
+/// Encode one direction's schema-5 per-cycle robustness-evidence payload.
 ///
 /// Layout: 14-byte header, [`ROBUSTNESS_CYCLES_PER_DIRECTION`] 6-byte cycle triples, tail
 /// count, and displaced-tail triple. Unfilled slots encode as [`CYCLE_SLOT_UNFILLED`].
@@ -190,11 +191,12 @@ mod tests {
             median_reconvergence_ms: 1_000,
             max_reconvergence_ms: 1_200,
             median_forward_settle_ms: 300,
-            overshoot_peak_counts: 7,
+            peak_rate_permille: 0,
             valid_cycles: 5,
             trip_count: 2,
             retry_count: 1,
             inconclusive: false,
+            peak_unscored: true,
         }
     }
 
@@ -203,11 +205,12 @@ mod tests {
             median_reconvergence_ms: 2_000,
             max_reconvergence_ms: 2_500,
             median_forward_settle_ms: 450,
-            overshoot_peak_counts: 3,
+            peak_rate_permille: 1_234,
             valid_cycles: 4,
             trip_count: 1,
             retry_count: 2,
             inconclusive: true,
+            peak_unscored: false,
         }
     }
 
@@ -265,14 +268,14 @@ mod tests {
 
         #[rustfmt::skip]
         let expected: [u8; ROBUSTNESS_TERMINAL_REPLY_BYTES] = [
-            0x04,
+            0x05,
             0x44, 0x33, 0x22, 0x11,
             0x01, 0x02,
             0x00, 0x04, 0x00, 0x02,
             0x24, 0xFA, 0xFF, 0xFF,
-            0xE8, 0x03, 0xB0, 0x04, 0x2C, 0x01, 0x07, 0x00,
-            0x05, 0x02, 0x01, 0x00,
-            0xD0, 0x07, 0xC4, 0x09, 0xC2, 0x01, 0x03, 0x00,
+            0xE8, 0x03, 0xB0, 0x04, 0x2C, 0x01, 0x00, 0x00,
+            0x05, 0x02, 0x01, 0x02,
+            0xD0, 0x07, 0xC4, 0x09, 0xC2, 0x01, 0xD2, 0x04,
             0x04, 0x01, 0x02, 0x01,
             0x60, 0xEA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0xC0, 0xD4, 0x01, 0x00,
@@ -315,12 +318,15 @@ mod tests {
             );
             assert_eq!(
                 u16::from_le_bytes([bytes[base + 6], bytes[base + 7]]),
-                direction.overshoot_peak_counts
+                direction.peak_rate_permille
             );
             assert_eq!(bytes[base + 8], direction.valid_cycles);
             assert_eq!(bytes[base + 9], direction.trip_count);
             assert_eq!(bytes[base + 10], direction.retry_count);
-            assert_eq!(bytes[base + 11], u8::from(direction.inconclusive));
+            assert_eq!(
+                bytes[base + 11],
+                u8::from(direction.inconclusive) | (u8::from(direction.peak_unscored) << 1)
+            );
         }
 
         assert_eq!(
@@ -362,11 +368,12 @@ mod tests {
             median_reconvergence_ms: u16::MAX,
             max_reconvergence_ms: u16::MAX,
             median_forward_settle_ms: u16::MAX,
-            overshoot_peak_counts: u16::MAX,
+            peak_rate_permille: u16::MAX,
             valid_cycles: u8::MAX,
             trip_count: u8::MAX,
             retry_count: u8::MAX,
             inconclusive: true,
+            peak_unscored: true,
         };
         terminal.evidence.directions = [saturated, saturated];
 
@@ -390,7 +397,7 @@ mod tests {
             assert_eq!(bytes[base + 8], u8::MAX);
             assert_eq!(bytes[base + 9], u8::MAX);
             assert_eq!(bytes[base + 10], u8::MAX);
-            assert_eq!(bytes[base + 11], 1);
+            assert_eq!(bytes[base + 11], 0b11);
         }
     }
 
@@ -410,7 +417,7 @@ mod tests {
 
         #[rustfmt::skip]
         let expected: [u8; ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES] = [
-            0x00, 0x04,
+            0x00, 0x05,
             0x11, 0x00, 0x00, 0x00,
             0x09, 0x00, 0x00, 0x00,
             0x15, 0x00, 0x00, 0x00,

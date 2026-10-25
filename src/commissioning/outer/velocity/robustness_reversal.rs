@@ -42,6 +42,7 @@ use foci_tmc4671::registers::{
 
 use super::band_confirmation::{CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT};
 use super::integral_reproduction::AcceptancePoint;
+use super::peak_ratio::scored_peak_permille;
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage, RungOriginRecoveryConfig,
     RungOriginRecoveryOutcome, RungOriginRecoveryPlan, RungOriginRecoveryResources,
@@ -53,10 +54,10 @@ use super::robustness_cycles::{
 };
 use super::robustness_evidence::{RobustnessDirectionSummary, RobustnessEvidence, summary_cause};
 use super::robustness_metrics::{
-    PROBE_BAND_WINDOW_SAMPLES, ROBUSTNESS_BAND_DWELL_US, ROBUSTNESS_BAND_FRACTION_PCT,
-    ROBUSTNESS_LEG_AMPLITUDE_PCT, ROBUSTNESS_MEASUREMENT_BUDGET_US, ReversalMetrics,
-    ReversalOnlineAccumulator, RobustnessThresholds, dac_rms_q, reduce_plant_rate_q,
-    robustness_thresholds_for, tripped_mask,
+    PROBE_BAND_WINDOW_SAMPLES, REVERSAL_PEAK_REJECT_PERMILLE, ROBUSTNESS_BAND_DWELL_US,
+    ROBUSTNESS_BAND_FRACTION_PCT, ROBUSTNESS_LEG_AMPLITUDE_PCT, ROBUSTNESS_MEASUREMENT_BUDGET_US,
+    ReversalMetrics, ReversalOnlineAccumulator, RobustnessThresholds, TRIP_PEAK, dac_rms_q,
+    reduce_plant_rate_q, robustness_thresholds_for, tripped_mask,
 };
 use super::robustness_reporting::CycleWire;
 use super::sweep_analysis::poll_stationarity;
@@ -145,8 +146,10 @@ pub(crate) struct RobustnessReversalSession {
     run_started_us: u64,
     direction: usize,
     ledgers: [CycleLedger; DIRECTION_COUNT],
-    /// Running max overshoot in counts across each direction's cycles.
-    peak_overshoot_counts: [u16; DIRECTION_COUNT],
+    /// Maximum scored reversal velocity peak per direction, in permille of the leg target.
+    peak_rate_permille: [u16; DIRECTION_COUNT],
+    /// Count of scored reversal legs per direction.
+    peak_scored_cycles: [u8; DIRECTION_COUNT],
     /// Per-cycle wire triples, mirroring each ledger's filled slots.
     cycle_wires: [[Option<CycleWire>; ROBUSTNESS_CYCLES_PER_DIRECTION]; DIRECTION_COUNT],
     /// The grace-retried (displaced) tail cycle wire triple, per direction.
@@ -173,7 +176,8 @@ impl RobustnessReversalSession {
             run_started_us: 0,
             direction: 0,
             ledgers: [CycleLedger::new(iae_max_q), CycleLedger::new(iae_max_q)],
-            peak_overshoot_counts: [0; DIRECTION_COUNT],
+            peak_rate_permille: [0; DIRECTION_COUNT],
+            peak_scored_cycles: [0; DIRECTION_COUNT],
             cycle_wires: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; DIRECTION_COUNT],
             displaced_tail_wires: [None; DIRECTION_COUNT],
             cycle_cursor: [0; DIRECTION_COUNT],
@@ -891,8 +895,18 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         }
                     };
                     let overshoot = workspace.capture.reversal_overshoot_counts();
-                    session.peak_overshoot_counts[direction] =
-                        session.peak_overshoot_counts[direction].max(overshoot);
+                    let peak = scored_peak_permille(
+                        safety.primitive_peak_milli_counts_per_s(),
+                        leg_amplitude_rpm(&session.point).unsigned_abs(),
+                        counts_per_rev,
+                        REVERSAL_PEAK_REJECT_PERMILLE,
+                    );
+                    if peak != 0 {
+                        session.peak_rate_permille[direction] =
+                            session.peak_rate_permille[direction].max(peak);
+                        session.peak_scored_cycles[direction] =
+                            session.peak_scored_cycles[direction].saturating_add(1);
+                    }
                     session.pending_cycle = Some(PendingCycle {
                         metrics,
                         wire: CycleWire {
@@ -1322,6 +1336,8 @@ async fn begin_capture<B: CommissioningBackend>(
                 counts_per_rev,
             ));
         }
+    } else {
+        safety.reset_primitive_peak();
     }
     workspace.observations.clear();
     workspace.analysis.reset();
@@ -1568,22 +1584,43 @@ fn median_tripped(ledger: &CycleLedger, point: &AcceptancePoint, counts_per_rev:
     tripped_mask(&median_metrics, &thresholds)
 }
 
+fn peak_tripped(peak_rate_permille: u16, peak_scored_cycles: u8) -> u8 {
+    if peak_scored_cycles > 0 && peak_rate_permille >= REVERSAL_PEAK_REJECT_PERMILLE {
+        TRIP_PEAK
+    } else {
+        0
+    }
+}
+
+fn direction_tripped(
+    session: &RobustnessReversalSession,
+    direction: usize,
+    counts_per_rev: u32,
+) -> u8 {
+    median_tripped(&session.ledgers[direction], &session.point, counts_per_rev)
+        | peak_tripped(
+            session.peak_rate_permille[direction],
+            session.peak_scored_cycles[direction],
+        )
+}
+
 fn direction_summary(
-    ledger: &CycleLedger,
-    peak_overshoot_counts: u16,
-    point: &AcceptancePoint,
+    session: &RobustnessReversalSession,
+    direction: usize,
     counts_per_rev: u32,
 ) -> RobustnessDirectionSummary {
-    let tripped = median_tripped(ledger, point, counts_per_rev);
+    let ledger = &session.ledgers[direction];
+    let tripped = direction_tripped(session, direction, counts_per_rev);
     RobustnessDirectionSummary {
         median_reconvergence_ms: ledger.median_reconvergence_ms(),
         max_reconvergence_ms: ledger.max_reconvergence_ms(),
         median_forward_settle_ms: ledger.median_forward_settle_ms(),
-        overshoot_peak_counts: peak_overshoot_counts,
+        peak_rate_permille: session.peak_rate_permille[direction],
         valid_cycles: ledger.valid_cycles(),
         trip_count: u8::from(tripped != 0 || ledger.tail_rejected()),
         retry_count: ledger.inconclusive_retries_used(),
         inconclusive: !ledger.meets_floor(),
+        peak_unscored: session.peak_scored_cycles[direction] == 0,
     }
 }
 
@@ -1593,18 +1630,8 @@ fn assembled_evidence(
 ) -> RobustnessEvidence {
     RobustnessEvidence {
         directions: [
-            direction_summary(
-                &session.ledgers[0],
-                session.peak_overshoot_counts[0],
-                &session.point,
-                counts_per_rev,
-            ),
-            direction_summary(
-                &session.ledgers[1],
-                session.peak_overshoot_counts[1],
-                &session.point,
-                counts_per_rev,
-            ),
+            direction_summary(session, 0, counts_per_rev),
+            direction_summary(session, 1, counts_per_rev),
         ],
         residual_medians_q: [
             session.ledgers[0].median_settled_residual_q(),
@@ -1633,8 +1660,8 @@ fn complete_terminal<B: CommissioningBackend>(
     counts_per_rev: u32,
 ) -> StepResult {
     let evidence = assembled_evidence(session, counts_per_rev);
-    let tripped_a = median_tripped(&session.ledgers[0], &session.point, counts_per_rev);
-    let tripped_b = median_tripped(&session.ledgers[1], &session.point, counts_per_rev);
+    let tripped_a = direction_tripped(session, 0, counts_per_rev);
+    let tripped_b = direction_tripped(session, 1, counts_per_rev);
     let (plant_rate_q, thresholds) = constructed_thresholds(&session.point, counts_per_rev);
     let inconclusive_a = !session.ledgers[0].meets_floor();
     let inconclusive_b = !session.ledgers[1].meets_floor();
@@ -1853,9 +1880,10 @@ pub(crate) fn robustness_pass_outer_result(
 mod tests {
     use super::*;
     use crate::commission_dispatch::robustness::{
-        ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED, ROBUSTNESS_CAUSE_PASS,
-        ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE, ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED,
-        ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED,
+        ROBUSTNESS_CAUSE_IAE_EXCEEDED, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED,
+        ROBUSTNESS_CAUSE_PASS, ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE,
+        ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED, ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID,
+        ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED, ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED,
         ROBUSTNESS_CAUSE_TAIL_REPEATED,
     };
     use crate::commission_dispatch::test_support::{
@@ -1867,7 +1895,7 @@ mod tests {
         IntegralPlanIdentity, IntegralRetentionSlot,
     };
     use crate::commissioning::outer::velocity::robustness_metrics::{
-        ROBUSTNESS_MAX_RETRIES, ROBUSTNESS_THRESHOLDS,
+        REVERSAL_PEAK_REJECT_PERMILLE, ROBUSTNESS_MAX_RETRIES, ROBUSTNESS_THRESHOLDS,
     };
     use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use crate::commissioning::types::OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY;
@@ -2981,32 +3009,152 @@ mod tests {
         assert_eq!(evidence.dac_rms_medians_q[1], 0);
     }
 
+    fn burst_motion(
+        burst_phase: CapturePhase,
+        burst_delta: i32,
+        burst_ticks: u32,
+    ) -> impl FnMut(CapturePhase, u32, i32) -> i32 {
+        move |phase, tick, target| {
+            if target == 0 {
+                0
+            } else if phase == burst_phase && tick < burst_ticks {
+                target.signum() * burst_delta
+            } else {
+                target.signum() * STEADY_DELTA
+            }
+        }
+    }
+
+    fn drive_tracked(
+        motion: impl FnMut(CapturePhase, u32, i32) -> i32,
+    ) -> (RobustnessReversalTerminal, RunParts) {
+        drive_parts(RunParts::new(recovery_point()), Envelope::Tracked, motion)
+    }
+
     #[test]
     fn overshoot_reaches_the_terminal_when_a_reverse_leg_outpaces_its_target() {
-        let (terminal, _backend, session) =
-            drive_scripted(test_point(), |phase, leg_tick, target| {
-                if target == 0 {
-                    return 0;
-                }
-                match phase {
-                    CapturePhase::Reverse if leg_tick < 3 => target.signum() * STEADY_DELTA * 2,
-                    _ => target.signum() * STEADY_DELTA,
-                }
-            });
-        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        let (terminal, parts) =
+            drive_tracked(burst_motion(CapturePhase::Reverse, STEADY_DELTA * 2, 3));
+
+        assert!(terminal.safety_fault.is_none());
         for direction in 0..DIRECTION_COUNT {
             assert!(
-                terminal.evidence.directions[direction].overshoot_peak_counts > 0,
+                terminal.evidence.directions[direction].peak_rate_permille > 1000,
                 "a genuine burst above the target rate must reach the wire"
             );
-            let first_cycle = session.cycle_wires[direction][0]
+            let first_cycle = parts.session.cycle_wires[direction][0]
                 .expect("a clean reversal run fills every cycle slot");
             assert!(
                 first_cycle.overshoot_counts > 0,
                 "the per-cycle evidence reply's own overshoot_counts field must \
-                 carry the burst too, not just the terminal's aggregate max"
+                 carry the burst too, not just the terminal's aggregate peak"
             );
         }
+    }
+
+    #[test]
+    fn a_reversal_peaking_at_the_envelope_fraction_rejects_with_the_peak_cause() {
+        let (terminal, _parts) =
+            drive_tracked(burst_motion(CapturePhase::Reverse, STEADY_DELTA * 3 / 2, 5));
+
+        assert!(terminal.safety_fault.is_none());
+        assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED);
+        for direction in terminal.evidence.directions {
+            assert!(direction.peak_rate_permille >= REVERSAL_PEAK_REJECT_PERMILLE);
+            assert!(!direction.peak_unscored);
+            assert_eq!(direction.trip_count, 1);
+        }
+    }
+
+    #[test]
+    fn a_reversal_under_the_bound_passes_and_reports_its_peak() {
+        let (terminal, _parts) =
+            drive_tracked(burst_motion(CapturePhase::Reverse, STEADY_DELTA * 6 / 5, 5));
+
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_PASS);
+        for direction in terminal.evidence.directions {
+            assert!(
+                (1150..=1250).contains(&direction.peak_rate_permille),
+                "peak {} permille",
+                direction.peak_rate_permille
+            );
+            assert!(!direction.peak_unscored);
+            assert_eq!(direction.trip_count, 0);
+        }
+    }
+
+    #[test]
+    fn the_establish_leg_peak_does_not_leak_into_the_reversal_peak() {
+        let (terminal, _parts) = drive_tracked(burst_motion(
+            CapturePhase::Establish,
+            STEADY_DELTA * 8 / 5,
+            5,
+        ));
+
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_PASS);
+        for direction in terminal.evidence.directions {
+            assert!(direction.peak_rate_permille < REVERSAL_PEAK_REJECT_PERMILLE);
+            assert!(!direction.peak_unscored);
+            assert_eq!(direction.trip_count, 0);
+        }
+    }
+
+    #[test]
+    fn a_direction_with_no_valid_cycles_reports_unscored_and_no_peak_trip() {
+        let (terminal, _parts) = drive_tracked(|phase, tick, target| {
+            if target == 0 {
+                0
+            } else if phase == CapturePhase::Reverse && target > 0 {
+                if tick < 5 {
+                    target.signum() * STEADY_DELTA * 8 / 5
+                } else {
+                    target.signum() * STEADY_DELTA / 2
+                }
+            } else {
+                target.signum() * STEADY_DELTA
+            }
+        });
+
+        assert!(terminal.safety_fault.is_none());
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE);
+        let unscored = terminal.evidence.directions[1];
+        assert_eq!(unscored.valid_cycles, 0);
+        assert!(unscored.peak_unscored);
+        assert_eq!(unscored.peak_rate_permille, 0);
+        assert_eq!(unscored.trip_count, 0);
+    }
+
+    #[test]
+    fn a_peak_trip_outranks_an_iae_trip_in_the_same_direction() {
+        let backend = test_backend();
+        let mut session =
+            RobustnessReversalSession::new(plant_identified_point(), 7, COUNTS_PER_REV);
+        for dir in 0..DIRECTION_COUNT {
+            session.ledgers[dir] = CycleLedger::new(i64::MAX);
+            for _ in 0..ROBUSTNESS_CYCLES_PER_DIRECTION {
+                session.ledgers[dir].record(CycleRecord::Conclusive(iae_metrics(5_000_000_000)));
+            }
+        }
+        let terminal_of = |session: &RobustnessReversalSession| {
+            let StepResult::RobustnessReversalTerminal(terminal) =
+                complete_terminal(session, &backend, COUNTS_PER_REV)
+            else {
+                panic!("complete_terminal must yield a robustness terminal");
+            };
+            terminal
+        };
+        assert_eq!(terminal_of(&session).cause, ROBUSTNESS_CAUSE_IAE_EXCEEDED);
+
+        session.peak_rate_permille[0] = 1_600;
+        session.peak_scored_cycles[0] = ROBUSTNESS_CYCLES_PER_DIRECTION as u8;
+        let terminal = terminal_of(&session);
+
+        assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED);
+        assert_eq!(terminal.evidence.directions[0].trip_count, 1);
     }
 
     #[test]
