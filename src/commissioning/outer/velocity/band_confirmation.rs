@@ -44,8 +44,7 @@ pub const CONFIRMATION_SLOT_ORDER: [VelocityDirection; 8] = [
 ];
 
 /// A discovery step whose velocity peak exceeds this fraction of its commanded target, in
-/// permille, is over-gained: a peak more than 40% over target. A policy fraction, not a machine
-/// constant.
+/// permille, is over-gained: a peak more than 40% over target.
 pub const STEP_PEAK_ADMISSION_PERMILLE: u16 = 1400;
 
 /// Pointwise 95% scale-inflation heuristic the nomination screen applies on top of the

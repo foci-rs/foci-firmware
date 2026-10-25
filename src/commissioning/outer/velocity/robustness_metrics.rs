@@ -412,10 +412,8 @@ pub(crate) const ROBUSTNESS_IAE_REFERENCE_WINDOW_US: u32 = 500_000;
 /// Gap between the measurement budget and the reconvergence trip line.
 pub(crate) const ROBUSTNESS_TRIP_TIME_HEADROOM_US: u32 = 100_000;
 
-/// Probe-leg cruise target as a percentage of the campaign amplitude.
-///
-/// Legs at 85% put the cap at 1.76x of the leg target while the gate rejects at 1.5x, so a
-/// reversal rejected by the gate is still 15% or more below the cap.
+/// Probe-leg cruise target as a percentage of the campaign amplitude; at 85% the envelope cap
+/// sits at 1.76x of the leg target, so a reversal the gate rejects at 1.5x stays under the cap.
 pub(crate) const ROBUSTNESS_LEG_AMPLITUDE_PCT: i32 = 85;
 
 /// Bounded retry count for an inconclusive probe leg.
