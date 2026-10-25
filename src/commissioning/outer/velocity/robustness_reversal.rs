@@ -3034,6 +3034,7 @@ mod tests {
             drive_tracked(burst_motion(CapturePhase::Reverse, STEADY_DELTA * 2, 3));
 
         assert!(terminal.safety_fault.is_none());
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED);
         for direction in 0..DIRECTION_COUNT {
             assert!(
                 terminal.evidence.directions[direction].peak_rate_permille > 1000,
