@@ -66,8 +66,8 @@ pub const ROBUSTNESS_CAUSE_UNEXPECTED_STATE: u8 = 20;
 pub const ROBUSTNESS_CAUSE_ORIGIN_RECOVERY_FAULT: u8 = 21;
 /// The outer dispatch aborted the run for a reason outside this phase's step loop.
 pub const ROBUSTNESS_CAUSE_DISPATCH_ABORT: u8 = 22;
-/// At least one direction's maximum scored reversal velocity peak reached the envelope
-/// fraction of its leg target.
+/// At least one direction's maximum scored reversal velocity peak reached the outer-safety
+/// cap in leg-target units less one settle band.
 pub const ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED: u8 = 23;
 
 /// Definitive rejection of a robustness-reversal preflight.
