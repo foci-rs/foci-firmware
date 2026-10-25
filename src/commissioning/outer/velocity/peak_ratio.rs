@@ -37,7 +37,7 @@ pub(crate) fn peak_scorable(target_rpm_abs: u32, counts_per_rev: u32, bound_perm
         return false;
     }
     let one_count = u128::from(1_000_000_000 / OUTER_SAFETY_VELOCITY_WINDOW_US);
-    one_count * 1000 / target <= u128::from((bound_permille - 1000) / 4)
+    one_count * 1000 * 4 <= u128::from(bound_permille - 1000) * target
 }
 
 /// Peak window velocity as permille of the target, or 0 ("not scored") when the resolution
@@ -105,6 +105,18 @@ mod tests {
     #[test]
     fn a_target_under_ten_counts_per_window_is_not_scorable_at_1400() {
         assert!(!peak_scorable(70, CPR, 1400));
+    }
+
+    #[test]
+    fn a_one_count_ratio_just_above_a_quarter_of_the_headroom_is_not_scorable() {
+        // 1 rpm at 297_324 counts/rev puts one count per window at 100.9 permille.
+        assert!(!peak_scorable(1, 297_324, 1400));
+    }
+
+    #[test]
+    fn a_one_count_ratio_just_below_a_quarter_of_the_headroom_is_scorable() {
+        // 1 rpm at 300_301 counts/rev puts one count per window at 99.9 permille.
+        assert!(peak_scorable(1, 300_301, 1400));
     }
 
     #[test]
