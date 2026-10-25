@@ -417,6 +417,7 @@ fn nominatable_bounds(
         lower_percent,
         upper_percent,
         nominatable: true,
+        step_peak_permille: 0,
     }
 }
 
@@ -462,6 +463,7 @@ fn discovery_rung_margin_report_rejects_non_nominatable_and_out_of_range() {
         lower_percent: 0.0,
         upper_percent: 0.0,
         nominatable: false,
+        step_peak_permille: 0,
     }];
 
     assert!(discovery_rung_margin_report(&bounds, 0, 0x11, 3, 2).is_none());

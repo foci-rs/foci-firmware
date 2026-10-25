@@ -23,7 +23,6 @@ mod integral_sweep;
 mod integral_sweep_tests;
 #[cfg(test)]
 mod integral_test_point_contract_tests;
-#[cfg_attr(not(test), expect(dead_code))]
 mod peak_ratio;
 pub(crate) mod recovery;
 #[cfg(test)]

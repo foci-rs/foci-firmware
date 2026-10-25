@@ -16,7 +16,7 @@ use super::{
     nominate_transition_capable_candidate_from_bounds, observation_statistic,
     plan_band_confirmation, rung_confirmable_margin_percent,
     rung_directional_pooled_bounds_percent, rung_nomination_bounds, rung_response_bounds_percent,
-    validate_fixed_contract,
+    rung_step_peak_permille, validate_fixed_contract,
 };
 use crate::autotune::velocity_measurement::{VelocityDirection, confidence_multiplier_95_df15};
 use foci_tmc4671::pid::PidPGain;
@@ -275,18 +275,21 @@ fn nomination_selects_highest_band_admissible_rung_not_best_margin() {
         nominatable: true,
         lower_percent: 74.0,
         upper_percent: 76.0,
+        step_peak_permille: 0,
     };
     let top = DiscoveryRungNominationBounds {
         p: gain(480),
         nominatable: true,
         lower_percent: 71.0,
         upper_percent: 79.0,
+        step_peak_permille: 0,
     };
     let out_of_band = DiscoveryRungNominationBounds {
         p: gain(520),
         nominatable: true,
         lower_percent: 69.0,
         upper_percent: 78.0,
+        step_peak_permille: 0,
     };
 
     let nominated = nominate_confirmation_candidate_from_bounds(&[center, top, out_of_band])
@@ -301,12 +304,14 @@ fn transition_ceiling_excludes_the_over_ceiling_top_rung() {
         nominatable: true,
         lower_percent: 72.0,
         upper_percent: 78.0,
+        step_peak_permille: 0,
     };
     let over_ceiling = DiscoveryRungNominationBounds {
         p: gain(925),
         nominatable: true,
         lower_percent: 72.0,
         upper_percent: 78.0,
+        step_peak_permille: 0,
     };
     let nominated =
         nominate_transition_capable_candidate_from_bounds(&[capable, over_ceiling], 897)
@@ -321,6 +326,7 @@ fn transition_ceiling_rejects_when_every_in_band_rung_is_over_ceiling() {
         nominatable: true,
         lower_percent: 72.0,
         upper_percent: 78.0,
+        step_peak_permille: 0,
     };
     assert_eq!(
         nominate_transition_capable_candidate_from_bounds(&[over_ceiling], 897),
@@ -335,6 +341,7 @@ fn transition_ceiling_reports_unconfirmable_when_no_rung_is_band_admissible() {
         nominatable: true,
         lower_percent: 69.0,
         upper_percent: 78.0,
+        step_peak_permille: 0,
     };
     assert_eq!(
         nominate_transition_capable_candidate_from_bounds(&[out_of_band], 897),
@@ -349,12 +356,14 @@ fn an_unconstrained_ceiling_nominates_the_highest_rung_like_the_primitive() {
         nominatable: true,
         lower_percent: 72.0,
         upper_percent: 78.0,
+        step_peak_permille: 0,
     };
     let top = DiscoveryRungNominationBounds {
         p: gain(925),
         nominatable: true,
         lower_percent: 72.0,
         upper_percent: 78.0,
+        step_peak_permille: 0,
     };
     let nominated = nominate_transition_capable_candidate_from_bounds(&[lower, top], u16::MAX)
         .expect("the highest in-band rung");
@@ -1061,7 +1070,10 @@ fn validate_fixed_contract_rejects_a_slot_order_tampered_digest() {
 fn bounds_for(
     rungs: &[DiscoveryRungNominationInput],
 ) -> heapless::Vec<DiscoveryRungNominationBounds, 8> {
-    rungs.iter().map(rung_nomination_bounds).collect()
+    rungs
+        .iter()
+        .map(|rung| rung_nomination_bounds(rung, 0))
+        .collect()
 }
 
 #[test]
@@ -1126,7 +1138,7 @@ fn reduced_bounds_select_the_higher_p_rung_regardless_of_order_like_raw_atoms() 
 #[test]
 fn reduced_bounds_agree_with_raw_atoms_at_the_borderline_rejected_rung() {
     let rung = uniform_rung(512, RUNG17_MEAN, RUNG17_VARIANCE, TARGET);
-    let bounds = rung_nomination_bounds(&rung);
+    let bounds = rung_nomination_bounds(&rung, 0);
     assert!(
         bounds.nominatable,
         "rung-17-class noise has valid consensus/atoms, just negative margin"
@@ -1152,7 +1164,7 @@ fn non_eligible_consensus_rung_is_not_nominatable_in_reduced_bounds() {
     ambiguous_forward.forward_consensus.classification =
         DirectionalConsensusClass::AmbiguousConsensus;
 
-    let bounds = rung_nomination_bounds(&ambiguous_forward);
+    let bounds = rung_nomination_bounds(&ambiguous_forward, 0);
     assert!(
         !bounds.nominatable,
         "a rung whose forward consensus is not EligibleConsensus must not be nominatable"
@@ -1169,7 +1181,7 @@ fn zero_or_wrong_sign_mean_rung_is_not_nominatable_in_reduced_bounds() {
     zero_mean_rung.forward_observations[0] =
         Some(atom(VelocityDirection::Forward, 0, RUNG18_VARIANCE, TARGET));
 
-    let bounds = rung_nomination_bounds(&zero_mean_rung);
+    let bounds = rung_nomination_bounds(&zero_mean_rung, 0);
     assert!(
         !bounds.nominatable,
         "a zero mean is not a representable response, so the rung is not nominatable"
@@ -1188,8 +1200,8 @@ fn non_nominatable_rung_is_excluded_even_alongside_a_nominatable_one() {
     let nominatable_rung = uniform_rung(724, RUNG18_MEAN, RUNG18_VARIANCE, TARGET);
 
     let bounds = [
-        rung_nomination_bounds(&ambiguous_forward),
-        rung_nomination_bounds(&nominatable_rung),
+        rung_nomination_bounds(&ambiguous_forward, 0),
+        rung_nomination_bounds(&nominatable_rung, 0),
     ];
     let nominated = nominate_confirmation_candidate_from_bounds(&bounds)
         .expect("the non-nominatable rung must not block the nominatable one");
@@ -1292,7 +1304,7 @@ fn one_loose_observation_widens_the_union_past_the_band_but_not_the_pooled_estim
 #[test]
 fn nomination_still_uses_the_union_unaffected_by_the_pooled_method() {
     let rung = mixed_precision_rung(700);
-    let bounds = rung_nomination_bounds(&rung);
+    let bounds = rung_nomination_bounds(&rung, 0);
     let multiplier = confidence_multiplier_95_df15(CONFIRMATION_FAMILY_SIZE)
         .expect("confirmation family size 8 is within the audited multiplier table");
     let (union_low, union_high) =
@@ -1381,4 +1393,40 @@ fn directional_pooling_rejects_conflicting_zero_variance_observations() {
         rung_directional_pooled_bounds_percent(&rung, 2.0, 1.0),
         None
     );
+}
+
+const FORWARD_PEAKS: [u16; 4] = [1200, 1390, 1250, 1500];
+const REVERSE_PEAKS: [u16; 4] = [1600, 1100, 1300, 1380];
+
+#[test]
+fn rung_step_peak_is_the_max_over_included_slots_of_both_directions() {
+    let peak = rung_step_peak_permille(0b0111, &FORWARD_PEAKS, 0b1110, &REVERSE_PEAKS);
+
+    assert_eq!(peak, 1390);
+}
+
+#[test]
+fn an_excluded_slot_does_not_raise_the_rung_peak() {
+    let with_excluded_high =
+        rung_step_peak_permille(0b0111, &FORWARD_PEAKS, 0b1110, &REVERSE_PEAKS);
+    let all_included = rung_step_peak_permille(0b1111, &FORWARD_PEAKS, 0b1111, &REVERSE_PEAKS);
+
+    assert_eq!(with_excluded_high, 1390);
+    assert_eq!(all_included, 1600);
+}
+
+#[test]
+fn an_all_unscored_rung_reports_zero() {
+    let peak = rung_step_peak_permille(0b1111, &[0; 4], 0b1111, &[0; 4]);
+
+    assert_eq!(peak, 0);
+}
+
+#[test]
+fn rung_nomination_bounds_carries_the_step_peak() {
+    let rung = uniform_rung(512, RUNG18_MEAN, RUNG18_VARIANCE, TARGET);
+
+    let bounds = rung_nomination_bounds(&rung, 1234);
+
+    assert_eq!(bounds.step_peak_permille, 1234);
 }

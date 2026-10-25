@@ -1793,7 +1793,7 @@ fn confirmable_discovery_rungs(p_raw: u16) -> CollectedInBandRungs {
     };
     let mut collected = CollectedInBandRungs::new();
     collected
-        .push(rung_nomination_bounds(&rung))
+        .push(rung_nomination_bounds(&rung, 0))
         .expect("one rung fits");
     collected
 }
@@ -2320,9 +2320,9 @@ fn collected_in_band_rungs_shrinks_to_the_compact_bounds_representation() {
     let raw_atom_rung_size = size_of::<DiscoveryRungNominationInput>();
     let collected_size = size_of::<CollectedInBandRungs>();
 
-    assert_eq!(compact_record_size, 12);
+    assert_eq!(compact_record_size, 16);
     assert_eq!(raw_atom_rung_size, 448);
-    assert_eq!(collected_size, 388);
+    assert_eq!(collected_size, 516);
     assert!(
         collected_size < MAX_SWEEP_RUNGS * raw_atom_rung_size,
         "the reduction must actually shrink retained discovery evidence"
@@ -2932,7 +2932,7 @@ fn confirmation_evidence_excluded_after_a_recorded_stroke_reports_partial_eviden
     };
     session
         .forward
-        .record(0, VelocityObservationClass::Eligible, None, atom);
+        .record(0, VelocityObservationClass::Eligible, None, atom, 0);
 
     let inputs = integral_inputs(2_448);
     let safety = test_safety();
@@ -2999,7 +2999,7 @@ fn safety_fault_after_a_recorded_stroke_reports_partial_evidence_not_empty() {
     };
     session
         .forward
-        .record(0, VelocityObservationClass::Eligible, None, atom);
+        .record(0, VelocityObservationClass::Eligible, None, atom, 0);
 
     let inputs = integral_inputs(2_448);
     let safety = test_safety();

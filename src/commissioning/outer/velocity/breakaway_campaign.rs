@@ -31,9 +31,10 @@ use super::band_confirmation::{
     CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT, CONFIRMATION_FAMILY_SIZE,
     CONFIRMATION_SLOT_ORDER, ConfirmationDirectionalInput, DiscoveryObservationAtom,
     DiscoveryRungNominationBounds, DiscoveryRungNominationInput, NominatedConfirmationCandidate,
-    NominationRejection, TargetBandConfirmationInconclusive, evaluate_band_confirmation,
-    nominate_transition_capable_candidate_from_bounds, plan_band_confirmation,
-    rung_directional_pooled_bounds_percent, rung_nomination_bounds, validate_fixed_contract,
+    NominationRejection, STEP_PEAK_ADMISSION_PERMILLE, TargetBandConfirmationInconclusive,
+    evaluate_band_confirmation, nominate_transition_capable_candidate_from_bounds,
+    plan_band_confirmation, rung_directional_pooled_bounds_percent, rung_nomination_bounds,
+    rung_step_peak_permille, validate_fixed_contract,
 };
 use super::breakaway_excursion::{ProbeExcursionCapture, ProbeExcursionError, ProbeMotionClass};
 use super::breakaway_plan::{
@@ -60,6 +61,7 @@ use super::integral_plan::{
     bind_breakaway_integral_authority, breakaway_workflow_envelope_ms, max_transition_capable_p,
     plan_breakaway_velocity_integral_response,
 };
+use super::peak_ratio::scored_peak_permille;
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryOriginMismatchEvidence,
     RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryResources,
@@ -1024,6 +1026,7 @@ const EMPTY_DISCOVERY_RUNG_BOUNDS: DiscoveryRungNominationBounds = DiscoveryRung
     lower_percent: 0.0,
     upper_percent: 0.0,
     nominatable: false,
+    step_peak_permille: 0,
 };
 
 /// Every discovery rung whose own response was contained in 70-80%, collected in
@@ -1066,6 +1069,7 @@ struct DirectionAccumulator {
     classes: [VelocityObservationClass; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
     intervals: [Option<EquivalentTorqueTargetInterval>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
     atoms: [Option<DiscoveryObservationAtom>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    peaks: [u16; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
 }
 
 impl DirectionAccumulator {
@@ -1075,6 +1079,7 @@ impl DirectionAccumulator {
                 CONSENSUS_OBSERVATIONS_PER_DIRECTION],
             intervals: [None; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
             atoms: [None; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+            peaks: [0; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
         }
     }
 
@@ -1084,11 +1089,13 @@ impl DirectionAccumulator {
         classification: VelocityObservationClass,
         interval: Option<EquivalentTorqueTargetInterval>,
         atom: DiscoveryObservationAtom,
+        step_peak_permille: u16,
     ) {
         let index = usize::from(slot);
         self.classes[index] = classification;
         self.intervals[index] = interval;
         self.atoms[index] = Some(atom);
+        self.peaks[index] = step_peak_permille;
     }
 
     fn collected_mask(&self) -> u8 {
@@ -1144,6 +1151,7 @@ pub(crate) struct AdditiveDiscoverySession {
     in_band: CollectedInBandRungs,
     pending_lower_rate_q: Option<u64>,
     pending_headroom_stop: bool,
+    pending_step_peak_permille: u16,
     pending_record: Option<PendingDiscoveryRecord>,
     request: AdditiveDiscoveryRequest,
     floor_origin_clamped: bool,
@@ -1175,6 +1183,7 @@ impl AdditiveDiscoverySession {
             in_band: CollectedInBandRungs::new(),
             pending_lower_rate_q: None,
             pending_headroom_stop: false,
+            pending_step_peak_permille: 0,
             pending_record: None,
             request,
             floor_origin_clamped,
@@ -1623,6 +1632,12 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             }
         }
         AdditiveDiscoveryState::CommandZero => {
+            session.pending_step_peak_permille = scored_peak_permille(
+                safety.primitive_peak_milli_counts_per_s(),
+                session.target_velocity_rpm.raw().unsigned_abs(),
+                safety.counts_per_rev(),
+                STEP_PEAK_ADMISSION_PERMILLE,
+            );
             let boundary =
                 finish_velocity_current_moving_phase(&mut workspace.current_observer, backend)
                     .await;
@@ -2040,18 +2055,21 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 .take()
                 .expect("classified before recovery started");
             let atom = record.atom.with_direction(session.direction);
+            let step_peak_permille = session.pending_step_peak_permille;
             match session.direction {
                 VelocityDirection::Forward => session.forward.record(
                     session.slot,
                     record.classification,
                     record.interval,
                     atom,
+                    step_peak_permille,
                 ),
                 VelocityDirection::Reverse => session.reverse.record(
                     session.slot,
                     record.classification,
                     record.interval,
                     atom,
+                    step_peak_permille,
                 ),
             }
 
@@ -2091,6 +2109,12 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         reverse_consensus: session.reverse.consensus(),
                         reverse_observations: session.reverse.atoms,
                     };
+                    let step_peak_permille = rung_step_peak_permille(
+                        rung_input.forward_consensus.included_mask,
+                        &session.forward.peaks,
+                        rung_input.reverse_consensus.included_mask,
+                        &session.reverse.peaks,
+                    );
                     let verdict = classify_rung_band(&rung_input, session.own_multiplier);
                     let [(fwd_lo, fwd_hi), (rev_lo, rev_hi)] =
                         rung_directional_pooled_bounds_percent(
@@ -2100,7 +2124,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         )
                         .unwrap_or([(f32::NAN, f32::NAN), (f32::NAN, f32::NAN)]);
                     defmt::info!(
-                        "discovery rung classified: rung={} p={} verdict={} fwd_pct=[{},{}] rev_pct=[{},{}]",
+                        "discovery rung classified: rung={} p={} verdict={} fwd_pct=[{},{}] rev_pct=[{},{}] step_peak_permille={}",
                         session.rung_index,
                         p.raw(),
                         verdict,
@@ -2108,6 +2132,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         fwd_hi,
                         rev_lo,
                         rev_hi,
+                        step_peak_permille,
                     );
                     if session.rung_index == 0 {
                         session.rung_zero_classification = Some((
@@ -2116,7 +2141,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         ));
                     }
                     if verdict == RungBandVerdict::InBand {
-                        let bounds = rung_nomination_bounds(&rung_input);
+                        let bounds = rung_nomination_bounds(&rung_input, step_peak_permille);
                         if session.in_band.push(bounds).is_err() {
                             return discovery_fault(CommissionError::EvidenceBufferFull);
                         }
@@ -2913,12 +2938,14 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                     record.classification,
                     record.interval,
                     atom,
+                    0,
                 ),
                 VelocityDirection::Reverse => session.reverse.record(
                     session.slot_within_direction(),
                     record.classification,
                     record.interval,
                     atom,
+                    0,
                 ),
             }
 

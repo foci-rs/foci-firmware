@@ -43,6 +43,11 @@ pub const CONFIRMATION_SLOT_ORDER: [VelocityDirection; 8] = [
     VelocityDirection::Reverse,
 ];
 
+/// A discovery step whose velocity peak exceeds this fraction of its commanded target, in
+/// permille, is over-gained: a peak more than 40% over target. A policy fraction, not a machine
+/// constant.
+pub const STEP_PEAK_ADMISSION_PERMILLE: u16 = 1400;
+
 /// Pointwise 95% scale-inflation heuristic the nomination screen applies on top of the
 /// family-eight multiplier: `c_sigma = sqrt(15 / chi2_0.05,15)`.
 ///
@@ -186,6 +191,9 @@ pub struct DiscoveryRungNominationBounds {
     /// observation was present with a representable (nonzero, correctly
     /// signed) mean.
     pub nominatable: bool,
+    /// Largest step velocity peak over the observations the rung's consensus included, in
+    /// permille of the commanded target. `0` when no included step was scored.
+    pub step_peak_permille: u16,
 }
 
 /// Fold one rung's raw discovery evidence into its compact nomination bounds.
@@ -194,6 +202,7 @@ pub struct DiscoveryRungNominationBounds {
 /// placeholders that must not be read.
 pub fn rung_nomination_bounds(
     rung: &DiscoveryRungNominationInput,
+    step_peak_permille: u16,
 ) -> DiscoveryRungNominationBounds {
     let multiplier = confidence_multiplier_95_df15(CONFIRMATION_FAMILY_SIZE)
         .expect("confirmation family size 8 is within the audited multiplier table");
@@ -203,12 +212,14 @@ pub fn rung_nomination_bounds(
             lower_percent,
             upper_percent,
             nominatable: true,
+            step_peak_permille,
         },
         None => DiscoveryRungNominationBounds {
             p: rung.p,
             lower_percent: 0.0,
             upper_percent: 0.0,
             nominatable: false,
+            step_peak_permille: 0,
         },
     }
 }
@@ -228,6 +239,27 @@ pub struct NominatedConfirmationCandidate {
 /// [`BandConfirmationPlan`] without a nominated candidate gain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct TargetBandUnconfirmableFromDiscovery;
+
+/// Largest step velocity peak, in permille of target, over the slots each direction's consensus
+/// included. Returns `0` when no included slot has a nonzero peak.
+pub fn rung_step_peak_permille(
+    forward_included_mask: u8,
+    forward_peaks: &[u16; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    reverse_included_mask: u8,
+    reverse_peaks: &[u16; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+) -> u16 {
+    let included = |mask: u8, peaks: &[u16; CONSENSUS_OBSERVATIONS_PER_DIRECTION]| {
+        peaks
+            .iter()
+            .enumerate()
+            .filter(move |(index, _)| mask & (1 << index) != 0)
+            .map(|(_, peak)| *peak)
+            .max()
+            .unwrap_or(0)
+    };
+    included(forward_included_mask, forward_peaks)
+        .max(included(reverse_included_mask, reverse_peaks))
+}
 
 pub(super) fn rung_response_bounds_percent(
     rung: &DiscoveryRungNominationInput,
