@@ -693,13 +693,17 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 opens_primitive: true,
             };
             match advance_leg_ramp(leg, session, workspace, safety, backend).await {
-                Ok(Some(at_us)) => {
+                Ok(LegRampTick::Pending(at_us)) => {
                     *state = RobustnessReversalState::EstablishRamp { ramp, next_tick_us };
                     StepResult::At(at_us)
                 }
-                Ok(None) => {
+                Ok(LegRampTick::Ended(written_us)) => {
                     let target = establish_target_rpm(&session.point, session.direction);
-                    match open_leg_capture(session, workspace, safety, backend, target) {
+                    let leg = LegCapture {
+                        signed_target_rpm: target,
+                        started_us: written_us,
+                    };
+                    match open_leg_capture(session, workspace, safety, backend, leg) {
                         Ok((next_sample_us, budget_deadline_us)) => {
                             *state = RobustnessReversalState::EstablishCapture {
                                 next_sample_us,
@@ -854,13 +858,17 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 opens_primitive: false,
             };
             match advance_leg_ramp(leg, session, workspace, safety, backend).await {
-                Ok(Some(at_us)) => {
+                Ok(LegRampTick::Pending(at_us)) => {
                     *state = RobustnessReversalState::ReverseRamp { ramp, next_tick_us };
                     StepResult::At(at_us)
                 }
-                Ok(None) => {
+                Ok(LegRampTick::Ended(written_us)) => {
                     let target = reverse_target_rpm(&session.point, session.direction);
-                    match open_leg_capture(session, workspace, safety, backend, target) {
+                    let leg = LegCapture {
+                        signed_target_rpm: target,
+                        started_us: written_us,
+                    };
+                    match open_leg_capture(session, workspace, safety, backend, leg) {
                         Ok((next_sample_us, budget_deadline_us)) => {
                             *state = RobustnessReversalState::ReverseCapture {
                                 next_sample_us,
@@ -1414,9 +1422,16 @@ struct LegRamp<'a> {
     opens_primitive: bool,
 }
 
+/// Progress of a leg ramp after one tick.
+enum LegRampTick {
+    /// More ticks follow; the next one is due at this time.
+    Pending(u64),
+    /// The ramp reached its target; the time right after the ramp-end write.
+    Ended(u64),
+}
+
 /// Runs one ramp tick: the first tick reads the encoder baseline, later ticks run the per-tick
-/// safety checks, and every tick writes the next target. Returns the next tick's deadline, or
-/// `None` on the ramp-end tick.
+/// safety checks, and every tick writes the next target.
 #[allow(clippy::result_large_err)]
 async fn advance_leg_ramp<B: CommissioningBackend>(
     leg: LegRamp<'_>,
@@ -1424,7 +1439,7 @@ async fn advance_leg_ramp<B: CommissioningBackend>(
     workspace: &mut RobustnessReversalWorkspace,
     safety: &mut OuterSafetyLimits,
     backend: &mut B,
-) -> Result<Option<u64>, StepResult> {
+) -> Result<LegRampTick, StepResult> {
     let LegRamp {
         ramp,
         next_tick_us,
@@ -1446,7 +1461,7 @@ async fn advance_leg_ramp<B: CommissioningBackend>(
         workspace.previous_read_us = backend.elapsed_us();
     } else {
         if backend.elapsed_us() < *next_tick_us {
-            return Ok(Some(*next_tick_us));
+            return Ok(LegRampTick::Pending(*next_tick_us));
         }
         if let Err(fault) = sample_tick(workspace, safety, backend).await {
             return Err(tick_fault_terminal(session, backend, fault, counts_per_rev));
@@ -1464,12 +1479,10 @@ async fn advance_leg_ramp<B: CommissioningBackend>(
             counts_per_rev,
         ));
     }
+    let written_us = backend.elapsed_us();
     if first && opens_primitive {
         safety.end_primitive();
-        if safety
-            .begin_velocity_step_primitive(workspace.previous_read_us)
-            .is_err()
-        {
+        if safety.begin_velocity_step_primitive(written_us).is_err() {
             return Err(fault_terminal(
                 session,
                 backend,
@@ -1480,10 +1493,10 @@ async fn advance_leg_ramp<B: CommissioningBackend>(
         }
     }
     if ramp.is_complete() {
-        return Ok(None);
+        return Ok(LegRampTick::Ended(written_us));
     }
-    match next_ramp_tick_us(next_tick_us, first, backend.elapsed_us()) {
-        Ok(at_us) => Ok(Some(at_us)),
+    match next_ramp_tick_us(next_tick_us, first, written_us) {
+        Ok(at_us) => Ok(LegRampTick::Pending(at_us)),
         Err(_) => Err(fault_terminal(
             session,
             backend,
@@ -1513,16 +1526,26 @@ async fn write_next_ramp_target<B: CommissioningBackend>(
     Ok(())
 }
 
-/// Opens a leg's capture at its ramp-end tick: the leg peak, the band window and the
-/// measurement budget all start from that tick's encoder read.
+/// A leg's final target and the time right after its ramp-end write.
+struct LegCapture {
+    signed_target_rpm: i32,
+    started_us: u64,
+}
+
+/// Opens a leg's capture at its ramp-end write: the leg peak, the band window, the sample
+/// schedule and the measurement budget all start from `leg.started_us`.
 #[allow(clippy::result_large_err)]
 fn open_leg_capture<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     workspace: &mut RobustnessReversalWorkspace,
     safety: &mut OuterSafetyLimits,
     backend: &B,
-    signed_target_rpm: i32,
+    leg: LegCapture,
 ) -> Result<(u64, u64), StepResult> {
+    let LegCapture {
+        signed_target_rpm,
+        started_us,
+    } = leg;
     let counts_per_rev = safety.counts_per_rev();
     safety.reset_primitive_peak();
     workspace.observations.clear();
@@ -1535,10 +1558,9 @@ fn open_leg_capture<B: CommissioningBackend>(
         ROBUSTNESS_BAND_DWELL_US,
         PROBE_BAND_WINDOW_SAMPLES,
     );
-    let baseline_us = workspace.previous_read_us;
-    let deadlines = baseline_us
+    let deadlines = started_us
         .checked_add(CAPTURE_PERIOD_US)
-        .zip(baseline_us.checked_add(u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US)));
+        .zip(started_us.checked_add(u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US)));
     deadlines.ok_or_else(|| {
         fault_terminal(
             session,
@@ -4434,7 +4456,7 @@ mod tests {
                 return;
             }
             if let StepResult::At(deadline) = parts.step() {
-                parts.backend.elapsed_us_value = deadline;
+                parts.backend.elapsed_us_value = parts.backend.elapsed_us_value.max(deadline);
                 let target = *parts
                     .backend
                     .registers
@@ -4479,12 +4501,14 @@ mod tests {
     }
 
     #[test]
-    fn the_capture_budget_starts_at_the_ramp_end() {
+    fn the_capture_budget_starts_at_the_ramp_end_write() {
+        const SPI_STEP_US: u64 = 7;
         let mut parts = RunParts::new(point_at_180());
+        parts.backend.spi_elapsed_step_us = SPI_STEP_US;
         step_parts_until(&mut parts, |state| {
             matches!(state, RobustnessReversalState::ReverseCapture { .. })
         });
-        let ramp_end_read_us = parts.workspace.previous_read_us;
+        let ramp_end_write_us = parts.workspace.previous_read_us + SPI_STEP_US;
 
         let RobustnessReversalState::ReverseCapture {
             next_sample_us,
@@ -4497,12 +4521,33 @@ mod tests {
 
         parts.harvest_targets();
         assert_eq!(parts.targets.last(), Some(&-153));
-        assert_eq!(next_sample_us, ramp_end_read_us + CAPTURE_PERIOD_US);
+        assert_eq!(next_sample_us, ramp_end_write_us + CAPTURE_PERIOD_US);
         assert_eq!(
             budget_deadline_us,
-            ramp_end_read_us + u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US)
+            ramp_end_write_us + u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US)
         );
         assert_eq!(parts.workspace.observations.observation_len(), 0);
+    }
+
+    #[test]
+    fn the_establish_primitive_starts_at_the_first_ramp_write() {
+        const SPI_STEP_US: u64 = 7;
+        let mut parts = RunParts::new(point_at_180());
+        parts.backend.spi_elapsed_step_us = SPI_STEP_US;
+        step_parts_until(&mut parts, |state| {
+            matches!(
+                state,
+                RobustnessReversalState::EstablishRamp { ramp, .. } if ramp.is_started()
+            )
+        });
+        let baseline_read_us = parts.workspace.previous_read_us;
+
+        parts.harvest_targets();
+        assert_eq!(parts.targets.as_slice(), &[60]);
+        assert_eq!(
+            parts.safety.primitive_start_us,
+            Some(baseline_read_us + SPI_STEP_US)
+        );
     }
 
     #[test]
