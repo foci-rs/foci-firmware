@@ -1140,8 +1140,9 @@ async fn write_next_ramp_target<B: CommissioningBackend>(
 /// Advances the stroke's ramp toward its target by one tick.
 ///
 /// The first tick opens the velocity-step primitive; later ticks run the moving-stroke safety
-/// checks before writing but score nothing. The first register write of the ramp is verified. The tick that writes the final target clears
-/// the observation ring, isolates the primitive peak and schedules the capture from that tick.
+/// checks before writing but score nothing. The first register write of the ramp is verified. The tick that writes the final
+/// target clears the observation ring, isolates the primitive peak and schedules the capture from
+/// that tick.
 #[allow(clippy::result_large_err)]
 async fn advance_target_ramp<B: CommissioningBackend>(
     ramp: &mut TargetRamp,
