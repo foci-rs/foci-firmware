@@ -34,7 +34,10 @@ pub enum TmcPreRequestDisposition {
 enum TuneRoute {
     Breakaway(crate::commissioning::outer::velocity::breakaway_campaign::BreakawayCampaign),
     IntegralResume(crate::commission_dispatch::integral::IntegralPreflight),
-    Robustness(crate::commission_dispatch::robustness::RobustnessPreflight),
+    Robustness(
+        crate::commission_dispatch::robustness::RobustnessPreflight,
+        crate::commissioning::outer::velocity::target_ramp::RampRate,
+    ),
     PositionTune(u32),
 }
 
@@ -75,11 +78,13 @@ fn build_integral_resume_workflow_plan(
     run_sequence: u32,
     reproduce_ms: u32,
     recovery_maximum_slot_us: u32,
+    robustness_cycle_ramp_us: u32,
 ) -> crate::commissioning::outer::velocity::workflow_plan::CommissioningWorkflowPlan {
     let maximum_workflow_ms = reproduce_ms
         .checked_add(
             crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
                 recovery_maximum_slot_us,
+                robustness_cycle_ramp_us,
             ),
         )
         .expect("resume reproduce budget plus robustness worst case fits u32");
@@ -90,6 +95,22 @@ fn build_integral_resume_workflow_plan(
         maximum_workflow_ms,
     )
     .expect("a preflighted resume has a valid workflow envelope")
+}
+
+/// Per-cycle ramp time of the robustness gate that follows a resumed Integral run, at the
+/// resumed plan's amplitude and ramp rate.
+fn resume_robustness_cycle_ramp_us(
+    plan: &crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
+) -> u32 {
+    crate::commissioning::outer::velocity::target_ramp::RampRate::from_milli_rpm_per_ms(
+        plan.ramp_milli_rpm_per_ms,
+    )
+    .map_or(0, |rate| {
+        crate::commissioning::outer::velocity::robustness_reversal::robustness_cycle_ramp_us(
+            plan.target_velocity_rpm,
+            rate,
+        )
+    })
 }
 
 /// A board could not install the validated mapper into its idle P3 scheduler.
@@ -1084,6 +1105,7 @@ where
                 run_sequence,
                 preflight.plan.maximum_workflow_ms,
                 preflight.plan.recovery_maximum_slot_us,
+                resume_robustness_cycle_ramp_us(&preflight.plan),
             );
             board.emit_reply(
                 board.channel(),
@@ -1165,12 +1187,34 @@ where
                         return Err(TmcControlRequestOutcome::skip_tick_tail());
                     }
                 };
+            let (ramp_rate, cycle_ramp_us) =
+                match crate::commission_dispatch::robustness::robustness_ramp_plan(
+                    &preflight.point,
+                    max_accel_mrev_s2,
+                ) {
+                    Ok(planned) => planned,
+                    Err(error) => {
+                        board
+                            .tmc_state()
+                            .commission_in_flight
+                            .store(false, core::sync::atomic::Ordering::Relaxed);
+                        emit_commission_phase_failure::<Board, Spi>(
+                            board,
+                            oid,
+                            error.status_code(),
+                        );
+                        return Err(TmcControlRequestOutcome::skip_tick_tail());
+                    }
+                };
             let workflow = crate::commissioning::outer::velocity::workflow_plan::
                         CommissioningWorkflowPlan::new_robustness(
                             run_sequence,
-                            crate::commission_dispatch::robustness::robustness_nominal_duration_ms(),
+                            crate::commission_dispatch::robustness::robustness_nominal_duration_ms(
+                                cycle_ramp_us,
+                            ),
                             crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
                                 u32::from(request.max_duration_ms).saturating_mul(1_000),
+                                cycle_ramp_us,
                             ),
                         )
                         .expect("robustness workflow envelope is always valid");
@@ -1181,7 +1225,7 @@ where
                     plan: workflow,
                 },
             );
-            TuneRoute::Robustness(preflight)
+            TuneRoute::Robustness(preflight, ramp_rate)
         }
         crate::tmc::AutotuneAction::PositionTune => {
             let position_tune_budget = crate::commissioning::outer::OuterMotionBudget {
@@ -1365,7 +1409,7 @@ where
             runtime.set_commission_engine(engine);
             crate::diagnostic::begin_breakaway_campaign();
         }
-        TuneRoute::Robustness(preflight) => {
+        TuneRoute::Robustness(preflight, ramp_rate) => {
             let engine = match CommissioningEngine::new_outer_for_tmc_with_robustness(
                 oid,
                 tmc_state,
@@ -1373,6 +1417,7 @@ where
                 entry_snapshot,
                 preflight,
                 encoder_counts_per_rev,
+                ramp_rate,
             ) {
                 Ok(engine) => engine,
                 Err(error) => {
@@ -2722,11 +2767,13 @@ mod tests {
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
         let mut integral = IntegralRetentionSlot::new();
-        integral.install_acceptance_point(
-            crate::commission_dispatch::test_support::test_acceptance_point(
-                velocity_sweep_request(),
-            ),
+        let point = crate::commission_dispatch::test_support::test_acceptance_point(
+            velocity_sweep_request(),
         );
+        integral.install_acceptance_point(point);
+        let (_, cycle_ramp_us) =
+            crate::commission_dispatch::robustness::robustness_ramp_plan(&point, 200_000)
+                .expect("the fixture acceleration plans a robustness ramp");
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request_with_stages(
@@ -2749,9 +2796,17 @@ mod tests {
             crate::commissioning::outer::velocity::workflow_plan::VelocityAutotuneWorkflowKind::
                 ReversalStandstillRobustnessGate
         );
+        assert_ne!(cycle_ramp_us, 0);
         assert_eq!(
             workflow.maximum_workflow_ms,
-            crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(3_000_000)
+            crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
+                3_000_000,
+                cycle_ramp_us
+            )
+        );
+        assert_eq!(
+            workflow.nominal_workflow_ms,
+            crate::commission_dispatch::robustness::robustness_nominal_duration_ms(cycle_ramp_us)
         );
         assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);
         assert_eq!(
@@ -2769,6 +2824,56 @@ mod tests {
                 .iter()
                 .all(|(addr, _)| { *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr() })
         );
+    }
+
+    #[fixture_test]
+    async fn robustness_rejects_a_slow_ramp_rate_before_building_the_engine() {
+        use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
+
+        for max_accel in [8, 9] {
+            let mut board = RecordingBoard::skip_tick_tail();
+            tmc_channel0()
+                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+                .expect("valid motion scale");
+            tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            runtime.set_motor_enabled_for_test(true);
+            runtime.set_calibrated_for_test(true);
+            let mut integral = IntegralRetentionSlot::new();
+            integral.install_acceptance_point(
+                crate::commission_dispatch::test_support::test_acceptance_point(
+                    velocity_sweep_request(),
+                ),
+            );
+            let mut request =
+                tune_request_with_action(crate::tmc::AutotuneAction::RobustnessReversal, 0);
+            let TmcRequestKind::Tune {
+                max_accel_mrev_s2, ..
+            } = &mut request.kind
+            else {
+                unreachable!()
+            };
+            *max_accel_mrev_s2 = max_accel;
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            handle_tmc_control_request_with_stages(
+                request,
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut integral,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            assert_eq!(board.replies.len(), 1, "max_accel {max_accel}");
+            assert_commission_phase_failure(
+                &board.replies[0],
+                4,
+                CommissionError::CampaignPlanInvalid.status_code(),
+            );
+            assert!(!runtime.is_commission_active());
+        }
     }
 
     #[fixture_test]
@@ -2963,7 +3068,8 @@ mod tests {
             workflow.maximum_workflow_ms,
             plan.maximum_workflow_ms
                 + crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
-                    plan.recovery_maximum_slot_us
+                    plan.recovery_maximum_slot_us,
+                    resume_robustness_cycle_ramp_us(&plan)
                 )
         );
         let ReplyPayload::VelocityIntegralPlan {
@@ -2988,13 +3094,13 @@ mod tests {
     fn resume_workflow_plan_budget_covers_robustness() {
         let reproduce_ms = 12_000;
 
-        let plan = build_integral_resume_workflow_plan(0, reproduce_ms, 3_000_000);
+        let plan = build_integral_resume_workflow_plan(0, reproduce_ms, 3_000_000, 12_000);
 
         assert!(
             plan.maximum_workflow_ms
                 >= reproduce_ms
                     + crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
-                        3_000_000
+                        3_000_000, 12_000
                     ),
             "resume plan must bound reproduce + inline robustness"
         );

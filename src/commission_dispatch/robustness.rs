@@ -1,5 +1,6 @@
 //! Dispatch-side preflight and terminal application for the reversal-standstill robustness gate.
 
+use crate::autotune::CommissionError;
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptancePoint, IntegralRetentionSlot,
 };
@@ -11,7 +12,9 @@ use crate::commissioning::outer::velocity::robustness_metrics::{
     ROBUSTNESS_LEGS_PER_CYCLE, ROBUSTNESS_MAX_RETRIES, ROBUSTNESS_MEASUREMENT_BUDGET_US,
 };
 use crate::commissioning::outer::velocity::robustness_reporting::ROBUSTNESS_SCHEMA_REVISION;
+use crate::commissioning::outer::velocity::robustness_reversal::robustness_cycle_ramp_us;
 use crate::commissioning::outer::velocity::sweep_plan::ZERO_SETTLE_US;
+use crate::commissioning::outer::velocity::target_ramp::RampRate;
 use crate::commissioning::types::{RobustnessOutcome, RobustnessReversalTerminal};
 
 const ROBUSTNESS_DIRECTION_COUNT: u32 = 2;
@@ -145,7 +148,34 @@ pub fn apply_robustness_terminal(
     terminal
 }
 
-pub(crate) fn robustness_worst_case_duration_ms(recovery_maximum_slot_us: u32) -> u32 {
+/// Ramp rate and per-cycle ramp time of a robustness run at `point`.
+///
+/// # Errors
+///
+/// Returns [`CommissionError::CampaignPlanInvalid`] when `max_accel_mrev_s2` rounds to a zero
+/// ramp rate or one cycle's ramps outlast a leg's measurement budget.
+pub(crate) fn robustness_ramp_plan(
+    point: &AcceptancePoint,
+    max_accel_mrev_s2: u32,
+) -> Result<(RampRate, u32), CommissionError> {
+    let rate =
+        RampRate::from_accel(max_accel_mrev_s2).ok_or(CommissionError::CampaignPlanInvalid)?;
+    let cycle_ramp_us = robustness_cycle_ramp_us(point.target_velocity_rpm, rate);
+    if cycle_ramp_us > ROBUSTNESS_MEASUREMENT_BUDGET_US {
+        return Err(CommissionError::CampaignPlanInvalid);
+    }
+    Ok((rate, cycle_ramp_us))
+}
+
+fn cycle_ramps_ms(cycles: u32, cycle_ramp_us: u32) -> u64 {
+    (u64::from(cycles) * u64::from(cycle_ramp_us)).div_ceil(u64::from(MICROS_PER_MILLI))
+}
+
+/// Worst-case robustness run time, charging `cycle_ramp_us` to every retried and grace cycle.
+pub(crate) fn robustness_worst_case_duration_ms(
+    recovery_maximum_slot_us: u32,
+    cycle_ramp_us: u32,
+) -> u32 {
     let cycles_per_direction = ROBUSTNESS_CYCLES_PER_DIRECTION as u32
         + u32::from(ROBUSTNESS_MAX_RETRIES)
         + ROBUSTNESS_TAIL_GRACE_CYCLES;
@@ -157,15 +187,18 @@ pub(crate) fn robustness_worst_case_duration_ms(recovery_maximum_slot_us: u32) -
     let unwinds = u64::from(worst_case_cycles) * 2;
     let unwind_slot_ms = (u64::from(recovery_maximum_slot_us) + 2 * u64::from(ZERO_SETTLE_US))
         .div_ceil(u64::from(MICROS_PER_MILLI));
+    let ramps_ms = cycle_ramps_ms(worst_case_cycles, cycle_ramp_us);
 
-    u32::try_from(probe_ms + unwinds * unwind_slot_ms).unwrap_or(u32::MAX)
+    u32::try_from(probe_ms + unwinds * unwind_slot_ms + ramps_ms).unwrap_or(u32::MAX)
 }
 
-pub(crate) fn robustness_nominal_duration_ms() -> u32 {
+/// Nominal robustness run time, charging `cycle_ramp_us` to every planned cycle.
+pub(crate) fn robustness_nominal_duration_ms(cycle_ramp_us: u32) -> u32 {
     let nominal_cycles = ROBUSTNESS_CYCLES_PER_DIRECTION as u32 * ROBUSTNESS_DIRECTION_COUNT;
     let per_cycle_envelope_ms =
         (ROBUSTNESS_MEASUREMENT_BUDGET_US / MICROS_PER_MILLI) * (ROBUSTNESS_LEGS_PER_CYCLE - 1);
-    nominal_cycles * per_cycle_envelope_ms
+    let envelope_ms = u64::from(nominal_cycles * per_cycle_envelope_ms);
+    u32::try_from(envelope_ms + cycle_ramps_ms(nominal_cycles, cycle_ramp_us)).unwrap_or(u32::MAX)
 }
 
 fn zero_robustness_evidence() -> RobustnessEvidence {
@@ -310,7 +343,35 @@ mod tests {
 
     #[test]
     fn worst_case_run_duration_reserves_one_unwind_and_two_rests_per_retry_and_direction() {
-        assert_eq!(robustness_worst_case_duration_ms(3_000_000), 216_000);
-        assert!(robustness_nominal_duration_ms() <= robustness_worst_case_duration_ms(0));
+        assert_eq!(robustness_worst_case_duration_ms(3_000_000, 0), 216_000);
+        assert!(robustness_nominal_duration_ms(0) <= robustness_worst_case_duration_ms(0, 0));
+    }
+
+    #[test]
+    fn robustness_durations_charge_the_cycle_ramp_and_a_slow_rate_is_rejected() {
+        assert_eq!(
+            robustness_nominal_duration_ms(12_000) - robustness_nominal_duration_ms(0),
+            10 * 12
+        );
+        assert_eq!(
+            robustness_worst_case_duration_ms(3_000_000, 12_000)
+                - robustness_worst_case_duration_ms(3_000_000, 0),
+            20 * 12
+        );
+        let point = AcceptancePoint {
+            target_velocity_rpm: 180,
+            ..sample_acceptance_point()
+        };
+        assert_eq!(
+            robustness_ramp_plan(&point, 500_000).map(|(_, cycle_ramp_us)| cycle_ramp_us),
+            Ok(12_000)
+        );
+        for slow_accel in [0, 8, 9] {
+            assert_eq!(
+                robustness_ramp_plan(&point, slow_accel),
+                Err(CommissionError::CampaignPlanInvalid),
+                "max_accel_mrev_s2 {slow_accel}"
+            );
+        }
     }
 }

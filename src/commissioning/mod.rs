@@ -566,7 +566,8 @@ impl CommissioningEngine {
         Self::assemble_outer(scaffold, phase)
     }
 
-    /// Create a reversal-standstill robustness engine from a preflighted point.
+    /// Create a reversal-standstill robustness engine from a preflighted point whose leg
+    /// targets ramp at `ramp_rate`.
     ///
     /// # Errors
     ///
@@ -582,6 +583,7 @@ impl CommissioningEngine {
         entry_snapshot: OuterGainRollbackSnapshot,
         preflight: crate::commission_dispatch::robustness::RobustnessPreflight,
         encoder_counts_per_rev: u32,
+        ramp_rate: crate::commissioning::outer::velocity::target_ramp::RampRate,
     ) -> Result<Self, CommissionError> {
         use crate::commissioning::outer::velocity::robustness_reversal::{
             RobustnessReversalSession, RobustnessReversalState, RobustnessReversalWorkspace,
@@ -615,6 +617,7 @@ impl CommissioningEngine {
                 preflight.point,
                 preflight.run_sequence,
                 encoder_counts_per_rev,
+                ramp_rate,
             ),
             safety: scaffold.safety,
         };

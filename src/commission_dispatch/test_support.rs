@@ -231,6 +231,8 @@ pub fn robustness_reversal_engine() -> crate::commissioning::CommissioningEngine
             run_sequence: 0,
         },
         4_000,
+        crate::commissioning::outer::velocity::target_ramp::RampRate::from_accel(500_000)
+            .expect("nonzero rate"),
     )
     .expect("valid robustness safety configuration")
 }

@@ -65,6 +65,7 @@ use super::sweep_analysis::{ScoredRestPoll, deficit_interval_q, poll_scored_rest
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US,
 };
+use super::target_ramp::RampRate;
 use super::velocity_clamp::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
 use super::{clear_velocity_error_sum, clear_velocity_offset};
 
@@ -145,6 +146,7 @@ enum HeldRoute {
 pub(crate) struct RobustnessReversalSession {
     point: AcceptancePoint,
     run_sequence: u32,
+    ramp_rate: RampRate,
     run_started_us: u64,
     direction: usize,
     ledgers: [CycleLedger; DIRECTION_COUNT],
@@ -168,13 +170,19 @@ pub(crate) struct RobustnessReversalSession {
 
 impl RobustnessReversalSession {
     /// Freeze the accepted point for a robustness-reversal run. Reads the point
-    /// only; never mutates the candidate slot.
-    pub(crate) fn new(point: AcceptancePoint, run_sequence: u32, counts_per_rev: u32) -> Self {
+    /// only; never mutates the candidate slot. Every leg target is ramped at `ramp_rate`.
+    pub(crate) fn new(
+        point: AcceptancePoint,
+        run_sequence: u32,
+        counts_per_rev: u32,
+        ramp_rate: RampRate,
+    ) -> Self {
         let (_, thresholds) = constructed_thresholds(&point, counts_per_rev);
         let iae_max_q = thresholds.iae_max_q;
         Self {
             point,
             run_sequence,
+            ramp_rate,
             run_started_us: 0,
             direction: 0,
             ledgers: [CycleLedger::new(iae_max_q), CycleLedger::new(iae_max_q)],
@@ -260,8 +268,28 @@ fn amplitude_rpm(point: &AcceptancePoint) -> i32 {
 }
 
 fn leg_amplitude_rpm(point: &AcceptancePoint) -> i32 {
-    let scaled = i64::from(amplitude_rpm(point)) * i64::from(ROBUSTNESS_LEG_AMPLITUDE_PCT) + 50;
+    leg_amplitude_for_rpm(point.target_velocity_rpm)
+}
+
+fn leg_amplitude_for_rpm(target_velocity_rpm: i32) -> i32 {
+    let scaled = i64::from(target_velocity_rpm.saturating_abs())
+        * i64::from(ROBUSTNESS_LEG_AMPLITUDE_PCT)
+        + 50;
     i32::try_from(scaled / 100).unwrap_or(i32::MAX)
+}
+
+/// Total ramp time of one robustness cycle at `target_velocity_rpm`: the establish ramp from
+/// rest, the reversal through zero and the ramp back to rest, each rounded up to whole ticks.
+pub(crate) fn robustness_cycle_ramp_us(target_velocity_rpm: i32, rate: RampRate) -> u32 {
+    let leg = leg_amplitude_for_rpm(target_velocity_rpm).unsigned_abs();
+    let one_leg_us = rate.ramp_us_for_span_rpm(leg);
+    one_leg_us
+        .saturating_mul(2)
+        .saturating_add(rate.ramp_us_for_span_rpm(leg.saturating_mul(2)))
+}
+
+fn reversal_ramp_us(point: &AcceptancePoint, rate: RampRate) -> u32 {
+    rate.ramp_us_for_span_rpm(leg_amplitude_rpm(point).unsigned_abs().saturating_mul(2))
 }
 
 fn establish_target_rpm(point: &AcceptancePoint, direction: usize) -> i32 {
@@ -286,9 +314,17 @@ fn establish_rate_counts_per_ms(point: &AcceptancePoint, counts_per_rev: u32) ->
     u32::try_from(counts_per_minute.div_ceil(60_000)).unwrap_or(u32::MAX)
 }
 
-fn establish_leg_travel_counts(rate_counts_per_ms: u32) -> u32 {
-    let window_ms = u64::from(ESTABLISH_LEG_WINDOW_US).div_ceil(1_000);
+fn establish_leg_travel_counts(rate_counts_per_ms: u32, ramp_us: u32) -> u32 {
+    let window_ms =
+        u64::from(ESTABLISH_LEG_WINDOW_US).div_ceil(1_000) + u64::from(ramp_us).div_ceil(1_000);
     u32::try_from(u64::from(rate_counts_per_ms).saturating_mul(window_ms)).unwrap_or(u32::MAX)
+}
+
+fn leg_travel_counts(point: &AcceptancePoint, counts_per_rev: u32, rate: RampRate) -> u32 {
+    establish_leg_travel_counts(
+        establish_rate_counts_per_ms(point, counts_per_rev),
+        reversal_ramp_us(point, rate),
+    )
 }
 
 fn remaining_headroom_counts(
@@ -307,13 +343,12 @@ fn remaining_headroom_counts(
 }
 
 fn cycle_fits(
-    rate_counts_per_ms: u32,
+    leg_travel: u32,
     unwrapped_position: i32,
     negative_window: u32,
     positive_window: u32,
     direction: usize,
 ) -> bool {
-    let leg_travel = establish_leg_travel_counts(rate_counts_per_ms);
     [direction, 1 - direction].into_iter().all(|leg_direction| {
         remaining_headroom_counts(
             unwrapped_position,
@@ -523,10 +558,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     );
                 }
             };
-            let leg_travel = establish_leg_travel_counts(establish_rate_counts_per_ms(
-                &session.point,
-                counts_per_rev,
-            ));
+            let leg_travel = leg_travel_counts(&session.point, counts_per_rev, session.ramp_rate);
             let usable = safety
                 .negative_position_window
                 .min(safety.positive_position_window)
@@ -554,9 +586,9 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         RobustnessReversalState::EstablishWriteGain => {
-            let rate = establish_rate_counts_per_ms(&session.point, counts_per_rev);
+            let leg_travel = leg_travel_counts(&session.point, counts_per_rev, session.ramp_rate);
             if !cycle_fits(
-                rate,
+                leg_travel,
                 safety.unwrapped_position,
                 safety.negative_position_window,
                 safety.positive_position_window,
@@ -579,7 +611,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         safety.positive_position_window,
                         1 - session.direction,
                     ),
-                    establish_leg_travel_counts(rate),
+                    leg_travel,
                     session.origin_recovered
                 );
                 if session.origin_recovered {
@@ -1962,6 +1994,10 @@ mod tests {
         }
     }
 
+    fn test_rate() -> RampRate {
+        RampRate::from_accel(500_000).expect("the fixture acceleration gives a nonzero rate")
+    }
+
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum CapturePhase {
         Establish,
@@ -2002,7 +2038,7 @@ mod tests {
             Self {
                 state: RobustnessReversalState::Setup,
                 workspace: RobustnessReversalWorkspace::new(),
-                session: RobustnessReversalSession::new(point, 7, COUNTS_PER_REV),
+                session: RobustnessReversalSession::new(point, 7, COUNTS_PER_REV, test_rate()),
                 safety: test_safety(),
                 backend: test_backend(),
                 targets: heapless::Vec::new(),
@@ -2153,7 +2189,7 @@ mod tests {
 
     #[test]
     fn build_origin_recovery_reports_missing_capture_state_without_recovery_plan() {
-        let session = RobustnessReversalSession::new(test_point(), 0, COUNTS_PER_REV);
+        let session = RobustnessReversalSession::new(test_point(), 0, COUNTS_PER_REV, test_rate());
         let safety = test_safety();
 
         let result = build_origin_recovery(&session, &safety);
@@ -2165,7 +2201,7 @@ mod tests {
         let point = recovery_point();
         let safety = test_safety();
         let plan = robustness_recovery_plan(&point, &safety).expect("recovery plan resolves");
-        let mut session = RobustnessReversalSession::new(point, 0, COUNTS_PER_REV);
+        let mut session = RobustnessReversalSession::new(point, 0, COUNTS_PER_REV, test_rate());
         session.recovery_plan = Some(plan);
         session
     }
@@ -2295,7 +2331,7 @@ mod tests {
 
     #[test]
     fn never_ran_direction_reports_zero_valid_cycles() {
-        let session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
+        let session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV, test_rate());
 
         let evidence = assembled_evidence(&session, test_safety().counts_per_rev());
 
@@ -2325,22 +2361,23 @@ mod tests {
         let rate = establish_rate_counts_per_ms(&test_point(), COUNTS_PER_REV);
         assert_eq!(rate, 10);
         assert_eq!(ESTABLISH_LEG_WINDOW_US, 1_016_000);
-        assert_eq!(establish_leg_travel_counts(rate), 10 * 1_016);
+        assert_eq!(establish_leg_travel_counts(rate, 0), 10 * 1_016);
     }
 
     #[test]
     fn cycle_fits_exactly_at_the_remaining_headroom_boundary_on_both_sides() {
-        let leg = establish_leg_travel_counts(12) as i32;
+        let travel = establish_leg_travel_counts(12, 0);
+        let leg = travel as i32;
         let window: u32 = 30_000;
         let edge = window as i32 - leg;
-        assert!(cycle_fits(12, edge, window, window, 0));
-        assert!(!cycle_fits(12, edge + 1, window, window, 0));
-        assert!(cycle_fits(12, -edge, window, window, 1));
-        assert!(!cycle_fits(12, -(edge + 1), window, window, 1));
-        assert!(cycle_fits(12, -edge, window, window, 0));
-        assert!(!cycle_fits(12, -(edge + 1), window, window, 0));
-        assert!(cycle_fits(12, edge, window, window, 1));
-        assert!(!cycle_fits(12, edge + 1, window, window, 1));
+        assert!(cycle_fits(travel, edge, window, window, 0));
+        assert!(!cycle_fits(travel, edge + 1, window, window, 0));
+        assert!(cycle_fits(travel, -edge, window, window, 1));
+        assert!(!cycle_fits(travel, -(edge + 1), window, window, 1));
+        assert!(cycle_fits(travel, -edge, window, window, 0));
+        assert!(!cycle_fits(travel, -(edge + 1), window, window, 0));
+        assert!(cycle_fits(travel, edge, window, window, 1));
+        assert!(!cycle_fits(travel, edge + 1, window, window, 1));
         assert_eq!(
             remaining_headroom_counts(window as i32 + 5, window, window, 0),
             0
@@ -2349,14 +2386,15 @@ mod tests {
             remaining_headroom_counts(-(window as i32) - 5, window, window, 1),
             0
         );
-        assert!(!cycle_fits(12, window as i32 + 5, window, window, 0));
+        assert!(!cycle_fits(travel, window as i32 + 5, window, window, 0));
     }
 
     #[test]
     fn assembled_evidence_saturates_extreme_cycle_values() {
         const HUGE_DURATION_US: u32 = 200_000_000;
 
-        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
+        let mut session =
+            RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV, test_rate());
         session.ledgers[0] = CycleLedger::new(i64::MAX);
         session.ledgers[1] = CycleLedger::new(i64::MAX);
         session.ledgers[0].record(CycleRecord::Conclusive(ReversalMetrics {
@@ -2686,7 +2724,7 @@ mod tests {
         recovery_iae_q: i64,
     ) -> RobustnessReversalTerminal {
         let backend = test_backend();
-        let mut session = RobustnessReversalSession::new(point, 7, COUNTS_PER_REV);
+        let mut session = RobustnessReversalSession::new(point, 7, COUNTS_PER_REV, test_rate());
         for dir in 0..DIRECTION_COUNT {
             for _ in 0..ROBUSTNESS_CYCLES_PER_DIRECTION {
                 session.ledgers[dir].record(CycleRecord::Conclusive(iae_metrics(recovery_iae_q)));
@@ -2762,7 +2800,8 @@ mod tests {
         const TAIL_MS: u32 = 900;
         const FAST_MS: u32 = 60;
         let backend = test_backend();
-        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
+        let mut session =
+            RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV, test_rate());
         for dir in 0..DIRECTION_COUNT {
             assert_eq!(
                 session.ledgers[dir].record(CycleRecord::Conclusive(cycle_metrics_with_iae(
@@ -2803,7 +2842,8 @@ mod tests {
         const TAIL_MS: u32 = 900;
         const FAST_MS: u32 = 60;
         let backend = test_backend();
-        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
+        let mut session =
+            RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV, test_rate());
         assert_eq!(
             session.ledgers[0].record(CycleRecord::Conclusive(cycle_metrics_with_iae(
                 TAIL_MS, TAIL_IAE_Q,
@@ -2854,7 +2894,8 @@ mod tests {
         };
 
         let mut state = RobustnessReversalState::EstablishWriteGain;
-        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
+        let mut session =
+            RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV, test_rate());
         assert_eq!(session.direction, 0);
         assert_eq!(session.cycle_cursor[0], 0);
 
@@ -2961,7 +3002,8 @@ mod tests {
 
     #[test]
     fn assembled_evidence_medians_convert_iae_before_median() {
-        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
+        let mut session =
+            RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV, test_rate());
         session.ledgers[0] = CycleLedger::new(i64::from(u32::MAX));
         let residuals_q = [10_i64, 40, 20, 30];
         let iae_us = [1_500_000_i64, 4_500_000, 2_500_000, 3_500_000];
@@ -2986,7 +3028,8 @@ mod tests {
 
     #[test]
     fn assembled_evidence_dac_rms_median_reduces_filled_slots() {
-        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
+        let mut session =
+            RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV, test_rate());
         session.ledgers[0] = CycleLedger::new(i64::from(u32::MAX));
         let dac_rms_values = [100_i64, 400, 200, 300];
         for dac_rms_q in dac_rms_values {
@@ -3217,8 +3260,12 @@ mod tests {
     #[test]
     fn a_peak_trip_outranks_an_iae_trip_in_the_same_direction() {
         let backend = test_backend();
-        let mut session =
-            RobustnessReversalSession::new(plant_identified_point(), 7, COUNTS_PER_REV);
+        let mut session = RobustnessReversalSession::new(
+            plant_identified_point(),
+            7,
+            COUNTS_PER_REV,
+            test_rate(),
+        );
         for dir in 0..DIRECTION_COUNT {
             session.ledgers[dir] = CycleLedger::new(i64::MAX);
             for _ in 0..ROBUSTNESS_CYCLES_PER_DIRECTION {
@@ -3247,7 +3294,8 @@ mod tests {
     #[test]
     fn every_inconclusive_holds_its_route_and_rests_first() {
         let mut state = RobustnessReversalState::EstablishWriteGain;
-        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
+        let mut session =
+            RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV, test_rate());
 
         for _ in 0..ROBUSTNESS_MAX_RETRIES {
             retry_or_finalize_inconclusive(&mut state, &mut session);
@@ -3387,7 +3435,7 @@ mod tests {
     }
 
     fn leg_travel(point: &AcceptancePoint) -> i32 {
-        establish_leg_travel_counts(establish_rate_counts_per_ms(point, COUNTS_PER_REV)) as i32
+        leg_travel_counts(point, COUNTS_PER_REV, test_rate()) as i32
     }
 
     fn nonzero_target_writes(backend: &MockBackend) -> usize {
@@ -3949,7 +3997,8 @@ mod tests {
 
     #[test]
     fn build_origin_recovery_rejects_negative_selected_p() {
-        let mut session = RobustnessReversalSession::new(test_point(), 0, COUNTS_PER_REV);
+        let mut session =
+            RobustnessReversalSession::new(test_point(), 0, COUNTS_PER_REV, test_rate());
         session.recovery_plan = Some(
             plan_rung_origin_recovery(test_safety().budget, test_safety().counts_per_rev(), 1_000)
                 .unwrap(),
@@ -3966,5 +4015,21 @@ mod tests {
         point.target_velocity_rpm = i32::MAX;
         let error = planned_velocity_mrev_s(&point).unwrap_err();
         assert_eq!(error, CommissionError::TargetRateInvalid);
+    }
+
+    #[test]
+    fn cycle_fit_charges_the_reversal_ramp_at_leg_amplitude() {
+        assert_eq!(
+            establish_leg_travel_counts(12, 6_000),
+            establish_leg_travel_counts(12, 0) + 12 * 6
+        );
+    }
+
+    #[test]
+    fn the_cycle_ramp_charges_every_leg_tick_rounded() {
+        let rate = test_rate();
+        assert_eq!(robustness_cycle_ramp_us(180, rate), 12_000);
+        let slow = RampRate::from_milli_rpm_per_ms(100_000).expect("nonzero rate");
+        assert_eq!(robustness_cycle_ramp_us(176, slow), 7_000);
     }
 }
