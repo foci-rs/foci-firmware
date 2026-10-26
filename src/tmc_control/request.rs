@@ -98,7 +98,8 @@ fn build_integral_resume_workflow_plan(
 }
 
 /// Per-cycle ramp time of the robustness gate that follows a resumed Integral run, at the
-/// resumed plan's amplitude and ramp rate.
+/// resumed plan's amplitude and ramp rate. The robustness request is assumed to carry the same
+/// `max_accel` as the resumed plan, so its ramp rate matches.
 fn resume_robustness_cycle_ramp_us(
     plan: &crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
 ) -> u32 {

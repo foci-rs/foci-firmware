@@ -729,7 +729,8 @@ pub struct BreakawayDiscoveryRungMargin {
     /// Achieved rate step from the previous collected in-band rung's own midpoint response, in
     /// percent * 1000; zero for the first collected rung.
     pub adjacent_rate_step_percent_milli: i32,
-    /// Step velocity peak of this rung, in permille of target; `0` when it was unscored.
+    /// Step velocity peak of this rung, in permille of target. Margins stream only for
+    /// nominatable rungs, so this is the scored peak.
     pub step_peak_permille: u16,
 }
 
