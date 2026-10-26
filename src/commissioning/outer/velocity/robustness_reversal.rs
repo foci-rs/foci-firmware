@@ -1547,8 +1547,9 @@ struct LegCapture {
     started_us: u64,
 }
 
-/// Opens a leg's capture at its ramp-end write: the leg peak, the band window, the sample
-/// schedule and the measurement budget all start from `leg.started_us`.
+/// Opens a leg's capture at the post-ramp encoder baseline read taken after the ramp-end write:
+/// the leg peak, the band window, the sample schedule and the measurement budget all start from
+/// that read at `leg.started_us`.
 #[allow(clippy::result_large_err)]
 fn open_leg_capture<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
@@ -4512,7 +4513,7 @@ mod tests {
     }
 
     #[test]
-    fn the_capture_budget_starts_at_the_ramp_end_write() {
+    fn the_capture_budget_starts_at_the_post_ramp_baseline_read() {
         const SPI_STEP_US: u64 = 7;
         let mut parts = RunParts::new(point_at_180());
         parts.backend.spi_elapsed_step_us = SPI_STEP_US;
