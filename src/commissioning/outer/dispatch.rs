@@ -94,12 +94,12 @@ fn velocity_fault_terminal(
 
 fn velocity_integral_timing_phase(state: &VelocityIntegralState) -> (OuterSafetyTimingPhase, bool) {
     match state {
-        VelocityIntegralState::Setup
-        | VelocityIntegralState::PrepareMovingSlot { .. }
-        | VelocityIntegralState::CommandTarget { .. } => (OuterSafetyTimingPhase::Setup, true),
-        VelocityIntegralState::Capture { .. } | VelocityIntegralState::PrepareZeroSettle { .. } => {
-            (OuterSafetyTimingPhase::MovingCapture, false)
+        VelocityIntegralState::Setup | VelocityIntegralState::PrepareMovingSlot { .. } => {
+            (OuterSafetyTimingPhase::Setup, true)
         }
+        VelocityIntegralState::RampTarget { .. }
+        | VelocityIntegralState::Capture { .. }
+        | VelocityIntegralState::RampZero { .. } => (OuterSafetyTimingPhase::MovingCapture, false),
         VelocityIntegralState::BeginSettleCapture { .. }
         | VelocityIntegralState::SettleCapture { .. }
         | VelocityIntegralState::BeginPositiveIRestCleanup
@@ -291,6 +291,7 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
 mod tests {
     use super::clamp_outer_safety_deadline;
     use super::velocity_integral_timing_phase;
+    use crate::commissioning::outer::velocity::target_ramp::{RampRate, TargetRamp};
     use crate::commissioning::outer::{OuterSafetyTimingPhase, VelocityIntegralState};
     use crate::commissioning::types::StepResult;
 
@@ -334,6 +335,28 @@ mod tests {
         assert_eq!(
             velocity_integral_timing_phase(&VelocityIntegralState::Terminal),
             (OuterSafetyTimingPhase::Terminalization, true)
+        );
+    }
+
+    #[test]
+    fn integral_ramp_states_are_sampled_as_moving() {
+        let rate = RampRate::from_milli_rpm_per_ms(60_000).expect("nonzero ramp rate");
+
+        assert_eq!(
+            velocity_integral_timing_phase(&VelocityIntegralState::RampTarget {
+                ramp: TargetRamp::new(0, 274, rate),
+                next_tick_us: 0,
+                entry_transition_us: 0,
+            }),
+            (OuterSafetyTimingPhase::MovingCapture, false)
+        );
+        assert_eq!(
+            velocity_integral_timing_phase(&VelocityIntegralState::RampZero {
+                ramp: TargetRamp::new(274, 0, rate),
+                next_tick_us: 0,
+                entry_transition_us: 0,
+            }),
+            (OuterSafetyTimingPhase::MovingCapture, false)
         );
     }
 }

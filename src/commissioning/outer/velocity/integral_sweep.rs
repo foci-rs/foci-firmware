@@ -55,6 +55,7 @@ use super::sweep_evidence::{
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MIN_SETTLE_CAPTURE_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US,
 };
+use super::target_ramp::{RampRate, TargetRamp, next_ramp_tick_us};
 use super::velocity_clamp::{
     VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
     VelocityCurrentZeroPhase, begin_velocity_current_primitive,
@@ -351,6 +352,153 @@ pub(super) fn combined_slot_transition_us(
         None
     } else {
         Some(total)
+    }
+}
+
+fn integral_ramp_rate(plan: VelocityIntegralExecutionPlan) -> Result<RampRate, CommissionError> {
+    RampRate::from_milli_rpm_per_ms(plan.ramp_milli_rpm_per_ms)
+        .ok_or(CommissionError::CampaignPlanInvalid)
+}
+
+async fn write_next_ramp_target<B: CommissioningBackend>(
+    ramp: &mut TargetRamp,
+    data: &mut VelocityIntegralRuntime,
+    backend: &mut B,
+) -> Result<(), CommissionError> {
+    let Some(target) = ramp.next() else {
+        return Ok(());
+    };
+    if target == data.last_target_rpm {
+        return Ok(());
+    }
+    backend
+        .write_register(PID_VELOCITY_TARGET, target as u32)
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+    data.last_target_rpm = target;
+    Ok(())
+}
+
+/// Installs the stroke's current clamp, opens its current primitive and reads the encoder
+/// baseline the moving ticks are measured from.
+async fn open_integral_stroke<B: CommissioningBackend>(
+    data: &mut VelocityIntegralRuntime,
+    backend: &mut B,
+) -> Result<(), CommissionError> {
+    let encoder_raw = backend
+        .read_capture_register(ABN_DECODER_COUNT)
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+    let baseline_us = backend.elapsed_us();
+    let mut clamp_session = match VelocityCurrentClampSession::try_new_with_limit(
+        u32::from(data.plan.hard_torque_limit),
+        u32::from(data.plan.usable_torque_limit),
+    ) {
+        Ok(session) if session.probe_limit().raw() == data.plan.usable_torque_limit => session,
+        Ok(_) | Err(_) => return Err(CommissionError::InvalidSchedule),
+    };
+    clamp_session
+        .install_probe_limit(backend)
+        .await
+        .map_err(current_guard_error)?;
+    let clamp_limit = clamp_session.probe_limit();
+    if clamp_limit == PidTorqueFluxLimit::ZERO {
+        return Err(CommissionError::InvalidSchedule);
+    }
+    begin_velocity_current_primitive(
+        &mut data.current_observer,
+        backend,
+        clamp_limit,
+        data.plan.limit_evidence_capability,
+    )
+    .await
+    .map_err(current_guard_error)?;
+    data.previous_encoder_raw = encoder_raw;
+    data.previous_read_us = baseline_us;
+    Ok(())
+}
+
+enum MovingTickFault {
+    Commission(CommissionError),
+    Safety(OuterSafetyFault),
+}
+
+struct MovingSample {
+    read_us: u64,
+    elapsed_us: u64,
+    delta_counts: i32,
+}
+
+/// Reads one moving tick's encoder and current input and runs the stroke's per-tick safety
+/// checks: observation gap, quarter turn and the clamp limit.
+async fn sample_moving_tick<B: CommissioningBackend>(
+    data: &mut VelocityIntegralRuntime,
+    safety: &OuterSafetyLimits,
+    backend: &mut B,
+) -> Result<MovingSample, MovingTickFault> {
+    let encoder_raw = backend
+        .read_capture_register(ABN_DECODER_COUNT)
+        .await
+        .map_err(|_| MovingTickFault::Commission(CommissionError::Spi))?;
+    let read_us = backend.elapsed_us();
+    let elapsed_us = match read_us.checked_sub(data.previous_read_us) {
+        Some(value @ 1..=MAX_SAFETY_OBSERVATION_GAP_US) => value,
+        _ => {
+            return Err(MovingTickFault::Safety(safety.fault(
+                OUTER_SAFETY_FAULT_OBSERVATION_GAP,
+                0,
+                read_us.saturating_sub(data.previous_read_us),
+                0,
+                0,
+            )));
+        }
+    };
+    let domain = EncoderDomain::new(safety.counts_per_rev())
+        .expect("Integral setup validates encoder domain");
+    let delta = match domain.delta(
+        domain.count(data.previous_encoder_raw),
+        domain.count(encoder_raw),
+    ) {
+        Ok(delta) if delta.absolute_counts() < safety.quarter_turn_fault_counts => delta,
+        _ => {
+            return Err(MovingTickFault::Safety(safety.fault(
+                OUTER_SAFETY_FAULT_QUARTER_TURN,
+                0,
+                elapsed_us,
+                0,
+                0,
+            )));
+        }
+    };
+    let torque_demand = read_velocity_pid_input_abs(backend)
+        .await
+        .map_err(|error| MovingTickFault::Commission(current_guard_error(error)))?;
+    if torque_demand > data.current_observer.clamp_limit() {
+        return Err(MovingTickFault::Safety(safety.fault(
+            OUTER_SAFETY_FAULT_CURRENT,
+            0,
+            elapsed_us,
+            0,
+            0,
+        )));
+    }
+    data.previous_encoder_raw = encoder_raw;
+    data.previous_read_us = read_us;
+    Ok(MovingSample {
+        read_us,
+        elapsed_us,
+        delta_counts: delta.signed_counts(),
+    })
+}
+
+async fn fail_integral_tick<B: CommissioningBackend>(
+    phase: &mut OuterPhase,
+    backend: &mut B,
+    fault: MovingTickFault,
+) -> StepResult {
+    match fault {
+        MovingTickFault::Commission(error) => fail_integral(phase, backend, error).await,
+        MovingTickFault::Safety(fault) => fail_integral_with_safety(phase, backend, fault).await,
     }
 }
 
@@ -1189,71 +1337,62 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             if *should_reset_rung {
                 reset_rung(data);
             }
-            *state = VelocityIntegralState::CommandTarget {
+            let ramp = match command_target_signed_target(data.plan, data.rung_index, data.slot)
+                .and_then(|target| {
+                    integral_ramp_rate(data.plan)
+                        .map(|rate| TargetRamp::new(data.last_target_rpm, target, rate))
+                }) {
+                Ok(ramp) => ramp,
+                Err(error) => return fail_integral(phase, backend, error).await,
+            };
+            *state = VelocityIntegralState::RampTarget {
+                ramp,
+                next_tick_us: 0,
                 entry_transition_us,
             };
             StepResult::ReadyNow
         }
-        VelocityIntegralState::CommandTarget {
+        VelocityIntegralState::RampTarget {
+            ramp,
+            next_tick_us,
             entry_transition_us,
         } => {
-            let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
-                Ok(value) => value,
-                Err(_) => return fail_integral(phase, backend, CommissionError::Spi).await,
-            };
-            let baseline_us = backend.elapsed_us();
-            let target = match command_target_signed_target(data.plan, data.rung_index, data.slot) {
-                Ok(value) => value,
-                Err(error) => return fail_integral(phase, backend, error).await,
-            };
-            let mut clamp_session = match VelocityCurrentClampSession::try_new_with_limit(
-                u32::from(data.plan.hard_torque_limit),
-                u32::from(data.plan.usable_torque_limit),
-            ) {
-                Ok(session) if session.probe_limit().raw() == data.plan.usable_torque_limit => {
-                    session
+            let first = !ramp.is_started();
+            if first {
+                if let Err(error) = open_integral_stroke(data, backend).await {
+                    return fail_integral(phase, backend, error).await;
                 }
-                Ok(_) | Err(_) => {
-                    return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+            } else {
+                if backend.elapsed_us() < *next_tick_us {
+                    return StepResult::At(*next_tick_us);
                 }
-            };
-            if let Err(error) = clamp_session.install_probe_limit(backend).await {
-                return fail_integral(phase, backend, current_guard_error(error)).await;
+                if let Err(fault) = sample_moving_tick(data, safety, backend).await {
+                    return fail_integral_tick(phase, backend, fault).await;
+                }
             }
-            let clamp_limit = clamp_session.probe_limit();
-            if clamp_limit == PidTorqueFluxLimit::ZERO {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
-            }
-            if let Err(error) = begin_velocity_current_primitive(
-                &mut data.current_observer,
-                backend,
-                clamp_limit,
-                data.plan.limit_evidence_capability,
-            )
-            .await
-            {
-                return fail_integral(phase, backend, current_guard_error(error)).await;
-            }
-            if backend
-                .write_register(PID_VELOCITY_TARGET, target as u32)
-                .await
-                .is_err()
-                || safety
-                    .begin_velocity_step_primitive(backend.elapsed_us())
-                    .is_err()
+            if write_next_ramp_target(ramp, data, backend).await.is_err()
+                || (first
+                    && safety
+                        .begin_velocity_step_primitive(backend.elapsed_us())
+                        .is_err())
             {
                 return fail_integral(phase, backend, CommissionError::Spi).await;
             }
-            let started_us = backend.elapsed_us();
+            let now_us = backend.elapsed_us();
+            if !ramp.is_complete() {
+                return match next_ramp_tick_us(next_tick_us, first, now_us) {
+                    Ok(at_us) => StepResult::At(at_us),
+                    Err(error) => fail_integral(phase, backend, error).await,
+                };
+            }
             let (next_sample_us, deadline_us) =
-                match command_target_deadlines(started_us, data.plan.moving_stroke_us) {
+                match command_target_deadlines(now_us, data.plan.moving_stroke_us) {
                     Ok(value) => value,
                     Err(error) => return fail_integral(phase, backend, error).await,
                 };
             data.observations.clear();
-            data.previous_encoder_raw = encoder_raw;
-            data.previous_read_us = baseline_us;
             data.observation_current_headroom = false;
+            safety.reset_primitive_peak();
             *state = VelocityIntegralState::Capture {
                 next_sample_us,
                 deadline_us,
@@ -1269,46 +1408,12 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             if backend.elapsed_us() < *next_sample_us {
                 return StepResult::At(*next_sample_us);
             }
-            let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
-                Ok(value) => value,
-                Err(_) => return fail_integral(phase, backend, CommissionError::Spi).await,
+            let sample = match sample_moving_tick(data, safety, backend).await {
+                Ok(sample) => sample,
+                Err(fault) => return fail_integral_tick(phase, backend, fault).await,
             };
-            let read_us = backend.elapsed_us();
-            let elapsed_us = match read_us.checked_sub(data.previous_read_us) {
-                Some(value @ 1..=MAX_SAFETY_OBSERVATION_GAP_US) => value,
-                _ => {
-                    let fault = safety.fault(
-                        OUTER_SAFETY_FAULT_OBSERVATION_GAP,
-                        0,
-                        read_us.saturating_sub(data.previous_read_us),
-                        0,
-                        0,
-                    );
-                    return fail_integral_with_safety(phase, backend, fault).await;
-                }
-            };
-            let domain = EncoderDomain::new(safety.counts_per_rev())
-                .expect("Integral setup validates encoder domain");
-            let delta = match domain.delta(
-                domain.count(data.previous_encoder_raw),
-                domain.count(encoder_raw),
-            ) {
-                Ok(delta) if delta.absolute_counts() < safety.quarter_turn_fault_counts => delta,
-                _ => {
-                    let fault = safety.fault(OUTER_SAFETY_FAULT_QUARTER_TURN, 0, elapsed_us, 0, 0);
-                    return fail_integral_with_safety(phase, backend, fault).await;
-                }
-            };
-            let torque_demand = match read_velocity_pid_input_abs(backend).await {
-                Ok(value) => value,
-                Err(error) => {
-                    return fail_integral(phase, backend, current_guard_error(error)).await;
-                }
-            };
-            if torque_demand > data.current_observer.clamp_limit() {
-                let fault = safety.fault(OUTER_SAFETY_FAULT_CURRENT, 0, elapsed_us, 0, 0);
-                return fail_integral_with_safety(phase, backend, fault).await;
-            }
+            let (read_us, elapsed_us, delta_counts) =
+                (sample.read_us, sample.elapsed_us, sample.delta_counts);
             let torque_target = match read_velocity_pid_output_abs(backend).await {
                 Ok(value) => value,
                 Err(error) => {
@@ -1319,7 +1424,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let _moving_peak = data.current_observer.moving_pid_output_peak();
             if data
                 .observations
-                .push(delta.signed_counts(), elapsed_us as u16)
+                .push(delta_counts, elapsed_us as u16)
                 .is_err()
             {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
@@ -1340,7 +1445,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                             )
                             .unwrap_or(i32::MAX),
                         ),
-                    delta_counts: delta.signed_counts(),
+                    delta_counts,
                     elapsed_us: elapsed_us as u32,
                     stroke_index: _stroke_index,
                     direction: integral_slot_direction(data.plan.slot_order, data.slot).unwrap_or(0)
@@ -1354,10 +1459,14 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     velocity_diagnostic_value: 0,
                 },
             );
-            data.previous_encoder_raw = encoder_raw;
-            data.previous_read_us = read_us;
             if read_us >= *deadline_us {
-                *state = VelocityIntegralState::PrepareZeroSettle {
+                let ramp = match integral_ramp_rate(data.plan) {
+                    Ok(rate) => TargetRamp::new(data.last_target_rpm, 0, rate),
+                    Err(error) => return fail_integral(phase, backend, error).await,
+                };
+                *state = VelocityIntegralState::RampZero {
+                    ramp,
+                    next_tick_us: 0,
                     entry_transition_us: *entry_transition_us,
                 };
                 StepResult::ReadyNow
@@ -1375,11 +1484,30 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 }
             }
         }
-        VelocityIntegralState::PrepareZeroSettle {
+        VelocityIntegralState::RampZero {
+            ramp,
+            next_tick_us,
             entry_transition_us,
         } => {
-            let boundary =
-                finish_velocity_current_moving_phase(&mut data.current_observer, backend).await;
+            let first = !ramp.is_started();
+            if first {
+                if let Err(error) =
+                    finish_velocity_current_moving_phase(&mut data.current_observer, backend).await
+                {
+                    return fail_integral(phase, backend, current_guard_error(error)).await;
+                }
+            } else if backend.elapsed_us() < *next_tick_us {
+                return StepResult::At(*next_tick_us);
+            }
+            if !ramp.next_is_final() {
+                if write_next_ramp_target(ramp, data, backend).await.is_err() {
+                    return fail_integral(phase, backend, CommissionError::Spi).await;
+                }
+                return match next_ramp_tick_us(next_tick_us, first, backend.elapsed_us()) {
+                    Ok(at_us) => StepResult::At(at_us),
+                    Err(error) => fail_integral(phase, backend, error).await,
+                };
+            }
             let p = match PidPGain::new(data.plan.fixed_p) {
                 Ok(value) => value,
                 Err(_) => {
@@ -1394,16 +1522,10 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 )
                 .await
                 .is_err()
-                || backend
-                    .write_register(PID_VELOCITY_TARGET, 0)
-                    .await
-                    .is_err()
+                || write_next_ramp_target(ramp, data, backend).await.is_err()
                 || clear_velocity_error_sum(backend).await.is_err()
             {
                 return fail_integral(phase, backend, CommissionError::Spi).await;
-            }
-            if let Err(error) = boundary {
-                return fail_integral(phase, backend, current_guard_error(error)).await;
             }
             let now_us = backend.elapsed_us();
             let exit_transition_us = match transition_elapsed_us(transition_started_us, now_us) {

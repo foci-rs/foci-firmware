@@ -86,7 +86,7 @@ use super::sweep_plan::{
     VELOCITY_SWEEP_SAMPLE_PERIOD_US, VelocitySweepRequest, ZERO_SETTLE_US,
     plan_proportional_velocity_sweep,
 };
-use super::target_ramp::{RampRate, TargetRamp};
+use super::target_ramp::{RampRate, TargetRamp, next_ramp_tick_us};
 use super::velocity_clamp::{
     VelocityCurrentClampSession, VelocityCurrentGuardError, VelocityCurrentObserver,
     VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability, begin_velocity_current_primitive,
@@ -1135,22 +1135,6 @@ async fn write_next_ramp_target<B: CommissioningBackend>(
     written.map_err(|_| CommissionError::Spi)?;
     workspace.last_target_rpm = target;
     Ok(())
-}
-
-fn next_ramp_tick_us(
-    next_tick_us: &mut u64,
-    first: bool,
-    now_us: u64,
-) -> Result<u64, CommissionError> {
-    let period_us = u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US);
-    *next_tick_us = if first {
-        now_us
-            .checked_add(period_us)
-            .ok_or(CommissionError::InvalidSchedule)?
-    } else {
-        next_grid_deadline(*next_tick_us, period_us, now_us)?
-    };
-    Ok(*next_tick_us)
 }
 
 /// Advances the stroke's ramp toward its target by one tick.

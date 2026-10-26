@@ -18,6 +18,7 @@ use super::recovery::{
     plan_rung_origin_recovery,
 };
 use super::sweep_plan::{RequestedVelocitySource, VELOCITY_SWEEP_SAMPLE_PERIOD_US};
+use super::target_ramp::{RampRate, TargetRamp};
 use super::velocity_clamp::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
 use crate::autotune::CommissionError;
 use crate::autotune::TmcMechanicalRpm;
@@ -43,7 +44,7 @@ use crate::commissioning::outer::{
 };
 use crate::commissioning::types::{
     IntegralOutcomeCause, RestSelectionOwner, RungOriginRecoveryEvidence, StepResult,
-    VelocityIntegralEvent, VelocityIntegralOutcome,
+    VelocityIntegralEvent, VelocityIntegralOutcome, VelocityIntegralTerminal,
 };
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
@@ -1090,9 +1091,7 @@ fn moving_exit_zeroes_i_and_target_before_clearing_the_scored_rest() {
         current_limit(u32::from(data.plan.usable_torque_limit)),
         VelocityLimitEvidenceCapability::BestEffortPolling,
     );
-    *state = VelocityIntegralState::PrepareZeroSettle {
-        entry_transition_us: 0,
-    };
+    *state = final_zero_ramp_tick(data, 0);
     let mut backend = MockBackend::new();
 
     assert!(matches!(
@@ -1891,6 +1890,22 @@ fn rest_rejection_before_sufficiency_leaves_the_discriminator_unset() {
     assert_eq!(terminal.rest_rejection_owner, None);
 }
 
+/// The zero ramp's final tick: a one-tick ramp down from the plan's target.
+fn final_zero_ramp_tick(
+    data: &mut VelocityIntegralRuntime,
+    entry_transition_us: u32,
+) -> VelocityIntegralState {
+    let target_rpm = data.plan.target_velocity_rpm;
+    data.last_target_rpm = target_rpm;
+    let one_tick = RampRate::from_milli_rpm_per_ms(target_rpm.unsigned_abs() * 1_000)
+        .expect("nonzero ramp rate");
+    VelocityIntegralState::RampZero {
+        ramp: TargetRamp::new(target_rpm, 0, one_tick),
+        next_tick_us: 0,
+        entry_transition_us,
+    }
+}
+
 fn phase() -> OuterPhase {
     let plan = plan();
     OuterPhase::VelocityIntegral {
@@ -1983,10 +1998,10 @@ fn setup_and_first_command_preserve_plan_before_motion_and_clear_integrator() {
         step(&mut phase, &mut workspace, &mut backend),
         StepResult::At(1_000)
     ));
-    assert!(backend.spi_log.iter().any(|operation| {
-        matches!(operation, SpiOp::Write(address, value)
-            if *address == PID_VELOCITY_TARGET.addr() && *value == 176)
-    }));
+    assert_eq!(
+        logged_writes(&backend).last(),
+        Some(&(PID_VELOCITY_TARGET.addr(), 24))
+    );
 }
 
 #[test]
@@ -2183,9 +2198,7 @@ fn entry_and_exit_transaction_failures_fault_before_motion_or_evidence() {
             current_limit(u32::from(data.plan.usable_torque_limit)),
             VelocityLimitEvidenceCapability::BestEffortPolling,
         );
-        *state = VelocityIntegralState::PrepareZeroSettle {
-            entry_transition_us: 0,
-        };
+        *state = final_zero_ramp_tick(data, 0);
         let mut backend = MockBackend::new();
         backend.fail_on_write_occurrence = Some(failure);
 
@@ -2232,17 +2245,16 @@ fn slot_transition_timing_starts_scored_rest_after_the_exit_clear() {
     };
     assert!(matches!(
         state,
-        VelocityIntegralState::CommandTarget {
-            entry_transition_us: 500
+        VelocityIntegralState::RampTarget {
+            entry_transition_us: 500,
+            ..
         }
     ));
     data.current_observer = VelocityCurrentObserver::new(
         current_limit(u32::from(data.plan.usable_torque_limit)),
         VelocityLimitEvidenceCapability::BestEffortPolling,
     );
-    *state = VelocityIntegralState::PrepareZeroSettle {
-        entry_transition_us: 500,
-    };
+    *state = final_zero_ramp_tick(data, 500);
     let before_exit_writes = backend.elapsed_us_value;
 
     assert!(matches!(
@@ -2278,9 +2290,7 @@ fn prepare_zero_settle_reports_deadline_overflow_for_the_settle_window() {
         current_limit(u32::from(data.plan.usable_torque_limit)),
         VelocityLimitEvidenceCapability::BestEffortPolling,
     );
-    *state = VelocityIntegralState::PrepareZeroSettle {
-        entry_transition_us: 0,
-    };
+    *state = final_zero_ramp_tick(data, 0);
     let mut backend = MockBackend::new();
     backend.elapsed_us_value = u64::MAX;
 
@@ -2309,9 +2319,7 @@ fn prepare_zero_settle_reports_deadline_overflow_for_the_analysis_budget() {
         current_limit(u32::from(data.plan.usable_torque_limit)),
         VelocityLimitEvidenceCapability::BestEffortPolling,
     );
-    *state = VelocityIntegralState::PrepareZeroSettle {
-        entry_transition_us: 0,
-    };
+    *state = final_zero_ramp_tick(data, 0);
     let mut backend = MockBackend::new();
     backend.elapsed_us_value = u64::MAX - 100;
 
@@ -2379,9 +2387,7 @@ fn excessive_slot_transition_time_emits_an_observation_gap_fault() {
         current_limit(u32::from(data.plan.usable_torque_limit)),
         VelocityLimitEvidenceCapability::BestEffortPolling,
     );
-    *state = VelocityIntegralState::PrepareZeroSettle {
-        entry_transition_us: 19_601,
-    };
+    *state = final_zero_ramp_tick(data, 19_601);
     let mut backend = MockBackend::new();
     backend.spi_elapsed_step_us = 100;
 
@@ -2983,4 +2989,333 @@ fn anchor_and_bookend_rungs_never_pool() {
     retain_rung(&mut bookend, &mut workspace, evidence).unwrap();
     assert_eq!(bookend.target_terminus, None);
     assert_eq!(bookend.bookend_available_mask, 3);
+}
+
+struct IntegralStroke {
+    phase: OuterPhase,
+    workspace: TransientBuffer,
+    backend: MockBackend,
+    position_counts: f64,
+}
+
+impl IntegralStroke {
+    /// Runs Setup for `plan` and leaves the sweep at the first moving slot of `rung_index`.
+    fn at_rung(plan: VelocityIntegralExecutionPlan, rung_index: u8) -> Self {
+        let mut stroke = Self {
+            phase: phase(),
+            workspace: TransientBuffer::new(),
+            backend: MockBackend::new(),
+            position_counts: 0.0,
+        };
+        let OuterPhase::VelocityIntegral { data, .. } = &mut stroke.phase else {
+            unreachable!()
+        };
+        *data = VelocityIntegralRuntime::new(7, plan);
+        stroke.backend.current_limit_value = current_limit(u32::from(plan.hard_torque_limit));
+        assert!(matches!(
+            step(
+                &mut stroke.phase,
+                &mut stroke.workspace,
+                &mut stroke.backend
+            ),
+            StepResult::ReadyNow
+        ));
+        stroke.data_mut().rung_index = rung_index;
+        stroke
+    }
+
+    fn state(&self) -> &VelocityIntegralState {
+        let OuterPhase::VelocityIntegral { state, .. } = &self.phase else {
+            panic!("the integral phase ended: {:?}", self.phase)
+        };
+        state
+    }
+
+    fn data(&self) -> &VelocityIntegralRuntime {
+        let OuterPhase::VelocityIntegral { data, .. } = &self.phase else {
+            panic!("the integral phase ended")
+        };
+        data
+    }
+
+    fn data_mut(&mut self) -> &mut VelocityIntegralRuntime {
+        let OuterPhase::VelocityIntegral { data, .. } = &mut self.phase else {
+            panic!("the integral phase ended")
+        };
+        data
+    }
+
+    fn now_us(&self) -> u64 {
+        self.backend.elapsed_us_value
+    }
+
+    fn written_target(&self) -> i32 {
+        self.backend
+            .registers
+            .get(&PID_VELOCITY_TARGET.addr())
+            .map_or(0, |value| *value as i32)
+    }
+
+    fn target_writes(&self) -> std::vec::Vec<i32> {
+        self.backend
+            .spi_log
+            .iter()
+            .filter_map(|operation| match operation {
+                SpiOp::Write(address, value) if *address == PID_VELOCITY_TARGET.addr() => {
+                    Some(*value as i32)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Steps once, through the outer dispatcher when `dispatched`; on `At` the plant moves at
+    /// `counts_per_ms(state, written target)` until the deadline.
+    fn step(
+        &mut self,
+        dispatched: bool,
+        mut counts_per_ms: impl FnMut(&VelocityIntegralState, i32) -> f64,
+    ) -> StepResult {
+        let result = if dispatched {
+            let mut trace_summary_seqs = crate::commissioning::outer::TraceSummarySeqs::new();
+            pollster::block_on(crate::commissioning::outer::step_outer_with_trace(
+                &mut self.phase,
+                &mut self.workspace,
+                &mut trace_summary_seqs,
+                &mut self.backend,
+            ))
+        } else {
+            step(&mut self.phase, &mut self.workspace, &mut self.backend)
+        };
+        if let StepResult::At(deadline_us) = result {
+            let rate = match &self.phase {
+                OuterPhase::VelocityIntegral { state, .. } => {
+                    counts_per_ms(state, self.written_target())
+                }
+                _ => 0.0,
+            };
+            let elapsed_ms = deadline_us.saturating_sub(self.now_us()) as f64 / 1_000.0;
+            self.position_counts += rate * elapsed_ms;
+            self.backend.elapsed_us_value = self.backend.elapsed_us_value.max(deadline_us);
+            let position = libm::floor(self.position_counts) as i32;
+            self.backend.mechanical_encoder_position_counts_value = position as u32;
+            self.backend.set_abn_decoder_count(position);
+        }
+        result
+    }
+}
+
+fn tracking_plant(_state: &VelocityIntegralState, written_rpm: i32) -> f64 {
+    f64::from(written_rpm) * 4_000.0 / 60_000.0
+}
+
+#[test]
+fn integral_response_fraction_is_unchanged_by_the_ramp_on_a_settled_plant() {
+    let mut stroke = IntegralStroke::at_rung(plan(), 1);
+    let pattern = [10.0, 11.0, 10.0, 11.0, 11.0, 10.0];
+    let mut capture_ticks = 0_usize;
+
+    let summary = loop {
+        let result = stroke.step(false, |state, written| match state {
+            VelocityIntegralState::Capture { .. } => {
+                capture_ticks += 1;
+                pattern[capture_ticks % pattern.len()]
+            }
+            _ => 0.5 * tracking_plant(state, written),
+        });
+        if let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Observation(report)) =
+            result
+        {
+            break report.summary;
+        }
+        assert!(
+            !matches!(result, StepResult::VelocityIntegralTerminal(_)),
+            "the stroke ended before its observation: {result:?}"
+        );
+    };
+
+    assert_eq!(summary.classification, VelocityObservationClass::Eligible);
+    assert_eq!(summary.settled_rate_mean_q, 10_496_093);
+    assert_eq!(summary.settled_rate_interval_q, [10_445_549, 10_546_637]);
+    assert_eq!(summary.deficit_interval_q, [1_186_696, 1_287_785]);
+    assert_eq!(summary.drift_ratio_ppm, 657);
+}
+
+fn ramp_plan() -> VelocityIntegralExecutionPlan {
+    let mut plan = plan();
+    plan.target_velocity_rpm = 274;
+    plan.planned_velocity_mrev_s = 4_567;
+    plan.ramp_milli_rpm_per_ms = 60_000;
+    plan.ramp_us = 5_000;
+    plan
+}
+
+fn set_pid_output(backend: &mut MockBackend, value: u32) {
+    let _ = backend.registers.insert(
+        foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+            .data
+            .addr(),
+        value,
+    );
+}
+
+#[test]
+fn integral_stroke_ramps_up_and_down_and_capture_starts_at_the_ramp_end() {
+    let mut stroke = IntegralStroke::at_rung(ramp_plan(), 1);
+    let mut capture_tick_us = None;
+    let mut settle_tick_us = None;
+
+    while !matches!(stroke.state(), VelocityIntegralState::AnalyzeMoving { .. }) {
+        let tick_us = stroke.now_us();
+        stroke.step(false, tracking_plant);
+        match stroke.state() {
+            VelocityIntegralState::Capture {
+                next_sample_us,
+                deadline_us,
+                ..
+            } if capture_tick_us.is_none() => {
+                capture_tick_us = Some(tick_us);
+                assert_eq!(stroke.target_writes().last(), Some(&274));
+                assert_eq!(*next_sample_us, tick_us + 1_000);
+                assert_eq!(*deadline_us, tick_us + 512_000);
+                assert_eq!(stroke.data().observations.len(), 0);
+            }
+            VelocityIntegralState::AnalyzeMoving {
+                settle_deadline_us, ..
+            } => {
+                settle_tick_us = Some(tick_us);
+                assert_eq!(*settle_deadline_us, tick_us + 500_000);
+            }
+            _ => {}
+        }
+    }
+
+    let targets = stroke.target_writes();
+    assert_eq!(targets, [60, 120, 180, 240, 274, 214, 154, 94, 34, 0]);
+    let capture_tick_us = capture_tick_us.expect("the stroke reached its capture");
+    assert_eq!(capture_tick_us, 4_000);
+    assert_eq!(settle_tick_us, Some(capture_tick_us + 512_000 + 4_000));
+    #[cfg(feature = "trace")]
+    assert_eq!(stroke.backend.velocity_trace_observations.len(), 512);
+}
+
+#[test]
+fn a_zero_ramp_rate_fails_the_integral_stroke_before_any_target_write() {
+    let mut plan = ramp_plan();
+    plan.ramp_milli_rpm_per_ms = 0;
+    let mut stroke = IntegralStroke::at_rung(plan, 1);
+
+    let StepResult::VelocityIntegralTerminal(terminal) = stroke.step(false, tracking_plant) else {
+        panic!("a zero ramp rate must end the integral run");
+    };
+
+    assert_eq!(
+        terminal.cause,
+        IntegralOutcomeCause::Error(CommissionError::CampaignPlanInvalid.status_code())
+    );
+    assert!(stroke.target_writes().iter().all(|target| *target == 0));
+}
+
+#[test]
+fn integral_ramp_phase_pid_output_is_not_scored_into_the_moving_peak() {
+    let mut stroke = IntegralStroke::at_rung(ramp_plan(), 1);
+    set_pid_output(&mut stroke.backend, 900);
+    while !matches!(stroke.state(), VelocityIntegralState::Capture { .. }) {
+        stroke.step(false, tracking_plant);
+    }
+    set_pid_output(&mut stroke.backend, 100);
+
+    while !matches!(stroke.state(), VelocityIntegralState::RampZero { .. }) {
+        stroke.step(false, tracking_plant);
+    }
+
+    assert_eq!(stroke.data().current_observer.moving_pid_output_peak(), 100);
+}
+
+#[test]
+fn integral_cleanup_zero_write_is_immediate() {
+    let mut stroke = IntegralStroke::at_rung(ramp_plan(), 1);
+    let mut jumped = false;
+
+    let terminal = loop {
+        let result = stroke.step(false, |state, written| {
+            if written == 120 && !jumped {
+                jumped = true;
+                1_200.0
+            } else {
+                tracking_plant(state, written)
+            }
+        });
+        if let StepResult::VelocityIntegralTerminal(terminal) = result {
+            break terminal;
+        }
+    };
+
+    assert_eq!(stroke.target_writes(), [60, 120, 0]);
+    assert_eq!(
+        terminal.safety_fault.map(|fault| fault.reason),
+        Some(crate::commissioning::types::OUTER_SAFETY_FAULT_QUARTER_TURN)
+    );
+}
+
+#[test]
+fn integral_actionable_status_at_the_moving_boundary_zeroes_the_target_at_once() {
+    let mut stroke = IntegralStroke::at_rung(ramp_plan(), 1);
+    while !matches!(stroke.state(), VelocityIntegralState::RampZero { .. }) {
+        stroke.step(false, tracking_plant);
+    }
+    let _ = stroke.backend.registers.insert(
+        foci_tmc4671::registers::STATUS_FLAGS.addr(),
+        crate::autotune::current_loop_actionable_status_mask(stroke.backend.feedback_config),
+    );
+
+    let result = stroke.step(false, tracking_plant);
+
+    assert!(matches!(result, StepResult::VelocityIntegralTerminal(_)));
+    assert_eq!(stroke.target_writes(), [60, 120, 180, 240, 274, 0]);
+}
+
+fn run_dispatched_fault(trigger_write: i32) -> (IntegralStroke, VelocityIntegralTerminal) {
+    let mut stroke = IntegralStroke::at_rung(ramp_plan(), 1);
+    let mut jumped = false;
+
+    for _ in 0..10_000 {
+        let result = stroke.step(true, |state, written| {
+            if written == trigger_write && !jumped {
+                jumped = true;
+                900.0
+            } else {
+                tracking_plant(state, written)
+            }
+        });
+        if let StepResult::VelocityIntegralTerminal(terminal) = result {
+            return (stroke, terminal);
+        }
+    }
+    panic!("the dispatched integral stroke did not fault");
+}
+
+#[test]
+fn an_encoder_velocity_fault_during_the_integral_ramp_is_caught_by_the_safety_sample() {
+    let (stroke, terminal) = run_dispatched_fault(120);
+
+    assert_eq!(stroke.target_writes(), [60, 120, 0]);
+    assert_eq!(
+        terminal.safety_fault.map(|fault| fault.reason),
+        Some(crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY)
+    );
+}
+
+#[test]
+fn an_encoder_velocity_fault_during_the_integral_zero_ramp_is_caught_by_the_safety_sample() {
+    let (stroke, terminal) = run_dispatched_fault(154);
+
+    assert_eq!(
+        stroke.target_writes(),
+        [60, 120, 180, 240, 274, 214, 154, 0]
+    );
+    assert_eq!(
+        terminal.safety_fault.map(|fault| fault.reason),
+        Some(crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY)
+    );
 }

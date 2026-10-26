@@ -9,6 +9,7 @@ use crate::autotune::velocity_measurement::{
 use crate::commissioning::outer::velocity::recovery::{
     RungOriginRecoveryReport, RungOriginRecoveryRuntime,
 };
+use crate::commissioning::outer::velocity::target_ramp::TargetRamp;
 use crate::commissioning::outer::velocity::velocity_clamp::{
     VelocityCurrentObserver, VelocityCurrentPhaseEvidence,
 };
@@ -252,7 +253,9 @@ pub(crate) enum VelocityIntegralState {
     PrepareMovingSlot {
         reset_rung: bool,
     },
-    CommandTarget {
+    RampTarget {
+        ramp: TargetRamp,
+        next_tick_us: u64,
         entry_transition_us: u32,
     },
     Capture {
@@ -260,7 +263,9 @@ pub(crate) enum VelocityIntegralState {
         deadline_us: u64,
         entry_transition_us: u32,
     },
-    PrepareZeroSettle {
+    RampZero {
+        ramp: TargetRamp,
+        next_tick_us: u64,
         entry_transition_us: u32,
     },
     AnalyzeMoving {
@@ -303,6 +308,7 @@ pub(crate) struct VelocityIntegralRuntime {
     pub(crate) slot: u8,
     pub(crate) previous_encoder_raw: u32,
     pub(crate) previous_read_us: u64,
+    pub(crate) last_target_rpm: i32,
     pub(crate) run_started_us: u64,
     pub(crate) current_observer: VelocityCurrentObserver,
     pub(crate) observation_current_headroom: bool,
@@ -346,6 +352,7 @@ impl VelocityIntegralRuntime {
             slot: 0,
             previous_encoder_raw: 0,
             previous_read_us: 0,
+            last_target_rpm: 0,
             run_started_us: 0,
             current_observer: VelocityCurrentObserver::EMPTY,
             observation_current_headroom: false,

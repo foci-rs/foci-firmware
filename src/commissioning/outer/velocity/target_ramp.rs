@@ -1,5 +1,9 @@
 //! Linear target ramp that spaces velocity targets one per millisecond tick.
 
+use super::sweep_plan::VELOCITY_SWEEP_SAMPLE_PERIOD_US;
+use crate::autotune::CommissionError;
+use crate::commissioning::schedule::next_grid_deadline;
+
 /// Multiplier applied to the configured acceleration limit when shaping a ramp.
 pub(crate) const RAMP_ACCEL_MULTIPLIER: u32 = 2;
 
@@ -69,15 +73,6 @@ impl TargetRamp {
         self.rate.ticks_for_span_rpm(self.span_rpm())
     }
 
-    /// Ramp duration in microseconds.
-    #[allow(
-        dead_code,
-        reason = "durations are planned from RampRate::ramp_us_for_span_rpm"
-    )]
-    pub(crate) fn ramp_us(&self) -> u32 {
-        self.rate.ramp_us_for_span_rpm(self.span_rpm())
-    }
-
     /// Advances one tick and returns that tick's target, or `None` once all targets were produced.
     pub(crate) fn next(&mut self) -> Option<i32> {
         let ticks = self.ticks();
@@ -115,6 +110,29 @@ impl TargetRamp {
     pub(crate) fn is_complete(&self) -> bool {
         self.tick >= self.ticks()
     }
+
+    /// Whether the next call to [`TargetRamp::next`] completes the ramp.
+    pub(crate) fn next_is_final(&self) -> bool {
+        self.tick.saturating_add(1) >= self.ticks()
+    }
+}
+
+/// Schedules the ramp's next 1 ms tick: one period after `now_us` on its first tick, else the
+/// next grid point after `now_us`.
+pub(crate) fn next_ramp_tick_us(
+    next_tick_us: &mut u64,
+    first: bool,
+    now_us: u64,
+) -> Result<u64, CommissionError> {
+    let period_us = u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US);
+    *next_tick_us = if first {
+        now_us
+            .checked_add(period_us)
+            .ok_or(CommissionError::InvalidSchedule)?
+    } else {
+        next_grid_deadline(*next_tick_us, period_us, now_us)?
+    };
+    Ok(*next_tick_us)
 }
 
 #[cfg(test)]
