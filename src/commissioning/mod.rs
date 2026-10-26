@@ -2365,6 +2365,7 @@ mod tests {
             negative_position_headroom_mrev: params.negative_position_headroom_mrev,
             positive_position_headroom_mrev: params.positive_position_headroom_mrev,
             max_duration_ms: params.max_duration_ms,
+            max_accel_mrev_s2: params.max_accel_mrev_s2,
             nomination_p_below: 0,
         };
         let (campaign, _workflow) =
