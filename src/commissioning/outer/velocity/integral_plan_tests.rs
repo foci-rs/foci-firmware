@@ -1445,7 +1445,7 @@ fn schema_18_breakaway_plan_still_hashes_i_top_cap_in_its_digest() {
 }
 
 #[test]
-fn schema_16_breakaway_plan_also_hashes_i_top_cap_changes_in_its_digest() {
+fn current_breakaway_schema_hashes_i_top_cap_in_its_digest() {
     let mut plan = build_test_breakaway_plan();
     assert_eq!(plan.schema_revision, BREAKAWAY_INTEGRAL_SCHEMA_REVISION);
     let baseline = plan.digest();
