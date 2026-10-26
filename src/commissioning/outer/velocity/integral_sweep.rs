@@ -418,6 +418,19 @@ async fn open_integral_stroke<B: CommissioningBackend>(
     Ok(())
 }
 
+/// Reads a fresh encoder baseline for the next moving delta and returns its read time.
+async fn read_encoder_baseline<B: CommissioningBackend>(
+    data: &mut VelocityIntegralRuntime,
+    backend: &mut B,
+) -> Result<u64, CommissionError> {
+    data.previous_encoder_raw = backend
+        .read_capture_register(ABN_DECODER_COUNT)
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+    data.previous_read_us = backend.elapsed_us();
+    Ok(data.previous_read_us)
+}
+
 enum MovingTickFault {
     Commission(CommissionError),
     Safety(OuterSafetyFault),
@@ -1385,8 +1398,12 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     Err(error) => fail_integral(phase, backend, error).await,
                 };
             }
+            let baseline_us = match read_encoder_baseline(data, backend).await {
+                Ok(value) => value,
+                Err(error) => return fail_integral(phase, backend, error).await,
+            };
             let (next_sample_us, deadline_us) =
-                match command_target_deadlines(now_us, data.plan.moving_stroke_us) {
+                match command_target_deadlines(baseline_us, data.plan.moving_stroke_us) {
                     Ok(value) => value,
                     Err(error) => return fail_integral(phase, backend, error).await,
                 };

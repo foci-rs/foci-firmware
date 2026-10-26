@@ -3371,3 +3371,76 @@ fn a_failure_after_a_moving_sample_reports_the_sample_read_time_as_run_completio
     assert!(terminal.run_completed_us > terminal.run_started_us);
     assert_eq!(terminal.run_completed_us, stroke.now_us());
 }
+
+impl IntegralStroke {
+    fn step_until_the_final_ramp_write_is_next(&mut self) {
+        while !matches!(
+            self.state(),
+            VelocityIntegralState::RampTarget { ramp, .. }
+                if ramp.is_started() && ramp.next_is_final()
+        ) {
+            let result = self.step(false, |_, _| 0.0);
+            assert!(
+                !matches!(result, StepResult::VelocityIntegralTerminal(_)),
+                "the stroke ended before its final ramp write: {result:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_first_scored_integral_observation_starts_after_the_ramp_end_write() {
+    const SPI_STEP_US: u64 = 7;
+    const MOVED_DURING_WRITE: u32 = 5;
+    let mut stroke = IntegralStroke::at_rung(ramp_plan(), 1);
+    stroke.backend.spi_elapsed_step_us = SPI_STEP_US;
+    stroke.step_until_the_final_ramp_write_is_next();
+    let before_write = stroke.data().previous_encoder_raw + 10;
+    let after_write = before_write + MOVED_DURING_WRITE;
+    let first_sample = after_write + 10;
+    stroke
+        .backend
+        .set_abn_decoder_count_sequence(&[before_write, after_write, first_sample]);
+
+    let StepResult::At(next_sample_us) = stroke.step(false, |_, _| 0.0) else {
+        panic!("the ramp-end tick schedules the first capture sample");
+    };
+    assert!(matches!(
+        stroke.state(),
+        VelocityIntegralState::Capture { .. }
+    ));
+    let baseline_read_us = stroke.data().previous_read_us;
+    let _ = stroke.step(false, |_, _| 0.0);
+
+    let observations: std::vec::Vec<_> = stroke.data().observations.iter().collect();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].delta_counts, 10);
+    assert_eq!(
+        u64::from(observations[0].elapsed_us),
+        next_sample_us + SPI_STEP_US - baseline_read_us
+    );
+    assert_eq!(
+        next_sample_us,
+        baseline_read_us + u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US)
+    );
+}
+
+#[test]
+fn a_failed_baseline_read_after_the_integral_ramp_end_write_takes_the_spi_fault() {
+    let mut stroke = IntegralStroke::at_rung(ramp_plan(), 1);
+    stroke.step_until_the_final_ramp_write_is_next();
+    let writes_before = stroke.target_writes().len();
+    stroke.backend.fail_capture_read_at = Some(stroke.backend.capture_register_reads + 2);
+
+    let StepResult::VelocityIntegralTerminal(terminal) = stroke.step(false, |_, _| 0.0) else {
+        panic!("a failed baseline read must end the integral run");
+    };
+
+    assert_eq!(stroke.target_writes()[writes_before..], [274, 0]);
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+    assert_eq!(
+        terminal.cause,
+        IntegralOutcomeCause::Error(CommissionError::Spi.status_code())
+    );
+    assert!(terminal.safety_fault.is_none());
+}
