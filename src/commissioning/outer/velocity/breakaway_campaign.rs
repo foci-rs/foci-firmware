@@ -976,7 +976,7 @@ async fn sample_one_tick<B: CommissioningBackend>(
 
 /// Breadcrumbs and capture options a stage passes to the shared ramp helpers.
 #[derive(Debug, Clone, Copy)]
-struct RampCheckpoints {
+struct RampStages {
     clamp_install: Option<BreakawayCheckpoint>,
     current_primitive_start: Option<BreakawayCheckpoint>,
     baseline_read: Option<BreakawayCheckpoint>,
@@ -989,7 +989,7 @@ struct RampCheckpoints {
     record_excursion: bool,
 }
 
-const PROBE_RAMP: RampCheckpoints = RampCheckpoints {
+const PROBE_RAMP: RampStages = RampStages {
     clamp_install: Some(BreakawayCheckpoint::ProbeClampInstall),
     current_primitive_start: Some(BreakawayCheckpoint::ProbeCurrentPrimitiveStart),
     baseline_read: Some(BreakawayCheckpoint::ProbeTargetBaselineRead),
@@ -1002,7 +1002,7 @@ const PROBE_RAMP: RampCheckpoints = RampCheckpoints {
     record_excursion: true,
 };
 
-const STROKE_RAMP: RampCheckpoints = RampCheckpoints {
+const STROKE_RAMP: RampStages = RampStages {
     clamp_install: None,
     current_primitive_start: None,
     baseline_read: None,
@@ -1073,17 +1073,17 @@ async fn open_stroke<B: CommissioningBackend>(
     workspace: &mut BreakawayProbeWorkspace,
     hard_torque_limit: u16,
     backend: &mut B,
-    checkpoints: RampCheckpoints,
+    stages: RampStages,
 ) -> Result<(), RampFault> {
     crate::diagnostic::checkpoint_breakaway_campaign(BreakawayCheckpoint::TargetCommand);
     let mut clamp_session = VelocityCurrentClampSession::try_new(u32::from(hard_torque_limit))
         .map_err(RampFault::CurrentGuard)?;
-    checkpoint_if(checkpoints.clamp_install);
+    checkpoint_if(stages.clamp_install);
     clamp_session
         .install_probe_limit(backend)
         .await
         .map_err(RampFault::CurrentGuard)?;
-    checkpoint_if(checkpoints.current_primitive_start);
+    checkpoint_if(stages.current_primitive_start);
     begin_velocity_current_primitive(
         &mut workspace.current_observer,
         backend,
@@ -1092,13 +1092,13 @@ async fn open_stroke<B: CommissioningBackend>(
     )
     .await
     .map_err(RampFault::CurrentGuard)?;
-    checkpoint_if(checkpoints.baseline_read);
+    checkpoint_if(stages.baseline_read);
     let encoder_raw = backend
         .read_capture_register(ABN_DECODER_COUNT)
         .await
         .map_err(|_| CommissionError::Spi)?;
     let baseline_us = backend.elapsed_us();
-    if checkpoints.record_excursion {
+    if stages.record_excursion {
         workspace.excursion = Some(ProbeExcursionCapture::new(encoder_raw, baseline_us));
     }
     workspace.previous_encoder_raw = encoder_raw;
@@ -1150,12 +1150,12 @@ async fn advance_target_ramp<B: CommissioningBackend>(
     workspace: &mut BreakawayProbeWorkspace,
     safety: &mut OuterSafetyLimits,
     backend: &mut B,
-    checkpoints: RampCheckpoints,
+    stages: RampStages,
 ) -> Result<RampTick<CaptureSchedule>, RampFault> {
     let first = !ramp.is_started();
     let opening = workspace.last_target_rpm == ramp.origin_rpm();
     if first {
-        write_next_ramp_target(ramp, workspace, backend, checkpoints.target_write, opening).await?;
+        write_next_ramp_target(ramp, workspace, backend, stages.target_write, opening).await?;
         safety.begin_velocity_step_primitive(backend.elapsed_us())?;
     } else {
         if backend.elapsed_us() < *next_tick_us {
@@ -1165,13 +1165,13 @@ async fn advance_target_ramp<B: CommissioningBackend>(
             workspace,
             safety,
             backend,
-            checkpoints.encoder_sample,
-            checkpoints.current_input_sample,
-            checkpoints.record_excursion,
+            stages.encoder_sample,
+            stages.current_input_sample,
+            stages.record_excursion,
         )
         .await
         .map_err(RampFault::Sample)?;
-        write_next_ramp_target(ramp, workspace, backend, checkpoints.target_write, opening).await?;
+        write_next_ramp_target(ramp, workspace, backend, stages.target_write, opening).await?;
     }
     let now_us = backend.elapsed_us();
     if !ramp.is_complete() {
@@ -1208,15 +1208,15 @@ async fn advance_zero_ramp<B: CommissioningBackend>(
     workspace: &mut BreakawayProbeWorkspace,
     safety: &mut OuterSafetyLimits,
     backend: &mut B,
-    checkpoints: RampCheckpoints,
+    stages: RampStages,
 ) -> Result<RampTick<SettleSchedule>, RampFault> {
     let first = !ramp.is_started();
     if first {
-        checkpoint_if(checkpoints.moving_boundary);
+        checkpoint_if(stages.moving_boundary);
         let boundary =
             finish_velocity_current_moving_phase(&mut workspace.current_observer, backend).await;
         if let Err(error) = boundary {
-            checkpoint_if(checkpoints.zero_target_write);
+            checkpoint_if(stages.zero_target_write);
             backend
                 .write_register(PID_VELOCITY_TARGET, 0)
                 .await
@@ -1228,14 +1228,7 @@ async fn advance_zero_ramp<B: CommissioningBackend>(
     } else if backend.elapsed_us() < *next_tick_us {
         return Ok(RampTick::Pending(*next_tick_us));
     }
-    write_next_ramp_target(
-        ramp,
-        workspace,
-        backend,
-        checkpoints.zero_target_write,
-        false,
-    )
-    .await?;
+    write_next_ramp_target(ramp, workspace, backend, stages.zero_target_write, false).await?;
     if !ramp.is_complete() {
         let now_us = backend.elapsed_us();
         return Ok(RampTick::Pending(next_ramp_tick_us(
@@ -1245,7 +1238,7 @@ async fn advance_zero_ramp<B: CommissioningBackend>(
         )?));
     }
     safety.enter_settle_phase();
-    checkpoint_if(checkpoints.integrator_clear);
+    checkpoint_if(stages.integrator_clear);
     clear_velocity_error_sum(backend)
         .await
         .map_err(|_| CommissionError::Spi)?;

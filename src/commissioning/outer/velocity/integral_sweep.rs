@@ -1412,8 +1412,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 Ok(sample) => sample,
                 Err(fault) => return fail_integral_tick(phase, backend, fault).await,
             };
-            let (read_us, elapsed_us, delta_counts) =
-                (sample.read_us, sample.elapsed_us, sample.delta_counts);
+            let MovingSample {
+                read_us,
+                elapsed_us,
+                delta_counts,
+            } = sample;
             let torque_target = match read_velocity_pid_output_abs(backend).await {
                 Ok(value) => value,
                 Err(error) => {

@@ -29,7 +29,7 @@ impl RampRate {
 
     /// The stored rate in milli-RPM per millisecond.
     pub(crate) fn milli_rpm_per_ms(self) -> u32 {
-        u32::try_from(self.0).unwrap_or(u32::MAX)
+        u32::try_from(self.0).expect("rates come from u32 inputs scaled by at most 0.12")
     }
 
     /// Ticks needed to traverse `span_rpm`, rounded up; zero for a zero span.
@@ -93,7 +93,10 @@ impl TargetRamp {
         } else {
             -delta
         };
-        i32::try_from(i64::from(self.from_rpm) + signed).ok()
+        Some(
+            i32::try_from(i64::from(self.from_rpm) + signed)
+                .expect("the target lies between two i32 endpoints"),
+        )
     }
 
     /// The target the ramp starts from.
