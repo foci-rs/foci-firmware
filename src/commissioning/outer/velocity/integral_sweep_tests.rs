@@ -3347,6 +3347,26 @@ fn a_failure_after_a_moving_sample_reports_the_sample_read_time_as_run_completio
         }
     };
 
+    let selector_values: std::vec::Vec<u32> = stroke
+        .backend
+        .spi_log
+        .iter()
+        .filter_map(|op| match op {
+            SpiOp::Write(addr, value) if *addr == selector_addr => Some(*value),
+            _ => None,
+        })
+        .collect();
+    let [.., input_select, output_select] = selector_values[..] else {
+        panic!("the sample selects the input then the output register");
+    };
+    assert_eq!(
+        (input_select, output_select),
+        (
+            u32::from(foci_tmc4671::registers::INTERIM_PIDIN_TARGET_TORQUE.sub_addr),
+            u32::from(foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE.sub_addr)
+        ),
+        "the failed write must be the output selector, after the input read succeeded"
+    );
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert!(terminal.run_completed_us > terminal.run_started_us);
     assert_eq!(terminal.run_completed_us, stroke.now_us());
