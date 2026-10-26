@@ -255,6 +255,8 @@ pub struct MockBackend {
     pub spi_log: std::vec::Vec<SpiOp>,
     pub register_pair_reads: usize,
     pub capture_register_reads: usize,
+    /// Fails the capture-register read whose 1-based count equals this value.
+    pub fail_capture_read_at: Option<usize>,
     pub velocity_controller_output_selects: usize,
     pub pid_velocity_error_sum_clears: usize,
     pub pid_velocity_actual_reads: usize,
@@ -353,6 +355,7 @@ impl MockBackend {
             spi_log: std::vec::Vec::new(),
             register_pair_reads: 0,
             capture_register_reads: 0,
+            fail_capture_read_at: None,
             velocity_controller_output_selects: 0,
             pid_velocity_error_sum_clears: 0,
             pid_velocity_actual_reads: 0,
@@ -683,6 +686,9 @@ impl CommissionRegisterIo for MockBackend {
 
     async fn read_capture_register(&mut self, reg: Register) -> Result<u32, Self::Error> {
         self.capture_register_reads += 1;
+        if self.fail_capture_read_at == Some(self.capture_register_reads) {
+            return Err(MockSpiError);
+        }
         self.read_register(reg).await
     }
 

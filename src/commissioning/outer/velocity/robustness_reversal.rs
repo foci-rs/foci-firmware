@@ -1426,8 +1426,31 @@ struct LegRamp<'a> {
 enum LegRampTick {
     /// More ticks follow; the next one is due at this time.
     Pending(u64),
-    /// The ramp reached its target; the time right after the ramp-end write.
+    /// The ramp reached its target; the time of the encoder baseline read after the ramp-end
+    /// write.
     Ended(u64),
+}
+
+/// Reads a fresh encoder baseline for the next observed delta and returns its read time.
+#[allow(clippy::result_large_err)]
+async fn read_encoder_baseline<B: CommissioningBackend>(
+    session: &RobustnessReversalSession,
+    workspace: &mut RobustnessReversalWorkspace,
+    backend: &mut B,
+    counts_per_rev: u32,
+) -> Result<u64, StepResult> {
+    let Ok(baseline) = backend.read_capture_register(ABN_DECODER_COUNT).await else {
+        return Err(fault_terminal(
+            session,
+            backend,
+            None,
+            ROBUSTNESS_CAUSE_IO,
+            counts_per_rev,
+        ));
+    };
+    workspace.previous_encoder_raw = baseline;
+    workspace.previous_read_us = backend.elapsed_us();
+    Ok(workspace.previous_read_us)
 }
 
 /// Runs one ramp tick: the first tick reads the encoder baseline, later ticks run the per-tick
@@ -1448,17 +1471,7 @@ async fn advance_leg_ramp<B: CommissioningBackend>(
     let counts_per_rev = safety.counts_per_rev();
     let first = !ramp.is_started();
     if first {
-        let Ok(baseline) = backend.read_capture_register(ABN_DECODER_COUNT).await else {
-            return Err(fault_terminal(
-                session,
-                backend,
-                None,
-                ROBUSTNESS_CAUSE_IO,
-                counts_per_rev,
-            ));
-        };
-        workspace.previous_encoder_raw = baseline;
-        workspace.previous_read_us = backend.elapsed_us();
+        read_encoder_baseline(session, workspace, backend, counts_per_rev).await?;
     } else {
         if backend.elapsed_us() < *next_tick_us {
             return Ok(LegRampTick::Pending(*next_tick_us));
@@ -1493,7 +1506,9 @@ async fn advance_leg_ramp<B: CommissioningBackend>(
         }
     }
     if ramp.is_complete() {
-        return Ok(LegRampTick::Ended(written_us));
+        let baseline_us =
+            read_encoder_baseline(session, workspace, backend, counts_per_rev).await?;
+        return Ok(LegRampTick::Ended(baseline_us));
     }
     match next_ramp_tick_us(next_tick_us, first, written_us) {
         Ok(at_us) => Ok(LegRampTick::Pending(at_us)),
@@ -1526,7 +1541,7 @@ async fn write_next_ramp_target<B: CommissioningBackend>(
     Ok(())
 }
 
-/// A leg's final target and the time right after its ramp-end write.
+/// A leg's final target and the time of the encoder baseline read after its ramp-end write.
 struct LegCapture {
     signed_target_rpm: i32,
     started_us: u64,
@@ -4504,7 +4519,7 @@ mod tests {
         step_parts_until(&mut parts, |state| {
             matches!(state, RobustnessReversalState::ReverseCapture { .. })
         });
-        let ramp_end_write_us = parts.workspace.previous_read_us + SPI_STEP_US;
+        let post_write_read_us = parts.workspace.previous_read_us;
 
         let RobustnessReversalState::ReverseCapture {
             next_sample_us,
@@ -4517,12 +4532,88 @@ mod tests {
 
         parts.harvest_targets();
         assert_eq!(parts.targets.last(), Some(&-153));
-        assert_eq!(next_sample_us, ramp_end_write_us + CAPTURE_PERIOD_US);
+        let target_addr = PID_VELOCITY_TARGET.addr();
+        let last_target_write = parts
+            .backend
+            .spi_log
+            .iter()
+            .rposition(|op| matches!(op, SpiOp::Write(addr, _) if *addr == target_addr))
+            .expect("the ramp wrote its target");
+        assert_eq!(
+            &parts.backend.spi_log[last_target_write + 1..],
+            &[SpiOp::Read],
+            "the capture baseline is read after the ramp-end write"
+        );
+        assert_eq!(next_sample_us, post_write_read_us + CAPTURE_PERIOD_US);
         assert_eq!(
             budget_deadline_us,
-            ramp_end_write_us + u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US)
+            post_write_read_us + u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US)
         );
         assert_eq!(parts.workspace.observations.observation_len(), 0);
+    }
+
+    #[test]
+    fn the_first_scored_observation_starts_after_the_ramp_end_write() {
+        const SPI_STEP_US: u64 = 7;
+        const MOVED_DURING_WRITE: u32 = 5;
+        let mut parts = RunParts::new(point_at_180());
+        parts.backend.spi_elapsed_step_us = SPI_STEP_US;
+        step_parts_until(&mut parts, |state| {
+            matches!(
+                state,
+                RobustnessReversalState::ReverseRamp { ramp, .. }
+                    if ramp.is_started() && ramp.next_is_final()
+            )
+        });
+        let before_write = (parts.workspace.previous_encoder_raw + 4_000 - 10) % 4_000;
+        let after_write = (before_write + 4_000 - MOVED_DURING_WRITE) % 4_000;
+        let first_sample = (after_write + 4_000 - 10) % 4_000;
+        parts
+            .backend
+            .set_abn_decoder_count_sequence(&[before_write, after_write, first_sample]);
+
+        let StepResult::At(next_sample_us) = parts.step() else {
+            panic!("the ramp-end tick schedules the first capture sample");
+        };
+        assert!(matches!(
+            parts.state,
+            RobustnessReversalState::ReverseCapture { .. }
+        ));
+        let baseline_read_us = parts.workspace.previous_read_us;
+        parts.backend.elapsed_us_value = next_sample_us;
+        let _ = parts.step();
+
+        let observations: std::vec::Vec<_> = parts.workspace.observations.iter().collect();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].delta_counts, -10);
+        assert_eq!(
+            u64::from(observations[0].elapsed_us),
+            next_sample_us + SPI_STEP_US - baseline_read_us
+        );
+        assert_eq!(next_sample_us, baseline_read_us + CAPTURE_PERIOD_US);
+    }
+
+    #[test]
+    fn a_failed_baseline_read_after_the_ramp_end_write_takes_the_io_terminal() {
+        let mut parts = RunParts::new(point_at_180());
+        step_parts_until(&mut parts, |state| {
+            matches!(
+                state,
+                RobustnessReversalState::ReverseRamp { ramp, .. }
+                    if ramp.is_started() && ramp.next_is_final()
+            )
+        });
+        parts.backend.fail_capture_read_at = Some(parts.backend.capture_register_reads + 2);
+
+        let StepResult::RobustnessReversalTerminal(terminal) = parts.step() else {
+            panic!("a failed baseline read must end the run");
+        };
+
+        parts.harvest_targets();
+        assert_eq!(parts.targets.last(), Some(&-153));
+        assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_IO);
+        assert!(terminal.safety_fault.is_none());
     }
 
     #[test]
