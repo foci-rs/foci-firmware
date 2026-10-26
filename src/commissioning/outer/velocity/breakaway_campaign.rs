@@ -106,6 +106,7 @@ pub(crate) struct BreakawayProbeWorkspace {
     settle_min_displacement_counts: i8,
     settle_max_displacement_counts: i8,
     last_target_rpm: i32,
+    moving_limiter_contact: bool,
     #[defmt(Debug2Format)]
     observations: VelocityObservationRing,
     #[defmt(Debug2Format)]
@@ -125,6 +126,7 @@ impl BreakawayProbeWorkspace {
             settle_min_displacement_counts: 0,
             settle_max_displacement_counts: 0,
             last_target_rpm: 0,
+            moving_limiter_contact: false,
             observations: VelocityObservationRing::new(),
             blocker: DyadicBlocker::new(),
             analysis: StationarityWork::new(),
@@ -277,6 +279,13 @@ fn current_guard_fault(error: VelocityCurrentGuardError) -> BreakawayProbeStep {
         VelocityCurrentGuardError::RegisterIo => CommissionError::Spi,
         VelocityCurrentGuardError::ActionableStatus(status) => {
             defmt::warn!("probe current guard actionable status: {:#x}", status);
+            CommissionError::SafetyEnvelopeViolation
+        }
+        // The probe climbs from the smallest representable gain; limiter contact
+        // there means the axis cannot follow even the gentlest stroke, which is
+        // still a fault rather than a reached authority ceiling.
+        VelocityCurrentGuardError::LimiterContact(status) => {
+            defmt::warn!("probe current guard limiter contact: {:#x}", status);
             CommissionError::SafetyEnvelopeViolation
         }
     })
@@ -987,6 +996,7 @@ struct RampStages {
     zero_target_write: Option<BreakawayCheckpoint>,
     integrator_clear: Option<BreakawayCheckpoint>,
     record_excursion: bool,
+    tolerate_limiter_contact: bool,
 }
 
 const PROBE_RAMP: RampStages = RampStages {
@@ -1000,6 +1010,7 @@ const PROBE_RAMP: RampStages = RampStages {
     zero_target_write: Some(BreakawayCheckpoint::ProbeZeroTargetWrite),
     integrator_clear: Some(BreakawayCheckpoint::ProbeZeroIntegratorClear),
     record_excursion: true,
+    tolerate_limiter_contact: false,
 };
 
 const STROKE_RAMP: RampStages = RampStages {
@@ -1013,6 +1024,12 @@ const STROKE_RAMP: RampStages = RampStages {
     zero_target_write: None,
     integrator_clear: None,
     record_excursion: false,
+    tolerate_limiter_contact: false,
+};
+
+const DISCOVERY_STROKE_RAMP: RampStages = RampStages {
+    tolerate_limiter_contact: true,
+    ..STROKE_RAMP
 };
 
 fn checkpoint_if(checkpoint: Option<BreakawayCheckpoint>) {
@@ -1228,7 +1245,13 @@ async fn advance_zero_ramp<B: CommissioningBackend>(
         checkpoint_if(stages.moving_boundary);
         let boundary =
             finish_velocity_current_moving_phase(&mut workspace.current_observer, backend).await;
-        if let Err(error) = boundary {
+        workspace.moving_limiter_contact = false;
+        if let Err(VelocityCurrentGuardError::LimiterContact(status)) = boundary
+            && stages.tolerate_limiter_contact
+        {
+            defmt::warn!("moving boundary limiter contact: status={:#x}", status);
+            workspace.moving_limiter_contact = true;
+        } else if let Err(error) = boundary {
             checkpoint_if(stages.zero_target_write);
             backend
                 .write_register(PID_VELOCITY_TARGET, 0)
@@ -1636,11 +1659,29 @@ fn discovery_current_guard_fault(error: VelocityCurrentGuardError) -> AdditiveDi
     discovery_fault(match error {
         VelocityCurrentGuardError::InvalidLimit => CommissionError::InvalidCurrentLimit,
         VelocityCurrentGuardError::RegisterIo => CommissionError::Spi,
-        VelocityCurrentGuardError::ActionableStatus(status) => {
+        VelocityCurrentGuardError::ActionableStatus(status)
+        | VelocityCurrentGuardError::LimiterContact(status) => {
             defmt::warn!("discovery current guard actionable status: {:#x}", status);
             CommissionError::DiscoveryCurrentGuardStatus
         }
     })
+}
+
+fn end_ladder_on_limiter_contact(
+    session: &mut AdditiveDiscoverySession,
+) -> Option<AdditiveDiscoveryStep> {
+    defmt::warn!(
+        "discovery rung={} limiter contact in_band={}",
+        session.rung_index,
+        session.in_band.count(),
+    );
+    if session.in_band.count() == 0 {
+        return Some(discovery_fault(
+            CommissionError::DiscoveryCurrentGuardStatus,
+        ));
+    }
+    session.pending_headroom_stop = true;
+    None
 }
 
 fn discovery_step_from_probe_fault(step: BreakawayProbeStep) -> AdditiveDiscoveryStep {
@@ -1871,11 +1912,23 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     STEP_PEAK_ADMISSION_PERMILLE,
                 );
             }
-            match advance_zero_ramp(ramp, next_tick_us, workspace, safety, backend, STROKE_RAMP)
-                .await
+            match advance_zero_ramp(
+                ramp,
+                next_tick_us,
+                workspace,
+                safety,
+                backend,
+                DISCOVERY_STROKE_RAMP,
+            )
+            .await
             {
                 Ok(RampTick::Pending(at_us)) => AdditiveDiscoveryStep::At(at_us),
                 Ok(RampTick::Reached(schedule)) => {
+                    if core::mem::take(&mut workspace.moving_limiter_contact)
+                        && let Some(fault) = end_ladder_on_limiter_contact(session)
+                    {
+                        return fault;
+                    }
                     workspace.analysis.reset_with_structured_diagnostics();
                     *state = AdditiveDiscoveryState::AnalyzeMoving {
                         settle_deadline_us: schedule.settle_deadline_us,
@@ -2116,10 +2169,16 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 Ok(ScoredRestPoll::Complete(confirmation)) => confirmation,
                 Err(error) => return discovery_fault(error),
             };
-            if let Err(error) =
-                finish_velocity_current_zero_phase(&mut workspace.current_observer, backend).await
+            match finish_velocity_current_zero_phase(&mut workspace.current_observer, backend).await
             {
-                return discovery_current_guard_fault(error);
+                Ok(()) => {}
+                Err(VelocityCurrentGuardError::LimiterContact(status)) => {
+                    defmt::warn!("zero boundary limiter contact: status={:#x}", status);
+                    if let Some(fault) = end_ladder_on_limiter_contact(session) {
+                        return fault;
+                    }
+                }
+                Err(error) => return discovery_current_guard_fault(error),
             }
             if workspace
                 .current_observer
@@ -2671,11 +2730,28 @@ fn confirmation_safety_fault(
 }
 
 fn confirmation_current_guard_fault(error: VelocityCurrentGuardError) -> BandConfirmationStep {
-    confirmation_fault(match error {
-        VelocityCurrentGuardError::InvalidLimit => CommissionError::InvalidCurrentLimit,
-        VelocityCurrentGuardError::RegisterIo => CommissionError::Spi,
-        VelocityCurrentGuardError::ActionableStatus(_) => CommissionError::SafetyEnvelopeViolation,
-    })
+    match error {
+        VelocityCurrentGuardError::InvalidLimit => {
+            confirmation_fault(CommissionError::InvalidCurrentLimit)
+        }
+        VelocityCurrentGuardError::RegisterIo => confirmation_fault(CommissionError::Spi),
+        VelocityCurrentGuardError::ActionableStatus(_) => {
+            confirmation_fault(CommissionError::SafetyEnvelopeViolation)
+        }
+        // A held-out stroke that drives the current loops or the voltage output
+        // into a limit cannot confirm the band at the nominated gain. Report the
+        // same current-authority verdict a headroom-excluded observation would,
+        // so the campaign ends inconclusive instead of as an internal fault.
+        VelocityCurrentGuardError::LimiterContact(status) => {
+            defmt::warn!(
+                "confirmation limiter contact: status={:#x}, ending on current authority",
+                status,
+            );
+            BandConfirmationStep::Done(BandConfirmationOutcome::TargetBandConfirmationInconclusive(
+                super::band_confirmation::BandConfirmationFailureCause::CurrentAuthority,
+            ))
+        }
+    }
 }
 
 fn confirmation_step_from_probe_fault(step: BreakawayProbeStep) -> BandConfirmationStep {
