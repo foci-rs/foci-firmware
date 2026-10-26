@@ -320,8 +320,8 @@ fn integral_plan_freezes_geometry_and_conservative_duration() {
     assert_eq!(plan.recovery_nominal_slot_us, 1_816_958);
     assert_eq!(plan.recovery_maximum_slot_us, 3_000_000);
     assert_eq!(plan.recovery_slot_count, 15);
-    assert_eq!(plan.nominal_workflow_ms, 180_391);
-    assert_eq!(plan.maximum_workflow_ms, 198_136);
+    assert_eq!(plan.nominal_workflow_ms, 179_671);
+    assert_eq!(plan.maximum_workflow_ms, 197_416);
     let base_us = u32::from(plan.total_rung_count)
         * INTEGRAL_OBSERVATIONS_PER_RUNG
         * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US + 2 * plan.ramp_us);
@@ -847,7 +847,7 @@ fn integral_authority_rejects_an_acceptance_for_a_different_candidate() {
 #[test]
 fn breakaway_plan_digest_reflects_the_half_octave_insertion() {
     let plan = build_test_breakaway_plan();
-    assert_eq!(plan.digest(), 17_037_049_690_968_400_623);
+    assert_eq!(plan.digest(), 9_059_005_830_507_212_888);
 }
 
 fn breakaway_acquisition_context() -> AcquisitionContext {
@@ -1552,9 +1552,9 @@ fn integral_plan_charges_the_ramp_and_hashes_it() {
     let slow = build_breakaway_plan_with_accel(500_000).unwrap();
     let fast = build_breakaway_plan_with_accel(1_000_000).unwrap();
 
-    assert_eq!(slow.ramp_milli_rpm_per_ms, 60_000);
+    assert_eq!(slow.ramp_milli_rpm_per_ms, 90_000);
     let span = slow.target_velocity_rpm.unsigned_abs();
-    assert_eq!(slow.ramp_us, (span * 1_000).div_ceil(60_000) * 1_000);
+    assert_eq!(slow.ramp_us, (span * 1_000).div_ceil(90_000) * 1_000);
     assert!(slow.ramp_us > fast.ramp_us);
     assert_eq!(slow.expected_observations, fast.expected_observations);
     let extra_us = 2 * (slow.ramp_us - fast.ramp_us) * u32::from(slow.expected_observations);
@@ -1571,7 +1571,7 @@ fn integral_plan_charges_the_ramp_and_hashes_it() {
 #[test]
 fn integral_plan_rejects_a_zero_ramp_rate() {
     assert_eq!(
-        build_breakaway_plan_with_accel(8),
+        build_breakaway_plan_with_accel(5),
         Err(VelocityIntegralPlanError::InvalidRequest)
     );
 }

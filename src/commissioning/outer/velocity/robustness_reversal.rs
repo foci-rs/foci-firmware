@@ -2195,7 +2195,7 @@ mod tests {
     }
 
     fn test_rate() -> RampRate {
-        RampRate::from_accel(500_000).expect("the fixture acceleration gives a nonzero rate")
+        RampRate::from_accel(333_334).expect("the fixture acceleration gives a nonzero rate")
     }
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]

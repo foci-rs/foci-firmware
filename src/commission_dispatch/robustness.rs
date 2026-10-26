@@ -364,9 +364,9 @@ mod tests {
         };
         assert_eq!(
             robustness_ramp_plan(&point, 500_000).map(|(_, cycle_ramp_us)| cycle_ramp_us),
-            Ok(12_000)
+            Ok(8_000)
         );
-        for slow_accel in [0, 8, 9] {
+        for slow_accel in [0, 5, 6] {
             assert_eq!(
                 robustness_ramp_plan(&point, slow_accel),
                 Err(CommissionError::CampaignPlanInvalid),

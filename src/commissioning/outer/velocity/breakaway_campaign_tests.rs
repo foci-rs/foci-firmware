@@ -16,7 +16,7 @@ use foci_tmc4671::{
 };
 
 fn test_ramp_rate() -> RampRate {
-    RampRate::from_accel(500_000).expect("nonzero ramp rate")
+    RampRate::from_accel(333_334).expect("nonzero ramp rate")
 }
 
 fn gain(raw: u16) -> PidPGain {

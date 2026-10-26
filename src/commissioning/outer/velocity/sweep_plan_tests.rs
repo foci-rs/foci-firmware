@@ -64,8 +64,8 @@ fn live_recovery_geometry_extends_both_workflow_durations() {
     assert_eq!(plan.recovery_nominal_slot_us, 1_816_958);
     assert_eq!(plan.recovery_maximum_slot_us, primitive_cap_us);
     assert_eq!(plan.recovery_slot_count, 23);
-    assert_eq!(plan.nominal_workflow_ms, 275_471);
-    assert_eq!(plan.maximum_workflow_ms, 302_680);
+    assert_eq!(plan.nominal_workflow_ms, 274_367);
+    assert_eq!(plan.maximum_workflow_ms, 301_576);
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn proportional_plan_uses_operational_current_authority_and_new_schemas() {
     assert_eq!(combined.schema_revision, PROPORTIONAL_PLAN_SCHEMA_REVISION);
     assert_eq!(PROPORTIONAL_PLAN_SCHEMA_REVISION, 18);
     assert_eq!(combined.recovery_nominal_slot_us, 2_316_958);
-    assert_eq!(combined.nominal_workflow_ms, 286_971);
+    assert_eq!(combined.nominal_workflow_ms, 285_867);
     assert_eq!(combined.target_velocity_rpm.raw(), 263);
     assert_eq!(combined.usable_torque_limit, 2_816);
     assert_eq!(combined.p_top.raw(), 2_741);
@@ -162,8 +162,8 @@ fn live_geometry_uses_mechanical_rpm_and_the_corrected_ladder() {
     assert_eq!(plan.p_top.raw(), 3_685);
     assert_eq!(plan.rung_count, 23);
     assert_eq!(plan.observations_per_direction, 4);
-    assert_eq!(plan.nominal_workflow_ms, 276_986);
-    assert_eq!(plan.maximum_workflow_ms, 1_612_576);
+    assert_eq!(plan.nominal_workflow_ms, 275_882);
+    assert_eq!(plan.maximum_workflow_ms, 1_611_472);
     assert_eq!(
         u16::from(plan.rung_count) * plan.observations_per_direction,
         92
@@ -622,9 +622,9 @@ fn sweep_plan_carries_the_ramp_rate_and_charges_two_ramps_per_stroke() {
         ..request()
     };
     let slow = plan_for(slow_request).unwrap();
-    assert_eq!(slow.ramp_milli_rpm_per_ms, 60_000);
+    assert_eq!(slow.ramp_milli_rpm_per_ms, 90_000);
     let span = slow.target_velocity_rpm.raw().unsigned_abs();
-    assert_eq!(slow.ramp_us, (span * 1_000).div_ceil(60_000) * 1_000);
+    assert_eq!(slow.ramp_us, (span * 1_000).div_ceil(90_000) * 1_000);
 
     let fast = plan_for(VelocitySweepRequest {
         max_accel_mrev_s2: 1_000_000,
@@ -647,7 +647,7 @@ fn sweep_plan_carries_the_ramp_rate_and_charges_two_ramps_per_stroke() {
 #[test]
 fn sweep_plan_rejects_a_rate_that_rounds_to_zero() {
     let request = VelocitySweepRequest {
-        max_accel_mrev_s2: 8,
+        max_accel_mrev_s2: 5,
         ..request()
     };
     assert_eq!(plan_for(request), Err(VelocityPlanError::InvalidRequest));

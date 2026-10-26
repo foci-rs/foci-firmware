@@ -5,7 +5,7 @@ use crate::autotune::CommissionError;
 use crate::commissioning::schedule::next_grid_deadline;
 
 /// Multiplier applied to the configured acceleration limit when shaping a ramp.
-pub(crate) const RAMP_ACCEL_MULTIPLIER: u32 = 2;
+pub(crate) const RAMP_ACCEL_MULTIPLIER: u32 = 3;
 
 /// Ramp slew rate in milli-RPM per millisecond tick. Never zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -144,12 +144,12 @@ mod tests {
 
     #[test]
     fn rate_from_accel_converts_mrev_s2_to_milli_rpm_per_ms() {
-        assert_eq!(RampRate::from_accel(500_000).unwrap().0, 60_000);
-        assert_eq!(RampRate::from_accel(8), None);
-        assert_eq!(RampRate::from_accel(9).unwrap().0, 1);
+        assert_eq!(RampRate::from_accel(500_000).unwrap().0, 90_000);
+        assert_eq!(RampRate::from_accel(5), None);
+        assert_eq!(RampRate::from_accel(6).unwrap().0, 1);
         assert_eq!(
             RampRate::from_accel(u32::MAX).unwrap().0,
-            u64::from(u32::MAX) * 6 / 50
+            u64::from(u32::MAX) * 9 / 50
         );
     }
 
@@ -166,13 +166,13 @@ mod tests {
     #[test]
     fn ticks_round_up_and_a_zero_span_takes_no_ticks() {
         let rate = RampRate::from_accel(500_000).unwrap();
-        assert_eq!(rate.ticks_for_span_rpm(274), 5);
-        assert_eq!(rate.ramp_us_for_span_rpm(274), 5_000);
-        assert_eq!(rate.ticks_for_span_rpm(300), 5);
-        assert_eq!(rate.ticks_for_span_rpm(301), 6);
+        assert_eq!(rate.ticks_for_span_rpm(274), 4);
+        assert_eq!(rate.ramp_us_for_span_rpm(274), 4_000);
+        assert_eq!(rate.ticks_for_span_rpm(360), 4);
+        assert_eq!(rate.ticks_for_span_rpm(361), 5);
         assert_eq!(rate.ticks_for_span_rpm(0), 0);
         assert_eq!(
-            RampRate::from_accel(9).unwrap().ticks_for_span_rpm(274),
+            RampRate::from_accel(6).unwrap().ticks_for_span_rpm(274),
             274_000
         );
     }
@@ -180,9 +180,9 @@ mod tests {
     #[test]
     fn reversal_sequence_changes_sign_between_ticks_and_ends_exactly_on_target() {
         let mut ramp = TargetRamp::new(153, -153, RampRate::from_accel(500_000).unwrap());
-        assert_eq!(ramp.ticks(), 6);
+        assert_eq!(ramp.ticks(), 4);
         let seq: heapless::Vec<i32, 8> = core::iter::from_fn(|| ramp.next()).collect();
-        assert_eq!(seq.as_slice(), &[93, 33, -27, -87, -147, -153]);
+        assert_eq!(seq.as_slice(), &[63, -27, -117, -153]);
         assert!(ramp.is_complete());
     }
 
@@ -191,10 +191,10 @@ mod tests {
         let rate = RampRate::from_accel(500_000).unwrap();
         let mut up = TargetRamp::new(0, 274, rate);
         let seq: heapless::Vec<i32, 8> = core::iter::from_fn(|| up.next()).collect();
-        assert_eq!(seq.as_slice(), &[60, 120, 180, 240, 274]);
-        let mut small = TargetRamp::new(0, 60, rate);
+        assert_eq!(seq.as_slice(), &[90, 180, 270, 274]);
+        let mut small = TargetRamp::new(0, 90, rate);
         assert_eq!(small.ticks(), 1);
-        assert_eq!(small.next(), Some(60));
+        assert_eq!(small.next(), Some(90));
         assert_eq!(small.next(), None);
         let none = TargetRamp::new(100, 100, rate);
         assert_eq!(none.ticks(), 0);
