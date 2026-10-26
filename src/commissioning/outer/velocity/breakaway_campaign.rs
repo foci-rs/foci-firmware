@@ -983,7 +983,6 @@ struct RampCheckpoints {
     target_write: Option<BreakawayCheckpoint>,
     encoder_sample: Option<BreakawayCheckpoint>,
     current_input_sample: Option<BreakawayCheckpoint>,
-    current_output_sample: Option<BreakawayCheckpoint>,
     moving_boundary: Option<BreakawayCheckpoint>,
     zero_target_write: Option<BreakawayCheckpoint>,
     integrator_clear: Option<BreakawayCheckpoint>,
@@ -997,7 +996,6 @@ const PROBE_RAMP: RampCheckpoints = RampCheckpoints {
     target_write: Some(BreakawayCheckpoint::ProbeTargetWrite),
     encoder_sample: Some(BreakawayCheckpoint::ProbeMovingEncoderSample),
     current_input_sample: Some(BreakawayCheckpoint::ProbeMovingCurrentInputSample),
-    current_output_sample: Some(BreakawayCheckpoint::ProbeMovingCurrentOutputSample),
     moving_boundary: Some(BreakawayCheckpoint::ProbeMovingBoundary),
     zero_target_write: Some(BreakawayCheckpoint::ProbeZeroTargetWrite),
     integrator_clear: Some(BreakawayCheckpoint::ProbeZeroIntegratorClear),
@@ -1011,7 +1009,6 @@ const STROKE_RAMP: RampCheckpoints = RampCheckpoints {
     target_write: None,
     encoder_sample: None,
     current_input_sample: None,
-    current_output_sample: None,
     moving_boundary: None,
     zero_target_write: None,
     integrator_clear: None,
@@ -1158,8 +1155,8 @@ fn next_ramp_tick_us(
 
 /// Advances the stroke's ramp toward its target by one tick.
 ///
-/// The first tick opens the velocity-step primitive; later ticks sample the moving stroke
-/// before writing. The first register write of the ramp is verified. The tick that writes the final target clears
+/// The first tick opens the velocity-step primitive; later ticks run the moving-stroke safety
+/// checks before writing but score nothing. The first register write of the ramp is verified. The tick that writes the final target clears
 /// the observation ring, isolates the primitive peak and schedules the capture from that tick.
 #[allow(clippy::result_large_err)]
 async fn advance_target_ramp<B: CommissioningBackend>(
@@ -1189,11 +1186,6 @@ async fn advance_target_ramp<B: CommissioningBackend>(
         )
         .await
         .map_err(RampFault::Sample)?;
-        checkpoint_if(checkpoints.current_output_sample);
-        let output = read_velocity_pid_output_abs(backend)
-            .await
-            .map_err(RampFault::CurrentGuard)?;
-        workspace.current_observer.observe_moving_output(output);
         write_next_ramp_target(ramp, workspace, backend, checkpoints.target_write, opening).await?;
     }
     let now_us = backend.elapsed_us();

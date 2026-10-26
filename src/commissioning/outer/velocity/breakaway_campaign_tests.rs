@@ -4678,6 +4678,31 @@ fn the_first_issued_ramp_write_is_verified_when_the_first_tick_rounds_to_no_chan
     assert_eq!(verified_by_write, [true, false]);
 }
 
+fn set_pid_output(backend: &mut MockBackend, value: u32) {
+    let _ = backend.registers.insert(
+        foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+            .data
+            .addr(),
+        value,
+    );
+}
+
+#[test]
+fn ramp_phase_pid_output_is_not_scored_into_the_moving_peak() {
+    let mut stroke = DiscoveryStroke::new(274, test_ramp_rate());
+    stroke.run_until(|stroke| matches!(stroke.state, AdditiveDiscoveryState::RampTarget { .. }));
+    set_pid_output(&mut stroke.backend, 900);
+    stroke.run_until(|stroke| matches!(stroke.state, AdditiveDiscoveryState::Capture { .. }));
+    set_pid_output(&mut stroke.backend, 100);
+
+    stroke.run_until(|stroke| matches!(stroke.state, AdditiveDiscoveryState::RampZero { .. }));
+
+    assert_eq!(
+        stroke.workspace.current_observer.moving_pid_output_peak(),
+        100
+    );
+}
+
 #[test]
 fn probe_confirmation_and_discovery_all_ramp() {
     let (_, probe_backend) = run_probe(test_plan(), |_direction, _index| true);
