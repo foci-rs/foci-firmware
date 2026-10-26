@@ -421,9 +421,10 @@ pub(crate) const ROBUSTNESS_IAE_REFERENCE_WINDOW_US: u32 = 500_000;
 /// Gap between the measurement budget and the reconvergence trip line.
 pub(crate) const ROBUSTNESS_TRIP_TIME_HEADROOM_US: u32 = 100_000;
 
-/// Probe-leg cruise target as a percentage of the campaign amplitude; at 85% the envelope cap
-/// sits at about 1.76x of the leg target, and [`REVERSAL_PEAK_REJECT_PERMILLE`] one settle
-/// band under it.
+/// Probe-leg cruise target as a percentage of the campaign amplitude. The margin keeps a cycle's
+/// worst-case leg windows inside the travel budget on short strokes. The cap ratio follows from
+/// it: at 85% the envelope cap sits at about 1.76x of the leg target, and
+/// [`REVERSAL_PEAK_REJECT_PERMILLE`] one settle band under it.
 pub(crate) const ROBUSTNESS_LEG_AMPLITUDE_PCT: i32 = 85;
 
 /// Bounded retry count for an inconclusive probe leg.
