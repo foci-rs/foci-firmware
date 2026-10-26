@@ -416,6 +416,11 @@ impl OuterSafetyLimits {
         self.in_settle_phase = true;
     }
 
+    #[cfg(test)]
+    pub(crate) const fn in_settle_phase(&self) -> bool {
+        self.in_settle_phase
+    }
+
     /// The steady velocity cap while a commanded amplitude is active, ignoring the transient
     /// allowance and the settle ceiling.
     pub(crate) fn moving_velocity_cap_milli_counts_per_s(&self) -> u64 {

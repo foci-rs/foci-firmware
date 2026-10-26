@@ -3319,3 +3319,35 @@ fn an_encoder_velocity_fault_during_the_integral_zero_ramp_is_caught_by_the_safe
         Some(crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY)
     );
 }
+
+#[test]
+fn a_failure_after_a_moving_sample_reports_the_sample_read_time_as_run_completion() {
+    let selector_addr = foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+        .addr
+        .addr();
+    let mut stroke = IntegralStroke::at_rung(ramp_plan(), 1);
+    let mut capture_steps = 0_u32;
+
+    let terminal = loop {
+        if matches!(stroke.state(), VelocityIntegralState::Capture { .. }) {
+            capture_steps += 1;
+            if capture_steps > 3 {
+                let selector_writes = stroke
+                    .backend
+                    .spi_log
+                    .iter()
+                    .filter(|op| matches!(op, SpiOp::Write(addr, _) if *addr == selector_addr))
+                    .count();
+                stroke.backend.fail_on_write_occurrence =
+                    Some((selector_addr, selector_writes + 1));
+            }
+        }
+        if let StepResult::VelocityIntegralTerminal(terminal) = stroke.step(false, tracking_plant) {
+            break terminal;
+        }
+    };
+
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+    assert!(terminal.run_completed_us > terminal.run_started_us);
+    assert_eq!(terminal.run_completed_us, stroke.now_us());
+}

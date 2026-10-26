@@ -4616,10 +4616,6 @@ fn discovery_capture_deadline_starts_at_the_ramp_end() {
     assert_eq!(stroke.workspace.observations.len(), 0);
 }
 
-fn in_settle_phase(safety: &OuterSafetyLimits) -> bool {
-    std::format!("{safety:?}").contains("in_settle_phase: true")
-}
-
 #[test]
 fn settle_phase_is_entered_when_the_zero_ramp_completes() {
     let mut stroke = DiscoveryStroke::new(274, test_ramp_rate());
@@ -4630,7 +4626,7 @@ fn settle_phase_is_entered_when_the_zero_ramp_completes() {
         stroke.step();
         let writes = stroke.target_writes();
         if writes.len() > writes_before && matches!(writes.last(), Some(&34) | Some(&0)) {
-            settle_after.push(in_settle_phase(&stroke.safety));
+            settle_after.push(stroke.safety.in_settle_phase());
         }
     }
 
@@ -4827,6 +4823,10 @@ impl DispatchedDiscovery {
             state: AdditiveDiscoveryState::PlannedDiscovery,
             session,
         };
+        Self::in_campaign(campaign)
+    }
+
+    fn in_campaign(campaign: BreakawayCampaign) -> Self {
         Self {
             phase: OuterPhase::BreakawayCampaign {
                 campaign,
@@ -4892,7 +4892,7 @@ impl DispatchedDiscovery {
 }
 
 #[test]
-fn discovery_step_peak_excludes_the_ramp_and_the_straddling_window() {
+fn discovery_step_peak_is_scored_from_the_ramp_end() {
     const TARGET_RPM: i32 = 270;
     let mut run = DispatchedDiscovery::new(TARGET_RPM);
 
@@ -4919,7 +4919,10 @@ fn discovery_step_peak_excludes_the_ramp_and_the_straddling_window() {
 }
 
 fn run_dispatched_fault(trigger_write: i32) -> DispatchedDiscovery {
-    let mut run = DispatchedDiscovery::new(274);
+    run_until_jump_fault(DispatchedDiscovery::new(274), trigger_write)
+}
+
+fn run_until_jump_fault(mut run: DispatchedDiscovery, trigger_write: i32) -> DispatchedDiscovery {
     let mut jumped = false;
 
     for _ in 0..10_000 {
@@ -4968,5 +4971,51 @@ fn an_encoder_velocity_fault_during_the_zero_ramp_is_caught_by_the_safety_sample
     assert_eq!(
         run.campaign_terminal_cause(),
         Some(BreakawayTerminalCause::DiscoverySafetyFault as u8)
+    );
+}
+
+#[test]
+fn an_encoder_velocity_fault_during_the_probe_ramp_skips_the_ramp_down_and_zeroes() {
+    let campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign");
+    assert!(matches!(
+        campaign.phase(),
+        BreakawayCampaignPhase::Probe { .. }
+    ));
+
+    let run = run_until_jump_fault(DispatchedDiscovery::in_campaign(campaign), 60);
+
+    assert_eq!(velocity_target_writes(&run.backend.spi_log), [60, 100, 0]);
+    assert_eq!(
+        run.safety_fault_reason(),
+        Some(crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY)
+    );
+}
+
+#[test]
+fn an_encoder_velocity_fault_during_the_confirmation_ramp_skips_the_ramp_down_and_zeroes() {
+    let session = match begin_band_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(724)),
+        42,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        test_ramp_rate(),
+        u16::MAX,
+        0,
+    ) {
+        BandConfirmationEntry::Ready(session) => session,
+        BandConfirmationEntry::Done(outcome) => panic!("confirmation did not begin: {outcome:?}"),
+    };
+    let mut campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign");
+    campaign.phase = BreakawayCampaignPhase::Confirmation {
+        state: BandConfirmationState::PlannedConfirmation,
+        session,
+    };
+
+    let run = run_until_jump_fault(DispatchedDiscovery::in_campaign(campaign), 60);
+
+    assert_eq!(velocity_target_writes(&run.backend.spi_log), [60, 100, 0]);
+    assert_eq!(
+        run.safety_fault_reason(),
+        Some(crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY)
     );
 }

@@ -4471,10 +4471,6 @@ mod tests {
         panic!("the awaited state was never reached");
     }
 
-    fn in_settle_phase(safety: &OuterSafetyLimits) -> bool {
-        std::format!("{safety:?}").contains("in_settle_phase: true")
-    }
-
     #[test]
     fn the_settle_phase_is_entered_at_the_zero_ramp_end() {
         let mut parts = RunParts::new(point_at_180());
@@ -4489,7 +4485,7 @@ mod tests {
         });
         parts.harvest_targets();
         assert_eq!(parts.targets.last(), Some(&-33));
-        assert!(!in_settle_phase(&parts.safety));
+        assert!(!parts.safety.in_settle_phase());
 
         step_parts_until(&mut parts, |state| {
             matches!(state, RobustnessReversalState::ZeroCapture { .. })
@@ -4497,7 +4493,7 @@ mod tests {
 
         parts.harvest_targets();
         assert_eq!(parts.targets.last(), Some(&0));
-        assert!(in_settle_phase(&parts.safety));
+        assert!(parts.safety.in_settle_phase());
     }
 
     #[test]

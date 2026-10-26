@@ -1550,3 +1550,11 @@ fn integral_plan_rejects_a_zero_ramp_rate() {
         Err(VelocityIntegralPlanError::InvalidRequest)
     );
 }
+
+#[test]
+fn integral_plan_rejects_a_ramp_that_overruns_the_slot_budget() {
+    assert_eq!(
+        build_breakaway_plan_with_accel(9),
+        Err(VelocityIntegralPlanError::InvalidRequest)
+    );
+}
