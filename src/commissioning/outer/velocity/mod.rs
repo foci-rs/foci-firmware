@@ -40,6 +40,7 @@ mod sweep_consensus_tests;
 pub mod sweep_evidence;
 pub mod sweep_plan;
 pub(crate) mod sweep_reporting;
+pub(crate) mod target_ramp;
 pub(crate) mod velocity_clamp;
 #[cfg(test)]
 mod velocity_clamp_tests;
