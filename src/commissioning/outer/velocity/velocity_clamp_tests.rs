@@ -267,6 +267,7 @@ fn velocity_current_prevention_configuration_matrix() {
                                     positive_position_headroom_mrev: headroom_mrev,
                                     max_duration_ms: 3_000,
                                     nomination_p_below: 0,
+                                    max_accel_mrev_s2: 200_000,
                                 };
                                 let planned = plan_velocity_sweep(
                                     request,

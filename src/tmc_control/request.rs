@@ -1031,6 +1031,7 @@ where
         positive_position_headroom_mrev,
         max_duration_ms,
         nomination_p_below,
+        max_accel_mrev_s2,
     };
     let tune_route = match autotune_action {
         crate::tmc::AutotuneAction::IntegralResume => {
@@ -1963,6 +1964,7 @@ mod tests {
             positive_position_headroom_mrev,
             max_duration_ms,
             nomination_p_below,
+            max_accel_mrev_s2,
             ..
         } = tune_request().kind
         else {
@@ -1978,6 +1980,7 @@ mod tests {
             positive_position_headroom_mrev,
             max_duration_ms,
             nomination_p_below,
+            max_accel_mrev_s2,
         }
     }
 
@@ -2910,7 +2913,7 @@ mod tests {
                     positive_position_headroom_mrev: request.positive_position_headroom_mrev,
                     max_duration_ms: request.max_duration_ms,
                     homing_speed_mrev_s: 0,
-                    max_accel_mrev_s2: 0,
+                    max_accel_mrev_s2: 200_000,
                 },
                 pwm_hz: 25_000,
                 encoder_counts_per_rev: 4_000,

@@ -255,7 +255,7 @@ pub fn preflight_integral_request(
         positive_position_headroom_mrev: request.positive_position_headroom_mrev,
         max_duration_ms: request.max_duration_ms,
         homing_speed_mrev_s: 0,
-        max_accel_mrev_s2: 0,
+        max_accel_mrev_s2: request.max_accel_mrev_s2,
     };
     preflight_retained_breakaway(
         authority.acquisition,

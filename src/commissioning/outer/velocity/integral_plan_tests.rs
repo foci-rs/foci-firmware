@@ -48,6 +48,7 @@ fn proportional_request() -> VelocitySweepRequest {
         positive_position_headroom_mrev: 7_025,
         max_duration_ms: 3_000,
         nomination_p_below: 0,
+        max_accel_mrev_s2: 200_000,
     }
 }
 
@@ -319,11 +320,11 @@ fn integral_plan_freezes_geometry_and_conservative_duration() {
     assert_eq!(plan.recovery_nominal_slot_us, 1_816_958);
     assert_eq!(plan.recovery_maximum_slot_us, 3_000_000);
     assert_eq!(plan.recovery_slot_count, 15);
-    assert_eq!(plan.nominal_workflow_ms, 177_751);
-    assert_eq!(plan.maximum_workflow_ms, 195_496);
+    assert_eq!(plan.nominal_workflow_ms, 180_391);
+    assert_eq!(plan.maximum_workflow_ms, 198_136);
     let base_us = u32::from(plan.total_rung_count)
         * INTEGRAL_OBSERVATIONS_PER_RUNG
-        * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US);
+        * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US + 2 * plan.ramp_us);
     let recovery_us = u32::from(plan.total_rung_count) * plan.recovery_nominal_slot_us;
     assert_eq!(
         plan.nominal_workflow_ms,
@@ -846,7 +847,7 @@ fn integral_authority_rejects_an_acceptance_for_a_different_candidate() {
 #[test]
 fn breakaway_plan_digest_reflects_the_half_octave_insertion() {
     let plan = build_test_breakaway_plan();
-    assert_eq!(plan.digest(), 16_233_484_769_674_924_850);
+    assert_eq!(plan.digest(), 17_406_821_423_780_811_778);
 }
 
 fn breakaway_acquisition_context() -> AcquisitionContext {
@@ -1494,5 +1495,58 @@ fn integral_target_status_keeps_distinct_reportable_termini() {
     assert_ne!(
         IntegralTargetStatus::CurrentHeadroom,
         IntegralTargetStatus::TargetNotReachedAtCap
+    );
+}
+
+fn build_breakaway_plan_with_accel(
+    max_accel_mrev_s2: u32,
+) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
+    let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(512));
+    plan_breakaway_velocity_integral_response(
+        breakaway_token_for(confirmation_plan),
+        confirmation_plan,
+        breakaway_acquisition_context(),
+        BreakawayIntegralEvidence {
+            held_out_response_intervals_q: breakaway_intervals_for(confirmation_plan),
+            confidence_q: 0,
+            band_position_q: 0,
+        },
+        IntegralPlanPhysics {
+            motion_budget: OuterMotionBudget {
+                max_accel_mrev_s2,
+                ..motion_budget()
+            },
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+        },
+    )
+}
+
+#[test]
+fn integral_plan_charges_the_ramp_and_hashes_it() {
+    let slow = build_breakaway_plan_with_accel(500_000).unwrap();
+    let fast = build_breakaway_plan_with_accel(1_000_000).unwrap();
+
+    assert_eq!(slow.ramp_milli_rpm_per_ms, 60_000);
+    let span = slow.target_velocity_rpm.unsigned_abs();
+    assert_eq!(slow.ramp_us, (span * 1_000).div_ceil(60_000) * 1_000);
+    assert!(slow.ramp_us > fast.ramp_us);
+    assert_eq!(slow.expected_observations, fast.expected_observations);
+    let extra_us = 2 * (slow.ramp_us - fast.ramp_us) * u32::from(slow.expected_observations);
+    assert_eq!(
+        slow.nominal_workflow_ms - fast.nominal_workflow_ms,
+        extra_us.div_ceil(1_000)
+    );
+    assert_ne!(slow.digest(), fast.digest());
+    let execution = slow.execution_plan();
+    assert_eq!(execution.ramp_milli_rpm_per_ms, slow.ramp_milli_rpm_per_ms);
+    assert_eq!(execution.ramp_us, slow.ramp_us);
+}
+
+#[test]
+fn integral_plan_rejects_a_zero_ramp_rate() {
+    assert_eq!(
+        build_breakaway_plan_with_accel(8),
+        Err(VelocityIntegralPlanError::InvalidRequest)
     );
 }

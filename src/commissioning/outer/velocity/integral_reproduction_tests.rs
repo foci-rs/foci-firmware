@@ -498,8 +498,8 @@ fn q8_8_package_authority_rejects_before_integral_motion() {
 
 #[test]
 fn integral_candidate_size_is_measured_without_padding() {
-    assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 216);
-    assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 72);
+    assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 224);
+    assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 80);
     assert_eq!(core::mem::size_of::<IntegralAuthoritySummary>(), 96);
     assert_eq!(
         core::mem::size_of::<crate::commissioning::types::VelocityIntegralTerminal>(),

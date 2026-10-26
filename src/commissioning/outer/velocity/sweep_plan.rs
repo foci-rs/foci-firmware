@@ -7,6 +7,7 @@ use super::recovery::{
     RECOVERY_STABILIZATION_US, RungOriginRecoveryPlanError, STABILIZED_RECOVERY_SCHEDULE_CODE,
     plan_rung_origin_recovery,
 };
+use super::target_ramp::RampRate;
 use super::velocity_clamp::{VelocityLimitEvidenceCapability, derive_probe_limit};
 
 /// Numerator of the runtime velocity-envelope proportional margin.
@@ -152,6 +153,8 @@ pub struct VelocitySweepRequest {
     pub max_duration_ms: u16,
     /// Nominate only rungs with P strictly below this raw gain; 0 is unconstrained.
     pub nomination_p_below: u16,
+    /// Host acceleration limit in milli-rev/s^2 that sets the target ramp rate.
+    pub max_accel_mrev_s2: u32,
 }
 
 /// Complete immutable motion plan produced before the first sweep stroke.
@@ -183,6 +186,10 @@ pub struct VelocitySweepPlan {
     pub rung_count: u8,
     /// Independent observations planned in each direction per rung.
     pub observations_per_direction: u16,
+    /// Target ramp slew rate in milli-RPM per millisecond.
+    pub ramp_milli_rpm_per_ms: u32,
+    /// Tick-rounded duration of one ramp between rest and `target_velocity_rpm`.
+    pub ramp_us: u32,
     /// Fixed moving-stroke duration.
     pub moving_stroke_us: u32,
     /// Fixed zero-target settle duration.
@@ -302,6 +309,8 @@ impl VelocitySweepPlan {
             hash_value!(gain.raw());
         }
         hash_value!(self.observations_per_direction);
+        hash_value!(self.ramp_milli_rpm_per_ms);
+        hash_value!(self.ramp_us);
         hash_value!(self.moving_stroke_us);
         hash_value!(self.zero_settle_us);
         hash_value!(self.nominal_workflow_ms);
@@ -465,6 +474,8 @@ fn plan_velocity_sweep_with_limit(
     {
         return Err(VelocityPlanError::InvalidRequest);
     }
+    let ramp_rate =
+        RampRate::from_accel(request.max_accel_mrev_s2).ok_or(VelocityPlanError::InvalidRequest)?;
 
     let ceilings = representability_ceilings(encoder_counts_per_rev)?;
     let candidates = [
@@ -561,10 +572,12 @@ fn plan_velocity_sweep_with_limit(
     {
         return Err(VelocityPlanError::ConfidenceFamilyTooLarge);
     }
+    let ramp_us = ramp_rate.ramp_us_for_span_rpm(target_velocity_rpm.raw().unsigned_abs());
     let primitive_us = MOVING_STROKE_US
         .checked_add(ZERO_SETTLE_US)
         .and_then(|value| value.checked_add(SETTLE_ANALYSIS_BUDGET_US))
-        .ok_or(VelocityPlanError::Arithmetic)?;
+        .ok_or(VelocityPlanError::Arithmetic)?
+        .saturating_add(ramp_us.saturating_mul(2));
     if primitive_us.div_ceil(1_000) > u32::from(request.max_duration_ms) {
         return Err(VelocityPlanError::InvalidRequest);
     }
@@ -623,6 +636,8 @@ fn plan_velocity_sweep_with_limit(
         gains,
         rung_count,
         observations_per_direction: OBSERVATIONS_PER_DIRECTION_PER_RUNG,
+        ramp_milli_rpm_per_ms: ramp_rate.milli_rpm_per_ms(),
+        ramp_us,
         moving_stroke_us: MOVING_STROKE_US,
         zero_settle_us: ZERO_SETTLE_US,
         nominal_workflow_ms,

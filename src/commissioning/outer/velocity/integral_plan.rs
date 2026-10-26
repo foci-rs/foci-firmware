@@ -17,6 +17,7 @@ use super::sweep_plan::{
     MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US,
     VelocitySweepExecutionPlan, VelocitySweepPlan, VelocitySweepRequest, ZERO_SETTLE_US,
 };
+use super::target_ramp::RampRate;
 use super::velocity_clamp::VelocityLimitEvidenceCapability;
 
 /// Evidence schema stored in the RAM-only Integral candidate slot.
@@ -149,6 +150,10 @@ pub struct VelocityIntegralPlan {
     pub total_rung_count: u8,
     /// Total forward and reverse observations.
     pub expected_observations: u16,
+    /// Target ramp slew rate in milli-RPM per millisecond.
+    pub ramp_milli_rpm_per_ms: u32,
+    /// Tick-rounded duration of one ramp between rest and the frozen target.
+    pub ramp_us: u32,
     /// Fixed moving-capture duration.
     pub moving_stroke_us: u32,
     /// Fixed zero-target settle duration.
@@ -228,6 +233,8 @@ impl VelocityIntegralPlan {
         hash_value!(self.family_size);
         hash_value!(self.total_rung_count);
         hash_value!(self.expected_observations);
+        hash_value!(self.ramp_milli_rpm_per_ms);
+        hash_value!(self.ramp_us);
         hash_value!(self.moving_stroke_us);
         hash_value!(self.zero_settle_us);
         hash_value!(self.analysis_budget_us);
@@ -276,6 +283,8 @@ impl VelocityIntegralPlan {
             positive_rung_count: self.positive_rung_count,
             i_top_cap: self.i_top_cap,
             family_size: self.family_size,
+            ramp_milli_rpm_per_ms: self.ramp_milli_rpm_per_ms,
+            ramp_us: self.ramp_us,
             moving_stroke_us: self.moving_stroke_us,
             zero_settle_us: self.zero_settle_us,
             analysis_budget_us: self.analysis_budget_us,
@@ -370,6 +379,10 @@ pub struct VelocityIntegralExecutionPlan {
     pub i_top_cap: u16,
     /// Family-wise observation count per direction.
     pub family_size: u16,
+    /// Target ramp slew rate in milli-RPM per millisecond.
+    pub ramp_milli_rpm_per_ms: u32,
+    /// Tick-rounded duration of one ramp between rest and the frozen target.
+    pub ramp_us: u32,
     /// Fixed moving-capture duration.
     pub moving_stroke_us: u32,
     /// Fixed zero-target settle duration.
@@ -399,8 +412,8 @@ pub struct VelocityIntegralExecutionPlan {
     pub slot_order: IntegralSlotOrder,
 }
 
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 72);
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 72);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 80);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 80);
 
 /// Exact identity retained when Integral has no transition-capable test point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -992,7 +1005,10 @@ fn plan_velocity_integral_response_from_source(
         positive_position_headroom_mrev: motion_budget.positive_position_headroom_mrev,
         max_duration_ms: motion_budget.max_duration_ms,
         nomination_p_below: 0,
+        max_accel_mrev_s2: motion_budget.max_accel_mrev_s2,
     };
+    let ramp_rate = RampRate::from_accel(motion_budget.max_accel_mrev_s2)
+        .ok_or(VelocityIntegralPlanError::InvalidRequest)?;
     if encoder_counts_per_rev == 0
         || motion_request.requested_velocity_mrev_s == 0
         || motion_request.machine_velocity_ceiling_mrev_s == 0
@@ -1038,10 +1054,12 @@ fn plan_velocity_integral_response_from_source(
         context.planned_velocity_mrev_s,
     )
     .map_err(map_recovery_plan_error)?;
+    let ramp_us = ramp_rate.ramp_us_for_span_rpm(context.target_velocity_rpm.unsigned_abs());
     let primitive_us = MOVING_STROKE_US
         .checked_add(ZERO_SETTLE_US)
         .and_then(|value| value.checked_add(SETTLE_ANALYSIS_BUDGET_US))
-        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?
+        .saturating_add(ramp_us.saturating_mul(2));
     if primitive_us.div_ceil(1_000) > u32::from(motion_budget.max_duration_ms) {
         return Err(VelocityIntegralPlanError::InvalidRequest);
     }
@@ -1095,6 +1113,8 @@ fn plan_velocity_integral_response_from_source(
         family_size: confidence_family_size(ladder.rungs.len())?,
         total_rung_count,
         expected_observations,
+        ramp_milli_rpm_per_ms: ramp_rate.milli_rpm_per_ms(),
+        ramp_us,
         moving_stroke_us: MOVING_STROKE_US,
         zero_settle_us: ZERO_SETTLE_US,
         analysis_budget_us: SETTLE_ANALYSIS_BUDGET_US,

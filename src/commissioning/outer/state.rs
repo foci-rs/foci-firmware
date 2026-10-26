@@ -474,6 +474,8 @@ mod tests {
             positive_rung_count: 5,
             i_top_cap: 0,
             family_size: 28,
+            ramp_milli_rpm_per_ms: 24_000,
+            ramp_us: 8000,
             moving_stroke_us: 512_000,
             zero_settle_us: 500_000,
             analysis_budget_us: 236_000,

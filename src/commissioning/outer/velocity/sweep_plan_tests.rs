@@ -26,6 +26,7 @@ fn request() -> VelocitySweepRequest {
         positive_position_headroom_mrev: 50_000,
         max_duration_ms: 60_000,
         nomination_p_below: 0,
+        max_accel_mrev_s2: 200_000,
     }
 }
 
@@ -40,6 +41,7 @@ fn live_recovery_request() -> VelocitySweepRequest {
         positive_position_headroom_mrev: 7_025,
         max_duration_ms: 3_000,
         nomination_p_below: 0,
+        max_accel_mrev_s2: 200_000,
     }
 }
 
@@ -62,8 +64,8 @@ fn live_recovery_geometry_extends_both_workflow_durations() {
     assert_eq!(plan.recovery_nominal_slot_us, 1_816_958);
     assert_eq!(plan.recovery_maximum_slot_us, primitive_cap_us);
     assert_eq!(plan.recovery_slot_count, 23);
-    assert_eq!(plan.nominal_workflow_ms, 271_423);
-    assert_eq!(plan.maximum_workflow_ms, 298_632);
+    assert_eq!(plan.nominal_workflow_ms, 275_471);
+    assert_eq!(plan.maximum_workflow_ms, 302_680);
 }
 
 #[test]
@@ -90,7 +92,7 @@ fn proportional_plan_uses_operational_current_authority_and_new_schemas() {
     assert_eq!(combined.schema_revision, PROPORTIONAL_PLAN_SCHEMA_REVISION);
     assert_eq!(PROPORTIONAL_PLAN_SCHEMA_REVISION, 14);
     assert_eq!(combined.recovery_nominal_slot_us, 2_316_958);
-    assert_eq!(combined.nominal_workflow_ms, 282_923);
+    assert_eq!(combined.nominal_workflow_ms, 286_971);
     assert_eq!(combined.target_velocity_rpm.raw(), 263);
     assert_eq!(combined.usable_torque_limit, 2_816);
     assert_eq!(combined.p_top.raw(), 2_741);
@@ -160,8 +162,8 @@ fn live_geometry_uses_mechanical_rpm_and_the_corrected_ladder() {
     assert_eq!(plan.p_top.raw(), 3_685);
     assert_eq!(plan.rung_count, 23);
     assert_eq!(plan.observations_per_direction, 4);
-    assert_eq!(plan.nominal_workflow_ms, 274_042);
-    assert_eq!(plan.maximum_workflow_ms, 1_609_632);
+    assert_eq!(plan.nominal_workflow_ms, 276_986);
+    assert_eq!(plan.maximum_workflow_ms, 1_612_576);
     assert_eq!(
         u16::from(plan.rung_count) * plan.observations_per_direction,
         92
@@ -367,7 +369,7 @@ fn plan_freezes_exact_ladder_and_workflow_duration() {
     .unwrap();
     let base_us = u32::from(plan.rung_count)
         * u32::from(SWEEP_SLOT_COUNT)
-        * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US);
+        * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US + 2 * plan.ramp_us);
     let nominal_recovery_us = u32::from(plan.rung_count) * plan.recovery_nominal_slot_us;
     let maximum_recovery_us = u32::from(plan.rung_count) * plan.recovery_maximum_slot_us;
     assert_eq!(plan.gains[0], plan.p_start);
@@ -602,4 +604,60 @@ fn the_nomination_ceiling_does_not_enter_the_plan_digest() {
     .unwrap();
 
     assert_eq!(plan_a.digest(), plan_b.digest());
+}
+
+fn plan_for(request: VelocitySweepRequest) -> Result<super::VelocitySweepPlan, VelocityPlanError> {
+    plan_velocity_sweep(
+        request,
+        4_000,
+        2_816,
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+}
+
+#[test]
+fn sweep_plan_carries_the_ramp_rate_and_charges_two_ramps_per_stroke() {
+    let slow_request = VelocitySweepRequest {
+        max_accel_mrev_s2: 500_000,
+        ..request()
+    };
+    let slow = plan_for(slow_request).unwrap();
+    assert_eq!(slow.ramp_milli_rpm_per_ms, 60_000);
+    let span = slow.target_velocity_rpm.raw().unsigned_abs();
+    assert_eq!(slow.ramp_us, (span * 1_000).div_ceil(60_000) * 1_000);
+
+    let fast = plan_for(VelocitySweepRequest {
+        max_accel_mrev_s2: 1_000_000,
+        ..slow_request
+    })
+    .unwrap();
+    assert_eq!(fast.rung_count, slow.rung_count);
+    assert!(slow.ramp_us > fast.ramp_us);
+    let extra_us = 2
+        * (slow.ramp_us - fast.ramp_us)
+        * u32::from(SWEEP_SLOT_COUNT)
+        * u32::from(slow.rung_count);
+    assert_eq!(
+        slow.nominal_workflow_ms - fast.nominal_workflow_ms,
+        extra_us.div_ceil(1_000)
+    );
+    assert_ne!(slow.digest(), fast.digest());
+}
+
+#[test]
+fn sweep_plan_rejects_a_rate_that_rounds_to_zero() {
+    let request = VelocitySweepRequest {
+        max_accel_mrev_s2: 8,
+        ..request()
+    };
+    assert_eq!(plan_for(request), Err(VelocityPlanError::InvalidRequest));
+}
+
+#[test]
+fn sweep_plan_rejects_a_ramp_that_overruns_the_slot_budget() {
+    let request = VelocitySweepRequest {
+        max_accel_mrev_s2: 9,
+        ..request()
+    };
+    assert_eq!(plan_for(request), Err(VelocityPlanError::InvalidRequest));
 }

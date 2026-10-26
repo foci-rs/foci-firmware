@@ -842,6 +842,8 @@ mod tests {
             family_size: 128,
             total_rung_count: 32,
             expected_observations: 256,
+            ramp_milli_rpm_per_ms: 24_000,
+            ramp_us: 11000,
             moving_stroke_us: 512_000,
             zero_settle_us: 500_000,
             analysis_budget_us: 236_000,
@@ -868,6 +870,7 @@ mod tests {
                 positive_position_headroom_mrev: 20_000,
                 max_duration_ms: 60_000,
                 nomination_p_below: 0,
+                max_accel_mrev_s2: 200_000,
             },
         };
 
@@ -981,6 +984,8 @@ mod tests {
             family_size: 128,
             total_rung_count: 32,
             expected_observations: 256,
+            ramp_milli_rpm_per_ms: 24_000,
+            ramp_us: 11000,
             moving_stroke_us: 512_000,
             zero_settle_us: 500_000,
             analysis_budget_us: 236_000,
@@ -1007,6 +1012,7 @@ mod tests {
                 positive_position_headroom_mrev: 20_000,
                 max_duration_ms: 60_000,
                 nomination_p_below: 0,
+                max_accel_mrev_s2: 200_000,
             },
         };
 
@@ -1069,6 +1075,8 @@ mod tests {
             positive_rung_count: 5,
             i_top_cap: 0,
             family_size: 28,
+            ramp_milli_rpm_per_ms: 24_000,
+            ramp_us: 11000,
             moving_stroke_us: 512_000,
             zero_settle_us: 500_000,
             analysis_budget_us: 236_000,

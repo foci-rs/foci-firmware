@@ -50,6 +50,7 @@ fn request() -> VelocitySweepRequest {
         positive_position_headroom_mrev: 7_025,
         max_duration_ms: 3_000,
         nomination_p_below: 0,
+        max_accel_mrev_s2: 200_000,
     }
 }
 
@@ -99,7 +100,7 @@ fn breakaway_integral_plan()
                 positive_position_headroom_mrev: request.positive_position_headroom_mrev,
                 max_duration_ms: request.max_duration_ms,
                 homing_speed_mrev_s: 0,
-                max_accel_mrev_s2: 0,
+                max_accel_mrev_s2: request.max_accel_mrev_s2,
             },
             pwm_hz: PWM_HZ,
             encoder_counts_per_rev: COUNTS_PER_REV,

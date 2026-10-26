@@ -2051,6 +2051,7 @@ mod tests {
             positive_position_headroom_mrev: params.positive_position_headroom_mrev,
             max_duration_ms: params.max_duration_ms,
             nomination_p_below: 0,
+            max_accel_mrev_s2: 200_000,
         };
         let (campaign, _workflow) =
             plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, 43)
@@ -2095,6 +2096,7 @@ mod tests {
             positive_position_headroom_mrev: params.positive_position_headroom_mrev,
             max_duration_ms: params.max_duration_ms,
             nomination_p_below: 0,
+            max_accel_mrev_s2: 200_000,
         };
         let (campaign, _workflow) =
             plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, run_sequence)
@@ -2314,6 +2316,7 @@ mod tests {
             positive_position_headroom_mrev: params.positive_position_headroom_mrev,
             max_duration_ms: params.max_duration_ms,
             nomination_p_below: 0,
+            max_accel_mrev_s2: 200_000,
         };
         let (campaign, workflow) =
             plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, 42)

@@ -180,6 +180,7 @@ pub fn breakaway_campaign_engine() -> crate::commissioning::CommissioningEngine 
         positive_position_headroom_mrev: params.positive_position_headroom_mrev,
         max_duration_ms: params.max_duration_ms,
         nomination_p_below: 0,
+        max_accel_mrev_s2: 200_000,
     };
     let (campaign, _workflow) =
         crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command(
@@ -1299,7 +1300,7 @@ pub(crate) fn test_acceptance_point(request: VelocitySweepRequest) -> Acceptance
         positive_position_headroom_mrev: request.positive_position_headroom_mrev,
         max_duration_ms: request.max_duration_ms,
         homing_speed_mrev_s: 0,
-        max_accel_mrev_s2: 0,
+        max_accel_mrev_s2: 200_000,
     };
     let plan = plan_retained_breakaway_velocity_integral_response(
         confirmation.token,

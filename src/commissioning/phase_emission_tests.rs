@@ -89,6 +89,7 @@ fn plan_request() -> crate::commissioning::outer::velocity::sweep_plan::Velocity
         positive_position_headroom_mrev: params.positive_position_headroom_mrev,
         max_duration_ms: params.max_duration_ms,
         nomination_p_below: 0,
+        max_accel_mrev_s2: 200_000,
     }
 }
 
@@ -135,7 +136,7 @@ fn response_ladder_plan() -> VelocityIntegralPlan {
                 positive_position_headroom_mrev: request.positive_position_headroom_mrev,
                 max_duration_ms: request.max_duration_ms,
                 homing_speed_mrev_s: 0,
-                max_accel_mrev_s2: 0,
+                max_accel_mrev_s2: 200_000,
             },
             pwm_hz: PWM_HZ,
             encoder_counts_per_rev: COUNTS_PER_REV,
