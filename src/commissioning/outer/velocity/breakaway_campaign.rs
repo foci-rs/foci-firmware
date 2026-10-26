@@ -1092,21 +1092,32 @@ async fn open_stroke<B: CommissioningBackend>(
     )
     .await
     .map_err(RampFault::CurrentGuard)?;
-    checkpoint_if(stages.baseline_read);
-    let encoder_raw = backend
-        .read_capture_register(ABN_DECODER_COUNT)
-        .await
-        .map_err(|_| CommissionError::Spi)?;
-    let baseline_us = backend.elapsed_us();
+    let baseline_us = read_encoder_baseline(workspace, backend, stages.baseline_read).await?;
     if stages.record_excursion {
-        workspace.excursion = Some(ProbeExcursionCapture::new(encoder_raw, baseline_us));
+        workspace.excursion = Some(ProbeExcursionCapture::new(
+            workspace.previous_encoder_raw,
+            baseline_us,
+        ));
     }
-    workspace.previous_encoder_raw = encoder_raw;
-    workspace.previous_read_us = baseline_us;
     workspace.settle_displacement_counts = 0;
     workspace.settle_min_displacement_counts = 0;
     workspace.settle_max_displacement_counts = 0;
     Ok(())
+}
+
+/// Reads a fresh encoder baseline for the next observed delta and returns its read time.
+async fn read_encoder_baseline<B: CommissioningBackend>(
+    workspace: &mut BreakawayProbeWorkspace,
+    backend: &mut B,
+    checkpoint: Option<BreakawayCheckpoint>,
+) -> Result<u64, CommissionError> {
+    checkpoint_if(checkpoint);
+    workspace.previous_encoder_raw = backend
+        .read_capture_register(ABN_DECODER_COUNT)
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+    workspace.previous_read_us = backend.elapsed_us();
+    Ok(workspace.previous_read_us)
 }
 
 async fn write_next_ramp_target<B: CommissioningBackend>(
@@ -1140,9 +1151,10 @@ async fn write_next_ramp_target<B: CommissioningBackend>(
 /// Advances the stroke's ramp toward its target by one tick.
 ///
 /// The first tick opens the velocity-step primitive; later ticks run the moving-stroke safety
-/// checks before writing but score nothing. The first register write of the ramp is verified. The tick that writes the final
-/// target clears the observation ring, isolates the primitive peak and schedules the capture from
-/// that tick.
+/// checks before writing but score nothing. The first register write of the ramp is verified.
+/// The tick that writes the final target reads a fresh encoder baseline after that write, clears
+/// the observation ring, isolates the primitive peak and schedules the capture from that read.
+/// The probe's excursion capture keeps its own ramp-start baseline.
 #[allow(clippy::result_large_err)]
 async fn advance_target_ramp<B: CommissioningBackend>(
     ramp: &mut TargetRamp,
@@ -1181,10 +1193,11 @@ async fn advance_target_ramp<B: CommissioningBackend>(
             now_us,
         )?));
     }
-    let next_sample_us = now_us
+    let baseline_us = read_encoder_baseline(workspace, backend, stages.baseline_read).await?;
+    let next_sample_us = baseline_us
         .checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
         .ok_or(CommissionError::InvalidSchedule)?;
-    let deadline_us = now_us
+    let deadline_us = baseline_us
         .checked_add(u64::from(MOVING_STROKE_US))
         .ok_or(CommissionError::InvalidSchedule)?;
     workspace.observations.clear();

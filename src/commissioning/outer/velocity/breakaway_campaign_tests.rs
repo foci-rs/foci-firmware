@@ -5019,3 +5019,309 @@ fn an_encoder_velocity_fault_during_the_confirmation_ramp_skips_the_ramp_down_an
         Some(crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY)
     );
 }
+
+enum RampStageTick {
+    At(u64),
+    Continue,
+    SpiFault,
+}
+
+/// One stage that ramps through `advance_target_ramp` and then captures.
+trait RampedStage {
+    fn step(
+        &mut self,
+        workspace: &mut BreakawayProbeWorkspace,
+        safety: &mut OuterSafetyLimits,
+        backend: &mut MockBackend,
+    ) -> RampStageTick;
+
+    /// Whether the next ramp tick writes the stroke's final target.
+    fn writes_final_target_next(&self) -> bool;
+
+    fn in_capture(&self) -> bool;
+}
+
+struct ProbeRampStage {
+    state: BreakawayProbeState,
+    session: BreakawayProbeSession,
+}
+
+impl ProbeRampStage {
+    fn new() -> Self {
+        Self {
+            state: BreakawayProbeState::PlannedProbe,
+            session: BreakawayProbeSession::new(
+                test_plan(),
+                TmcMechanicalRpm::from_register(100),
+                4_394,
+                test_ramp_rate(),
+            )
+            .expect("valid probe session"),
+        }
+    }
+}
+
+impl RampedStage for ProbeRampStage {
+    fn step(
+        &mut self,
+        workspace: &mut BreakawayProbeWorkspace,
+        safety: &mut OuterSafetyLimits,
+        backend: &mut MockBackend,
+    ) -> RampStageTick {
+        match pollster::block_on(step_breakaway_probe(
+            &mut self.state,
+            workspace,
+            &mut self.session,
+            safety,
+            backend,
+        )) {
+            BreakawayProbeStep::At(deadline_us) => RampStageTick::At(deadline_us),
+            BreakawayProbeStep::Done(BreakawayProbeOutcome::SafetyFault {
+                error: CommissionError::Spi,
+                safety: None,
+            }) => RampStageTick::SpiFault,
+            BreakawayProbeStep::Done(outcome) => panic!("probe ended early: {outcome:?}"),
+            _ => RampStageTick::Continue,
+        }
+    }
+
+    fn writes_final_target_next(&self) -> bool {
+        matches!(&self.state, BreakawayProbeState::RampTarget { ramp, .. } if ramp.next_is_final())
+    }
+
+    fn in_capture(&self) -> bool {
+        matches!(self.state, BreakawayProbeState::Capture { .. })
+    }
+}
+
+struct DiscoveryRampStage {
+    state: AdditiveDiscoveryState,
+    session: AdditiveDiscoverySession,
+}
+
+impl DiscoveryRampStage {
+    fn new(target_rpm: i32) -> Self {
+        Self {
+            state: AdditiveDiscoveryState::PlannedDiscovery,
+            session: AdditiveDiscoverySession::new(
+                discovery_request(),
+                false,
+                TmcMechanicalRpm::from_register(target_rpm),
+                4_394,
+                test_ramp_rate(),
+            )
+            .expect("valid discovery session"),
+        }
+    }
+}
+
+impl RampedStage for DiscoveryRampStage {
+    fn step(
+        &mut self,
+        workspace: &mut BreakawayProbeWorkspace,
+        safety: &mut OuterSafetyLimits,
+        backend: &mut MockBackend,
+    ) -> RampStageTick {
+        match pollster::block_on(step_additive_discovery(
+            &mut self.state,
+            workspace,
+            &mut self.session,
+            safety,
+            backend,
+        )) {
+            AdditiveDiscoveryStep::At(deadline_us) => RampStageTick::At(deadline_us),
+            AdditiveDiscoveryStep::Done(AdditiveDiscoveryOutcome::SafetyFault {
+                error: CommissionError::Spi,
+                safety: None,
+            }) => RampStageTick::SpiFault,
+            AdditiveDiscoveryStep::Done(outcome) => panic!("discovery ended early: {outcome:?}"),
+            _ => RampStageTick::Continue,
+        }
+    }
+
+    fn writes_final_target_next(&self) -> bool {
+        matches!(&self.state, AdditiveDiscoveryState::RampTarget { ramp, .. } if ramp.next_is_final())
+    }
+
+    fn in_capture(&self) -> bool {
+        matches!(self.state, AdditiveDiscoveryState::Capture { .. })
+    }
+}
+
+struct ConfirmationRampStage {
+    state: BandConfirmationState,
+    session: BandConfirmationSession,
+}
+
+impl ConfirmationRampStage {
+    fn new() -> Self {
+        let session = match begin_band_confirmation(
+            AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(724)),
+            42,
+            TmcMechanicalRpm::from_register(100),
+            4_394,
+            test_ramp_rate(),
+            u16::MAX,
+            0,
+        ) {
+            BandConfirmationEntry::Ready(session) => session,
+            BandConfirmationEntry::Done(outcome) => {
+                panic!("confirmation did not begin: {outcome:?}")
+            }
+        };
+        Self {
+            state: BandConfirmationState::PlannedConfirmation,
+            session,
+        }
+    }
+}
+
+impl RampedStage for ConfirmationRampStage {
+    fn step(
+        &mut self,
+        workspace: &mut BreakawayProbeWorkspace,
+        safety: &mut OuterSafetyLimits,
+        backend: &mut MockBackend,
+    ) -> RampStageTick {
+        match pollster::block_on(step_band_confirmation(
+            &mut self.state,
+            workspace,
+            &mut self.session,
+            safety,
+            backend,
+        )) {
+            BandConfirmationStep::At(deadline_us) => RampStageTick::At(deadline_us),
+            BandConfirmationStep::Done(BandConfirmationOutcome::SafetyFault {
+                error: CommissionError::Spi,
+                safety: None,
+            }) => RampStageTick::SpiFault,
+            BandConfirmationStep::Done(outcome) => {
+                panic!("confirmation ended early: {outcome:?}")
+            }
+            _ => RampStageTick::Continue,
+        }
+    }
+
+    fn writes_final_target_next(&self) -> bool {
+        matches!(&self.state, BandConfirmationState::RampTarget { ramp, .. } if ramp.next_is_final())
+    }
+
+    fn in_capture(&self) -> bool {
+        matches!(self.state, BandConfirmationState::Capture { .. })
+    }
+}
+
+struct RampedStageRun<S> {
+    stage: S,
+    workspace: BreakawayProbeWorkspace,
+    safety: OuterSafetyLimits,
+    backend: MockBackend,
+}
+
+impl<S: RampedStage> RampedStageRun<S> {
+    fn new(stage: S) -> Self {
+        let mut safety = ramp_safety();
+        safety.torque_cap = 2_448;
+        Self {
+            stage,
+            workspace: BreakawayProbeWorkspace::new(),
+            safety,
+            backend: test_backend(),
+        }
+    }
+
+    fn step(&mut self) -> RampStageTick {
+        self.stage
+            .step(&mut self.workspace, &mut self.safety, &mut self.backend)
+    }
+
+    fn step_until_the_final_ramp_write_is_next(&mut self) {
+        for _ in 0..10_000 {
+            if self.stage.writes_final_target_next() {
+                return;
+            }
+            match self.step() {
+                RampStageTick::At(deadline_us) => self.backend.elapsed_us_value = deadline_us,
+                RampStageTick::Continue => {}
+                RampStageTick::SpiFault => panic!("the stroke faulted before its final write"),
+            }
+        }
+        panic!("the stage never reached its final ramp write");
+    }
+}
+
+fn assert_first_scored_observation_starts_after_the_final_ramp_write<S: RampedStage>(stage: S) {
+    const SPI_STEP_US: u64 = 7;
+    const MOVED_DURING_WRITE: u32 = 5;
+    let mut run = RampedStageRun::new(stage);
+    run.backend.spi_elapsed_step_us = SPI_STEP_US;
+    run.step_until_the_final_ramp_write_is_next();
+    let before_write = (run.workspace.previous_encoder_raw + 10) % 4_000;
+    let after_write = (before_write + MOVED_DURING_WRITE) % 4_000;
+    let first_sample = (after_write + 10) % 4_000;
+    run.backend
+        .set_abn_decoder_count_sequence(&[before_write, after_write, first_sample]);
+
+    let RampStageTick::At(next_sample_us) = run.step() else {
+        panic!("the ramp-end tick schedules the first capture sample");
+    };
+    assert!(run.stage.in_capture());
+    let baseline_read_us = run.workspace.previous_read_us;
+    run.backend.elapsed_us_value = next_sample_us;
+    let _ = run.step();
+
+    let observations: std::vec::Vec<_> = run.workspace.observations.iter().collect();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].delta_counts, 10);
+    assert_eq!(
+        u64::from(observations[0].elapsed_us),
+        next_sample_us + SPI_STEP_US - baseline_read_us
+    );
+    assert_eq!(
+        next_sample_us,
+        baseline_read_us + u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US)
+    );
+}
+
+fn assert_failed_post_ramp_baseline_read_takes_the_spi_fault<S: RampedStage>(stage: S) {
+    let mut run = RampedStageRun::new(stage);
+    run.step_until_the_final_ramp_write_is_next();
+    let writes_before = velocity_target_writes(&run.backend.spi_log).len();
+    run.backend.fail_capture_read_at = Some(run.backend.capture_register_reads + 2);
+
+    assert!(matches!(run.step(), RampStageTick::SpiFault));
+
+    let writes = velocity_target_writes(&run.backend.spi_log);
+    assert_eq!(
+        writes.len(),
+        writes_before + 1,
+        "only the final write: {writes:?}"
+    );
+}
+
+#[test]
+fn the_first_scored_probe_observation_starts_after_the_ramp_end_write() {
+    assert_first_scored_observation_starts_after_the_final_ramp_write(ProbeRampStage::new());
+}
+
+#[test]
+fn the_first_scored_discovery_observation_starts_after_the_ramp_end_write() {
+    assert_first_scored_observation_starts_after_the_final_ramp_write(DiscoveryRampStage::new(274));
+}
+
+#[test]
+fn a_one_tick_discovery_ramp_reads_its_capture_baseline_after_its_only_write() {
+    assert_first_scored_observation_starts_after_the_final_ramp_write(DiscoveryRampStage::new(60));
+}
+
+#[test]
+fn the_first_scored_confirmation_observation_starts_after_the_ramp_end_write() {
+    assert_first_scored_observation_starts_after_the_final_ramp_write(ConfirmationRampStage::new());
+}
+
+#[test]
+fn a_failed_post_ramp_baseline_read_faults_every_ramped_stage() {
+    assert_failed_post_ramp_baseline_read_takes_the_spi_fault(ProbeRampStage::new());
+    assert_failed_post_ramp_baseline_read_takes_the_spi_fault(DiscoveryRampStage::new(274));
+    assert_failed_post_ramp_baseline_read_takes_the_spi_fault(ConfirmationRampStage::new());
+}
