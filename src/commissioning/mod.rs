@@ -1622,8 +1622,8 @@ mod tests {
             "the gain-floor capture buffer must stay inside the existing variant slack"
         );
         assert_eq!(size_of::<crate::commissioning::types::OuterResult>(), 92);
-        assert_eq!(size_of::<CommissioningEngine>(), 5_936);
-        assert!(size_of::<CommissioningEngine>() <= 5_936);
+        assert_eq!(size_of::<CommissioningEngine>(), 5_968);
+        assert!(size_of::<CommissioningEngine>() <= 5_968);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);
@@ -2131,6 +2131,7 @@ mod tests {
         let result = BreakawayCampaign::new(BreakawayCampaignRequest {
             target_velocity_rpm: TmcMechanicalRpm::from_register(100),
             planned_velocity_mrev_s: 4_394,
+            ramp_milli_rpm_per_ms: 60_000,
             effective_ceiling_mrev_s: 10_000,
             hard_torque_limit: 2_816,
             limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
@@ -2158,6 +2159,7 @@ mod tests {
         let campaign = BreakawayCampaign::new(BreakawayCampaignRequest {
             target_velocity_rpm: TmcMechanicalRpm::from_register(100),
             planned_velocity_mrev_s: u32::MAX / 3 + 1,
+            ramp_milli_rpm_per_ms: 60_000,
             effective_ceiling_mrev_s: u32::MAX,
             hard_torque_limit: 2_816,
             limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,

@@ -43,8 +43,9 @@ pub const CONFIRMATION_SLOT_ORDER: [VelocityDirection; 8] = [
     VelocityDirection::Reverse,
 ];
 
-/// A discovery step whose velocity peak exceeds this fraction of its commanded target, in
-/// permille, is over-gained: a peak more than 40% over target.
+/// A ramped discovery step whose velocity peak, measured from the ramp end, exceeds this
+/// fraction of its commanded target, in permille, is over-gained: a peak more than 40% over
+/// target.
 pub const STEP_PEAK_ADMISSION_PERMILLE: u16 = 1400;
 
 /// Pointwise 95% scale-inflation heuristic the nomination screen applies on top of the

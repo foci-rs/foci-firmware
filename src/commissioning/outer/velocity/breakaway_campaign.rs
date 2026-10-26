@@ -86,6 +86,7 @@ use super::sweep_plan::{
     VELOCITY_SWEEP_SAMPLE_PERIOD_US, VelocitySweepRequest, ZERO_SETTLE_US,
     plan_proportional_velocity_sweep,
 };
+use super::target_ramp::{RampRate, TargetRamp};
 use super::velocity_clamp::{
     VelocityCurrentClampSession, VelocityCurrentGuardError, VelocityCurrentObserver,
     VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability, begin_velocity_current_primitive,
@@ -104,6 +105,7 @@ pub(crate) struct BreakawayProbeWorkspace {
     settle_displacement_counts: i8,
     settle_min_displacement_counts: i8,
     settle_max_displacement_counts: i8,
+    last_target_rpm: i32,
     #[defmt(Debug2Format)]
     observations: VelocityObservationRing,
     #[defmt(Debug2Format)]
@@ -122,6 +124,7 @@ impl BreakawayProbeWorkspace {
             settle_displacement_counts: 0,
             settle_min_displacement_counts: 0,
             settle_max_displacement_counts: 0,
+            last_target_rpm: 0,
             observations: VelocityObservationRing::new(),
             blocker: DyadicBlocker::new(),
             analysis: StationarityWork::new(),
@@ -134,6 +137,7 @@ pub(crate) struct BreakawayProbeSession {
     plan: UpwardBreakawayProbePlan,
     target_velocity_rpm: TmcMechanicalRpm,
     planned_velocity_mrev_s: u32,
+    ramp_rate: RampRate,
     cursor: UpwardBreakawayCursor,
     pending_index: u8,
     pending_role: ProbeStrokeRole,
@@ -147,6 +151,7 @@ impl BreakawayProbeSession {
         plan: UpwardBreakawayProbePlan,
         target_velocity_rpm: TmcMechanicalRpm,
         planned_velocity_mrev_s: u32,
+        ramp_rate: RampRate,
     ) -> Result<Self, BreakawaySearchError> {
         let (cursor, first) = UpwardBreakawayCursor::start(plan.search_count)?;
         let UpwardProbeStep::Probe {
@@ -160,6 +165,7 @@ impl BreakawayProbeSession {
             plan,
             target_velocity_rpm,
             planned_velocity_mrev_s,
+            ramp_rate,
             cursor,
             pending_index,
             pending_role,
@@ -186,12 +192,18 @@ pub(crate) enum BreakawayProbeState {
     PlannedProbe,
     SetupSafety,
     WriteGain,
-    CommandTarget,
+    RampTarget {
+        ramp: TargetRamp,
+        next_tick_us: u64,
+    },
     Capture {
         next_sample_us: u64,
         deadline_us: u64,
     },
-    CommandZero,
+    RampZero {
+        ramp: TargetRamp,
+        next_tick_us: u64,
+    },
     AnalyzeMoving {
         settle_deadline_us: u64,
         analysis_deadline_us: u64,
@@ -351,83 +363,44 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             if clear_velocity_error_sum(backend).await.is_err() {
                 return fault(CommissionError::Spi);
             }
-            *state = BreakawayProbeState::CommandTarget;
+            let target = match stroke_target_rpm(
+                session.target_velocity_rpm,
+                session.pending_role.direction(),
+            ) {
+                Ok(target) => target,
+                Err(error) => return fault(error),
+            };
+            *state = BreakawayProbeState::RampTarget {
+                ramp: TargetRamp::new(workspace.last_target_rpm, target, session.ramp_rate),
+                next_tick_us: 0,
+            };
             BreakawayProbeStep::ReadyNow
         }
-        BreakawayProbeState::CommandTarget => {
-            crate::diagnostic::checkpoint_breakaway_campaign(
-                crate::diagnostic::BreakawayCheckpoint::TargetCommand,
-            );
-            let target = match session
-                .target_velocity_rpm
-                .with_direction(direction_sign(session.pending_role.direction()))
-            {
-                Ok(target) => target.raw(),
-                Err(_) => return fault(CommissionError::TargetRateInvalid),
-            };
-            let hard_limit = session.plan.context.hard_torque_limit;
-            let mut clamp_session =
-                match VelocityCurrentClampSession::try_new(u32::from(hard_limit)) {
-                    Ok(session) => session,
-                    Err(error) => return current_guard_fault(error),
-                };
-            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeClampInstall);
-            if let Err(error) = clamp_session.install_probe_limit(backend).await {
-                return current_guard_fault(error);
-            }
-            let clamp_limit = clamp_session.probe_limit();
-            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeCurrentPrimitiveStart);
-            if let Err(error) = begin_velocity_current_primitive(
-                &mut workspace.current_observer,
-                backend,
-                clamp_limit,
-                VelocityLimitEvidenceCapability::BestEffortPolling,
-            )
-            .await
-            {
-                return current_guard_fault(error);
-            }
-            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeTargetBaselineRead);
-            let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
-                Ok(value) => value,
-                Err(_) => return fault(CommissionError::Spi),
-            };
-            let baseline_us = backend.elapsed_us();
-            workspace.excursion = Some(ProbeExcursionCapture::new(encoder_raw, baseline_us));
-            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeTargetWrite);
-            if backend
-                .write_register_verified(PID_VELOCITY_TARGET, target as u32)
+        BreakawayProbeState::RampTarget { ramp, next_tick_us } => {
+            if !ramp.is_started()
+                && let Err(error) = open_stroke(
+                    workspace,
+                    session.plan.context.hard_torque_limit,
+                    backend,
+                    PROBE_RAMP,
+                )
                 .await
-                .is_err()
             {
-                return fault(CommissionError::Spi);
+                return probe_ramp_fault(error);
             }
-            if let Err(error) = safety.begin_velocity_step_primitive(backend.elapsed_us()) {
-                return fault(error);
+            match advance_target_ramp(ramp, next_tick_us, workspace, safety, backend, PROBE_RAMP)
+                .await
+            {
+                Ok(RampTick::Pending(at_us)) => BreakawayProbeStep::At(at_us),
+                Ok(RampTick::Reached(schedule)) => {
+                    *state = BreakawayProbeState::Capture {
+                        next_sample_us: schedule.next_sample_us,
+                        deadline_us: schedule.deadline_us,
+                    };
+                    BreakawayProbeStep::At(schedule.next_sample_us)
+                }
+                Err(error) => probe_ramp_fault(error),
             }
-            let started_us = backend.elapsed_us();
-            let Some(next_sample_us) =
-                started_us.checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
-            else {
-                return fault(CommissionError::InvalidSchedule);
-            };
-            let Some(deadline_us) = started_us.checked_add(u64::from(MOVING_STROKE_US)) else {
-                return fault(CommissionError::InvalidSchedule);
-            };
-            workspace.observations.clear();
-            workspace.previous_encoder_raw = encoder_raw;
-            workspace.previous_read_us = baseline_us;
-            workspace.settle_displacement_counts = 0;
-            workspace.settle_min_displacement_counts = 0;
-            workspace.settle_max_displacement_counts = 0;
-            crate::diagnostic::checkpoint_breakaway_campaign(
-                crate::diagnostic::BreakawayCheckpoint::Capture,
-            );
-            *state = BreakawayProbeState::Capture {
-                next_sample_us,
-                deadline_us,
-            };
-            BreakawayProbeStep::At(next_sample_us)
         }
         BreakawayProbeState::Capture {
             next_sample_us,
@@ -456,7 +429,10 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 Err(error) => return current_guard_fault(error),
             }
             if read_us >= *deadline_us {
-                *state = BreakawayProbeState::CommandZero;
+                *state = BreakawayProbeState::RampZero {
+                    ramp: TargetRamp::new(workspace.last_target_rpm, 0, session.ramp_rate),
+                    next_tick_us: 0,
+                };
                 BreakawayProbeStep::ReadyNow
             } else {
                 match next_grid_deadline(
@@ -472,42 +448,21 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 }
             }
         }
-        BreakawayProbeState::CommandZero => {
-            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeMovingBoundary);
-            let boundary =
-                finish_velocity_current_moving_phase(&mut workspace.current_observer, backend)
-                    .await;
-            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeZeroTargetWrite);
-            if backend
-                .write_register(PID_VELOCITY_TARGET, 0)
+        BreakawayProbeState::RampZero { ramp, next_tick_us } => {
+            match advance_zero_ramp(ramp, next_tick_us, workspace, safety, backend, PROBE_RAMP)
                 .await
-                .is_err()
             {
-                return fault(CommissionError::Spi);
+                Ok(RampTick::Pending(at_us)) => BreakawayProbeStep::At(at_us),
+                Ok(RampTick::Reached(schedule)) => {
+                    workspace.analysis.reset_with_structured_diagnostics();
+                    *state = BreakawayProbeState::AnalyzeMoving {
+                        settle_deadline_us: schedule.settle_deadline_us,
+                        analysis_deadline_us: schedule.analysis_deadline_us,
+                    };
+                    BreakawayProbeStep::ReadyNow
+                }
+                Err(error) => probe_ramp_fault(error),
             }
-            safety.enter_settle_phase();
-            if let Err(error) = boundary {
-                return current_guard_fault(error);
-            }
-            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeZeroIntegratorClear);
-            if clear_velocity_error_sum(backend).await.is_err() {
-                return fault(CommissionError::Spi);
-            }
-            let now_us = backend.elapsed_us();
-            let Some(settle_deadline_us) = now_us.checked_add(u64::from(ZERO_SETTLE_US)) else {
-                return fault(CommissionError::InvalidSchedule);
-            };
-            let Some(analysis_deadline_us) =
-                now_us.checked_add(u64::from(SETTLE_ANALYSIS_BUDGET_US))
-            else {
-                return fault(CommissionError::InvalidSchedule);
-            };
-            workspace.analysis.reset_with_structured_diagnostics();
-            *state = BreakawayProbeState::AnalyzeMoving {
-                settle_deadline_us,
-                analysis_deadline_us,
-            };
-            BreakawayProbeStep::ReadyNow
         }
         BreakawayProbeState::AnalyzeMoving {
             settle_deadline_us,
@@ -1019,6 +974,317 @@ async fn sample_one_tick<B: CommissioningBackend>(
     Ok(read_us)
 }
 
+/// Breadcrumbs and capture options a stage passes to the shared ramp helpers.
+#[derive(Debug, Clone, Copy)]
+struct RampCheckpoints {
+    clamp_install: Option<BreakawayCheckpoint>,
+    current_primitive_start: Option<BreakawayCheckpoint>,
+    baseline_read: Option<BreakawayCheckpoint>,
+    target_write: Option<BreakawayCheckpoint>,
+    encoder_sample: Option<BreakawayCheckpoint>,
+    current_input_sample: Option<BreakawayCheckpoint>,
+    current_output_sample: Option<BreakawayCheckpoint>,
+    moving_boundary: Option<BreakawayCheckpoint>,
+    zero_target_write: Option<BreakawayCheckpoint>,
+    integrator_clear: Option<BreakawayCheckpoint>,
+    record_excursion: bool,
+}
+
+const PROBE_RAMP: RampCheckpoints = RampCheckpoints {
+    clamp_install: Some(BreakawayCheckpoint::ProbeClampInstall),
+    current_primitive_start: Some(BreakawayCheckpoint::ProbeCurrentPrimitiveStart),
+    baseline_read: Some(BreakawayCheckpoint::ProbeTargetBaselineRead),
+    target_write: Some(BreakawayCheckpoint::ProbeTargetWrite),
+    encoder_sample: Some(BreakawayCheckpoint::ProbeMovingEncoderSample),
+    current_input_sample: Some(BreakawayCheckpoint::ProbeMovingCurrentInputSample),
+    current_output_sample: Some(BreakawayCheckpoint::ProbeMovingCurrentOutputSample),
+    moving_boundary: Some(BreakawayCheckpoint::ProbeMovingBoundary),
+    zero_target_write: Some(BreakawayCheckpoint::ProbeZeroTargetWrite),
+    integrator_clear: Some(BreakawayCheckpoint::ProbeZeroIntegratorClear),
+    record_excursion: true,
+};
+
+const STROKE_RAMP: RampCheckpoints = RampCheckpoints {
+    clamp_install: None,
+    current_primitive_start: None,
+    baseline_read: None,
+    target_write: None,
+    encoder_sample: None,
+    current_input_sample: None,
+    current_output_sample: None,
+    moving_boundary: None,
+    zero_target_write: None,
+    integrator_clear: None,
+    record_excursion: false,
+};
+
+fn checkpoint_if(checkpoint: Option<BreakawayCheckpoint>) {
+    if let Some(checkpoint) = checkpoint {
+        checkpoint_breakaway_operation(checkpoint);
+    }
+}
+
+#[derive(Debug)]
+enum RampFault {
+    Commission(CommissionError),
+    CurrentGuard(VelocityCurrentGuardError),
+    Sample(BreakawayProbeStep),
+}
+
+impl From<CommissionError> for RampFault {
+    fn from(error: CommissionError) -> Self {
+        RampFault::Commission(error)
+    }
+}
+
+enum RampTick<T> {
+    Pending(u64),
+    Reached(T),
+}
+
+struct CaptureSchedule {
+    next_sample_us: u64,
+    deadline_us: u64,
+}
+
+struct SettleSchedule {
+    settle_deadline_us: u64,
+    analysis_deadline_us: u64,
+}
+
+fn probe_ramp_fault(error: RampFault) -> BreakawayProbeStep {
+    match error {
+        RampFault::Commission(error) => fault(error),
+        RampFault::CurrentGuard(error) => current_guard_fault(error),
+        RampFault::Sample(step) => step,
+    }
+}
+
+fn stroke_target_rpm(
+    target_velocity_rpm: TmcMechanicalRpm,
+    direction: VelocityDirection,
+) -> Result<i32, CommissionError> {
+    target_velocity_rpm
+        .with_direction(direction_sign(direction))
+        .map(TmcMechanicalRpm::raw)
+        .map_err(|_| CommissionError::TargetRateInvalid)
+}
+
+/// Installs the stroke's current clamp and reads the encoder baseline the ramp starts from.
+#[allow(clippy::result_large_err)]
+async fn open_stroke<B: CommissioningBackend>(
+    workspace: &mut BreakawayProbeWorkspace,
+    hard_torque_limit: u16,
+    backend: &mut B,
+    checkpoints: RampCheckpoints,
+) -> Result<(), RampFault> {
+    crate::diagnostic::checkpoint_breakaway_campaign(BreakawayCheckpoint::TargetCommand);
+    let mut clamp_session = VelocityCurrentClampSession::try_new(u32::from(hard_torque_limit))
+        .map_err(RampFault::CurrentGuard)?;
+    checkpoint_if(checkpoints.clamp_install);
+    clamp_session
+        .install_probe_limit(backend)
+        .await
+        .map_err(RampFault::CurrentGuard)?;
+    checkpoint_if(checkpoints.current_primitive_start);
+    begin_velocity_current_primitive(
+        &mut workspace.current_observer,
+        backend,
+        clamp_session.probe_limit(),
+        VelocityLimitEvidenceCapability::BestEffortPolling,
+    )
+    .await
+    .map_err(RampFault::CurrentGuard)?;
+    checkpoint_if(checkpoints.baseline_read);
+    let encoder_raw = backend
+        .read_capture_register(ABN_DECODER_COUNT)
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+    let baseline_us = backend.elapsed_us();
+    if checkpoints.record_excursion {
+        workspace.excursion = Some(ProbeExcursionCapture::new(encoder_raw, baseline_us));
+    }
+    workspace.previous_encoder_raw = encoder_raw;
+    workspace.previous_read_us = baseline_us;
+    workspace.settle_displacement_counts = 0;
+    workspace.settle_min_displacement_counts = 0;
+    workspace.settle_max_displacement_counts = 0;
+    Ok(())
+}
+
+async fn write_next_ramp_target<B: CommissioningBackend>(
+    ramp: &mut TargetRamp,
+    workspace: &mut BreakawayProbeWorkspace,
+    backend: &mut B,
+    checkpoint: Option<BreakawayCheckpoint>,
+    verified: bool,
+) -> Result<(), CommissionError> {
+    let Some(target) = ramp.next() else {
+        return Ok(());
+    };
+    if target == workspace.last_target_rpm {
+        return Ok(());
+    }
+    checkpoint_if(checkpoint);
+    let written = if verified {
+        backend
+            .write_register_verified(PID_VELOCITY_TARGET, target as u32)
+            .await
+    } else {
+        backend
+            .write_register(PID_VELOCITY_TARGET, target as u32)
+            .await
+    };
+    written.map_err(|_| CommissionError::Spi)?;
+    workspace.last_target_rpm = target;
+    Ok(())
+}
+
+fn next_ramp_tick_us(
+    next_tick_us: &mut u64,
+    first: bool,
+    now_us: u64,
+) -> Result<u64, CommissionError> {
+    let period_us = u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US);
+    *next_tick_us = if first {
+        now_us
+            .checked_add(period_us)
+            .ok_or(CommissionError::InvalidSchedule)?
+    } else {
+        next_grid_deadline(*next_tick_us, period_us, now_us)?
+    };
+    Ok(*next_tick_us)
+}
+
+/// Advances the stroke's ramp toward its target by one tick.
+///
+/// The first tick opens the velocity-step primitive; later ticks sample the moving stroke
+/// before writing. The first register write of the ramp is verified. The tick that writes the final target clears
+/// the observation ring, isolates the primitive peak and schedules the capture from that tick.
+#[allow(clippy::result_large_err)]
+async fn advance_target_ramp<B: CommissioningBackend>(
+    ramp: &mut TargetRamp,
+    next_tick_us: &mut u64,
+    workspace: &mut BreakawayProbeWorkspace,
+    safety: &mut OuterSafetyLimits,
+    backend: &mut B,
+    checkpoints: RampCheckpoints,
+) -> Result<RampTick<CaptureSchedule>, RampFault> {
+    let first = !ramp.is_started();
+    let opening = workspace.last_target_rpm == ramp.origin_rpm();
+    if first {
+        write_next_ramp_target(ramp, workspace, backend, checkpoints.target_write, opening).await?;
+        safety.begin_velocity_step_primitive(backend.elapsed_us())?;
+    } else {
+        if backend.elapsed_us() < *next_tick_us {
+            return Ok(RampTick::Pending(*next_tick_us));
+        }
+        sample_one_tick(
+            workspace,
+            safety,
+            backend,
+            checkpoints.encoder_sample,
+            checkpoints.current_input_sample,
+            checkpoints.record_excursion,
+        )
+        .await
+        .map_err(RampFault::Sample)?;
+        checkpoint_if(checkpoints.current_output_sample);
+        let output = read_velocity_pid_output_abs(backend)
+            .await
+            .map_err(RampFault::CurrentGuard)?;
+        workspace.current_observer.observe_moving_output(output);
+        write_next_ramp_target(ramp, workspace, backend, checkpoints.target_write, opening).await?;
+    }
+    let now_us = backend.elapsed_us();
+    if !ramp.is_complete() {
+        return Ok(RampTick::Pending(next_ramp_tick_us(
+            next_tick_us,
+            first,
+            now_us,
+        )?));
+    }
+    let next_sample_us = now_us
+        .checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
+        .ok_or(CommissionError::InvalidSchedule)?;
+    let deadline_us = now_us
+        .checked_add(u64::from(MOVING_STROKE_US))
+        .ok_or(CommissionError::InvalidSchedule)?;
+    workspace.observations.clear();
+    safety.reset_primitive_peak();
+    crate::diagnostic::checkpoint_breakaway_campaign(BreakawayCheckpoint::Capture);
+    Ok(RampTick::Reached(CaptureSchedule {
+        next_sample_us,
+        deadline_us,
+    }))
+}
+
+/// Advances the stroke's ramp back to zero by one tick.
+///
+/// The first tick closes the moving current phase; a failed boundary zeroes the target at once
+/// instead of ramping. The tick that writes zero enters the settle phase and schedules the settle
+/// and analysis deadlines from that tick.
+#[allow(clippy::result_large_err)]
+async fn advance_zero_ramp<B: CommissioningBackend>(
+    ramp: &mut TargetRamp,
+    next_tick_us: &mut u64,
+    workspace: &mut BreakawayProbeWorkspace,
+    safety: &mut OuterSafetyLimits,
+    backend: &mut B,
+    checkpoints: RampCheckpoints,
+) -> Result<RampTick<SettleSchedule>, RampFault> {
+    let first = !ramp.is_started();
+    if first {
+        checkpoint_if(checkpoints.moving_boundary);
+        let boundary =
+            finish_velocity_current_moving_phase(&mut workspace.current_observer, backend).await;
+        if let Err(error) = boundary {
+            checkpoint_if(checkpoints.zero_target_write);
+            backend
+                .write_register(PID_VELOCITY_TARGET, 0)
+                .await
+                .map_err(|_| CommissionError::Spi)?;
+            workspace.last_target_rpm = 0;
+            safety.enter_settle_phase();
+            return Err(RampFault::CurrentGuard(error));
+        }
+    } else if backend.elapsed_us() < *next_tick_us {
+        return Ok(RampTick::Pending(*next_tick_us));
+    }
+    write_next_ramp_target(
+        ramp,
+        workspace,
+        backend,
+        checkpoints.zero_target_write,
+        false,
+    )
+    .await?;
+    if !ramp.is_complete() {
+        let now_us = backend.elapsed_us();
+        return Ok(RampTick::Pending(next_ramp_tick_us(
+            next_tick_us,
+            first,
+            now_us,
+        )?));
+    }
+    safety.enter_settle_phase();
+    checkpoint_if(checkpoints.integrator_clear);
+    clear_velocity_error_sum(backend)
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+    let now_us = backend.elapsed_us();
+    let settle_deadline_us = now_us
+        .checked_add(u64::from(ZERO_SETTLE_US))
+        .ok_or(CommissionError::InvalidSchedule)?;
+    let analysis_deadline_us = now_us
+        .checked_add(u64::from(SETTLE_ANALYSIS_BUDGET_US))
+        .ok_or(CommissionError::InvalidSchedule)?;
+    Ok(RampTick::Reached(SettleSchedule {
+        settle_deadline_us,
+        analysis_deadline_us,
+    }))
+}
+
 const MAX_IN_BAND_DISCOVERY_RUNGS: usize = MAX_SWEEP_RUNGS;
 
 const EMPTY_DISCOVERY_RUNG_BOUNDS: DiscoveryRungNominationBounds = DiscoveryRungNominationBounds {
@@ -1143,6 +1409,7 @@ pub(crate) struct AdditiveDiscoverySession {
     own_multiplier: f32,
     target_velocity_rpm: TmcMechanicalRpm,
     planned_velocity_mrev_s: u32,
+    ramp_rate: RampRate,
     rung_index: u8,
     direction: VelocityDirection,
     slot: u8,
@@ -1165,6 +1432,7 @@ impl AdditiveDiscoverySession {
         floor_origin_clamped: bool,
         target_velocity_rpm: TmcMechanicalRpm,
         planned_velocity_mrev_s: u32,
+        ramp_rate: RampRate,
     ) -> Result<Self, AdditiveDiscoveryOutcome> {
         let plan = plan_additive_discovery_ladder(request)
             .map_err(additive_discovery_plan_error_outcome)?;
@@ -1175,6 +1443,7 @@ impl AdditiveDiscoverySession {
             own_multiplier,
             target_velocity_rpm,
             planned_velocity_mrev_s,
+            ramp_rate,
             rung_index: 0,
             direction: VelocityDirection::Forward,
             slot: 0,
@@ -1230,12 +1499,18 @@ fn additive_discovery_plan_error_outcome(
 pub(crate) enum AdditiveDiscoveryState {
     PlannedDiscovery,
     WriteGain,
-    CommandTarget,
+    RampTarget {
+        ramp: TargetRamp,
+        next_tick_us: u64,
+    },
     Capture {
         next_sample_us: u64,
         deadline_us: u64,
     },
-    CommandZero,
+    RampZero {
+        ramp: TargetRamp,
+        next_tick_us: u64,
+    },
     AnalyzeMoving {
         settle_deadline_us: u64,
         analysis_deadline_us: u64,
@@ -1392,6 +1667,14 @@ fn discovery_step_from_probe_fault(step: BreakawayProbeStep) -> AdditiveDiscover
     }
 }
 
+fn discovery_ramp_fault(error: RampFault) -> AdditiveDiscoveryStep {
+    match error {
+        RampFault::Commission(error) => discovery_fault(error),
+        RampFault::CurrentGuard(error) => discovery_current_guard_fault(error),
+        RampFault::Sample(step) => discovery_step_from_probe_fault(step),
+    }
+}
+
 fn discovery_target_rate_q(
     target_velocity_rpm: TmcMechanicalRpm,
     counts_per_rev: u32,
@@ -1524,78 +1807,36 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             {
                 return discovery_fault(CommissionError::Spi);
             }
-            *state = AdditiveDiscoveryState::CommandTarget;
+            let target = match stroke_target_rpm(session.target_velocity_rpm, session.direction) {
+                Ok(target) => target,
+                Err(error) => return discovery_fault(error),
+            };
+            *state = AdditiveDiscoveryState::RampTarget {
+                ramp: TargetRamp::new(workspace.last_target_rpm, target, session.ramp_rate),
+                next_tick_us: 0,
+            };
             AdditiveDiscoveryStep::ReadyNow
         }
-        AdditiveDiscoveryState::CommandTarget => {
-            crate::diagnostic::checkpoint_breakaway_campaign(
-                crate::diagnostic::BreakawayCheckpoint::TargetCommand,
-            );
-            let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
-                Ok(value) => value,
-                Err(_) => return discovery_fault(CommissionError::Spi),
-            };
-            let baseline_us = backend.elapsed_us();
-            let target = match session
-                .target_velocity_rpm
-                .with_direction(direction_sign(session.direction))
+        AdditiveDiscoveryState::RampTarget { ramp, next_tick_us } => {
+            if !ramp.is_started()
+                && let Err(error) =
+                    open_stroke(workspace, safety.torque_cap, backend, STROKE_RAMP).await
             {
-                Ok(target) => target.raw(),
-                Err(_) => return discovery_fault(CommissionError::TargetRateInvalid),
-            };
-            let hard_limit = safety.torque_cap;
-            let mut clamp_session =
-                match VelocityCurrentClampSession::try_new(u32::from(hard_limit)) {
-                    Ok(session) => session,
-                    Err(error) => return discovery_current_guard_fault(error),
-                };
-            if let Err(error) = clamp_session.install_probe_limit(backend).await {
-                return discovery_current_guard_fault(error);
+                return discovery_ramp_fault(error);
             }
-            let clamp_limit = clamp_session.probe_limit();
-            if let Err(error) = begin_velocity_current_primitive(
-                &mut workspace.current_observer,
-                backend,
-                clamp_limit,
-                VelocityLimitEvidenceCapability::BestEffortPolling,
-            )
-            .await
-            {
-                return discovery_current_guard_fault(error);
-            }
-            if backend
-                .write_register_verified(PID_VELOCITY_TARGET, target as u32)
+            match advance_target_ramp(ramp, next_tick_us, workspace, safety, backend, STROKE_RAMP)
                 .await
-                .is_err()
             {
-                return discovery_fault(CommissionError::Spi);
+                Ok(RampTick::Pending(at_us)) => AdditiveDiscoveryStep::At(at_us),
+                Ok(RampTick::Reached(schedule)) => {
+                    *state = AdditiveDiscoveryState::Capture {
+                        next_sample_us: schedule.next_sample_us,
+                        deadline_us: schedule.deadline_us,
+                    };
+                    AdditiveDiscoveryStep::At(schedule.next_sample_us)
+                }
+                Err(error) => discovery_ramp_fault(error),
             }
-            if let Err(error) = safety.begin_velocity_step_primitive(backend.elapsed_us()) {
-                return discovery_fault(error);
-            }
-            let started_us = backend.elapsed_us();
-            let Some(next_sample_us) =
-                started_us.checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
-            else {
-                return discovery_fault(CommissionError::InvalidSchedule);
-            };
-            let Some(deadline_us) = started_us.checked_add(u64::from(MOVING_STROKE_US)) else {
-                return discovery_fault(CommissionError::InvalidSchedule);
-            };
-            workspace.observations.clear();
-            workspace.previous_encoder_raw = encoder_raw;
-            workspace.previous_read_us = baseline_us;
-            workspace.settle_displacement_counts = 0;
-            workspace.settle_min_displacement_counts = 0;
-            workspace.settle_max_displacement_counts = 0;
-            crate::diagnostic::checkpoint_breakaway_campaign(
-                crate::diagnostic::BreakawayCheckpoint::Capture,
-            );
-            *state = AdditiveDiscoveryState::Capture {
-                next_sample_us,
-                deadline_us,
-            };
-            AdditiveDiscoveryStep::At(next_sample_us)
         }
         AdditiveDiscoveryState::Capture {
             next_sample_us,
@@ -1615,7 +1856,10 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 Err(error) => return discovery_current_guard_fault(error),
             }
             if read_us >= *deadline_us {
-                *state = AdditiveDiscoveryState::CommandZero;
+                *state = AdditiveDiscoveryState::RampZero {
+                    ramp: TargetRamp::new(workspace.last_target_rpm, 0, session.ramp_rate),
+                    next_tick_us: 0,
+                };
                 AdditiveDiscoveryStep::ReadyNow
             } else {
                 match next_grid_deadline(
@@ -1631,45 +1875,29 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 }
             }
         }
-        AdditiveDiscoveryState::CommandZero => {
-            session.pending_step_peak_permille = scored_peak_permille(
-                safety.primitive_peak_milli_counts_per_s(),
-                session.target_velocity_rpm.raw().unsigned_abs(),
-                safety.counts_per_rev(),
-                STEP_PEAK_ADMISSION_PERMILLE,
-            );
-            let boundary =
-                finish_velocity_current_moving_phase(&mut workspace.current_observer, backend)
-                    .await;
-            if backend
-                .write_register(PID_VELOCITY_TARGET, 0)
+        AdditiveDiscoveryState::RampZero { ramp, next_tick_us } => {
+            if !ramp.is_started() {
+                session.pending_step_peak_permille = scored_peak_permille(
+                    safety.primitive_peak_milli_counts_per_s(),
+                    session.target_velocity_rpm.raw().unsigned_abs(),
+                    safety.counts_per_rev(),
+                    STEP_PEAK_ADMISSION_PERMILLE,
+                );
+            }
+            match advance_zero_ramp(ramp, next_tick_us, workspace, safety, backend, STROKE_RAMP)
                 .await
-                .is_err()
             {
-                return discovery_fault(CommissionError::Spi);
+                Ok(RampTick::Pending(at_us)) => AdditiveDiscoveryStep::At(at_us),
+                Ok(RampTick::Reached(schedule)) => {
+                    workspace.analysis.reset_with_structured_diagnostics();
+                    *state = AdditiveDiscoveryState::AnalyzeMoving {
+                        settle_deadline_us: schedule.settle_deadline_us,
+                        analysis_deadline_us: schedule.analysis_deadline_us,
+                    };
+                    AdditiveDiscoveryStep::ReadyNow
+                }
+                Err(error) => discovery_ramp_fault(error),
             }
-            safety.enter_settle_phase();
-            if let Err(error) = boundary {
-                return discovery_current_guard_fault(error);
-            }
-            if clear_velocity_error_sum(backend).await.is_err() {
-                return discovery_fault(CommissionError::Spi);
-            }
-            let now_us = backend.elapsed_us();
-            let Some(settle_deadline_us) = now_us.checked_add(u64::from(ZERO_SETTLE_US)) else {
-                return discovery_fault(CommissionError::InvalidSchedule);
-            };
-            let Some(analysis_deadline_us) =
-                now_us.checked_add(u64::from(SETTLE_ANALYSIS_BUDGET_US))
-            else {
-                return discovery_fault(CommissionError::InvalidSchedule);
-            };
-            workspace.analysis.reset_with_structured_diagnostics();
-            *state = AdditiveDiscoveryState::AnalyzeMoving {
-                settle_deadline_us,
-                analysis_deadline_us,
-            };
-            AdditiveDiscoveryStep::ReadyNow
         }
         AdditiveDiscoveryState::AnalyzeMoving {
             settle_deadline_us,
@@ -2251,6 +2479,7 @@ pub(crate) fn begin_band_confirmation(
     discovery_plan_digest: u64,
     target_velocity_rpm: TmcMechanicalRpm,
     planned_velocity_mrev_s: u32,
+    ramp_rate: RampRate,
     transition_ceiling: u16,
     nomination_p_below: u16,
 ) -> BandConfirmationEntry {
@@ -2325,6 +2554,7 @@ pub(crate) fn begin_band_confirmation(
         candidate.margin_percent,
         target_velocity_rpm,
         planned_velocity_mrev_s,
+        ramp_rate,
     );
     session.nomination_evidence = NominationEvidence {
         nominated_step_peak_permille: candidate.step_peak_permille,
@@ -2338,6 +2568,7 @@ pub(crate) struct BandConfirmationSession {
     plan: BandConfirmationPlan,
     target_velocity_rpm: TmcMechanicalRpm,
     planned_velocity_mrev_s: u32,
+    ramp_rate: RampRate,
     stroke_index: u8,
     forward: DirectionAccumulator,
     reverse: DirectionAccumulator,
@@ -2353,11 +2584,13 @@ impl BandConfirmationSession {
         nominated_margin_percent: f32,
         target_velocity_rpm: TmcMechanicalRpm,
         planned_velocity_mrev_s: u32,
+        ramp_rate: RampRate,
     ) -> Self {
         Self {
             plan,
             target_velocity_rpm,
             planned_velocity_mrev_s,
+            ramp_rate,
             stroke_index: 0,
             forward: DirectionAccumulator::new(),
             reverse: DirectionAccumulator::new(),
@@ -2381,12 +2614,18 @@ impl BandConfirmationSession {
 pub(crate) enum BandConfirmationState {
     PlannedConfirmation,
     WriteGain,
-    CommandTarget,
+    RampTarget {
+        ramp: TargetRamp,
+        next_tick_us: u64,
+    },
     Capture {
         next_sample_us: u64,
         deadline_us: u64,
     },
-    CommandZero,
+    RampZero {
+        ramp: TargetRamp,
+        next_tick_us: u64,
+    },
     AnalyzeMoving {
         settle_deadline_us: u64,
         analysis_deadline_us: u64,
@@ -2451,6 +2690,14 @@ fn confirmation_step_from_probe_fault(step: BreakawayProbeStep) -> BandConfirmat
     }
 }
 
+fn confirmation_ramp_fault(error: RampFault) -> BandConfirmationStep {
+    match error {
+        RampFault::Commission(error) => confirmation_fault(error),
+        RampFault::CurrentGuard(error) => confirmation_current_guard_fault(error),
+        RampFault::Sample(step) => confirmation_step_from_probe_fault(step),
+    }
+}
+
 fn confirmation_evaluation_outcome(
     result: Result<BandConfirmationAcceptance, TargetBandConfirmationInconclusive>,
     plan: BandConfirmationPlan,
@@ -2512,78 +2759,37 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             {
                 return confirmation_fault(CommissionError::Spi);
             }
-            *state = BandConfirmationState::CommandTarget;
+            let target =
+                match stroke_target_rpm(session.target_velocity_rpm, session.current_direction()) {
+                    Ok(target) => target,
+                    Err(error) => return confirmation_fault(error),
+                };
+            *state = BandConfirmationState::RampTarget {
+                ramp: TargetRamp::new(workspace.last_target_rpm, target, session.ramp_rate),
+                next_tick_us: 0,
+            };
             BandConfirmationStep::ReadyNow
         }
-        BandConfirmationState::CommandTarget => {
-            crate::diagnostic::checkpoint_breakaway_campaign(
-                crate::diagnostic::BreakawayCheckpoint::TargetCommand,
-            );
-            let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
-                Ok(value) => value,
-                Err(_) => return confirmation_fault(CommissionError::Spi),
-            };
-            let baseline_us = backend.elapsed_us();
-            let target = match session
-                .target_velocity_rpm
-                .with_direction(direction_sign(session.current_direction()))
+        BandConfirmationState::RampTarget { ramp, next_tick_us } => {
+            if !ramp.is_started()
+                && let Err(error) =
+                    open_stroke(workspace, safety.torque_cap, backend, STROKE_RAMP).await
             {
-                Ok(target) => target.raw(),
-                Err(_) => return confirmation_fault(CommissionError::TargetRateInvalid),
-            };
-            let hard_limit = safety.torque_cap;
-            let mut clamp_session =
-                match VelocityCurrentClampSession::try_new(u32::from(hard_limit)) {
-                    Ok(session) => session,
-                    Err(error) => return confirmation_current_guard_fault(error),
-                };
-            if let Err(error) = clamp_session.install_probe_limit(backend).await {
-                return confirmation_current_guard_fault(error);
+                return confirmation_ramp_fault(error);
             }
-            let clamp_limit = clamp_session.probe_limit();
-            if let Err(error) = begin_velocity_current_primitive(
-                &mut workspace.current_observer,
-                backend,
-                clamp_limit,
-                VelocityLimitEvidenceCapability::BestEffortPolling,
-            )
-            .await
-            {
-                return confirmation_current_guard_fault(error);
-            }
-            if backend
-                .write_register_verified(PID_VELOCITY_TARGET, target as u32)
+            match advance_target_ramp(ramp, next_tick_us, workspace, safety, backend, STROKE_RAMP)
                 .await
-                .is_err()
             {
-                return confirmation_fault(CommissionError::Spi);
+                Ok(RampTick::Pending(at_us)) => BandConfirmationStep::At(at_us),
+                Ok(RampTick::Reached(schedule)) => {
+                    *state = BandConfirmationState::Capture {
+                        next_sample_us: schedule.next_sample_us,
+                        deadline_us: schedule.deadline_us,
+                    };
+                    BandConfirmationStep::At(schedule.next_sample_us)
+                }
+                Err(error) => confirmation_ramp_fault(error),
             }
-            if let Err(error) = safety.begin_velocity_step_primitive(backend.elapsed_us()) {
-                return confirmation_fault(error);
-            }
-            let started_us = backend.elapsed_us();
-            let Some(next_sample_us) =
-                started_us.checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
-            else {
-                return confirmation_fault(CommissionError::InvalidSchedule);
-            };
-            let Some(deadline_us) = started_us.checked_add(u64::from(MOVING_STROKE_US)) else {
-                return confirmation_fault(CommissionError::InvalidSchedule);
-            };
-            workspace.observations.clear();
-            workspace.previous_encoder_raw = encoder_raw;
-            workspace.previous_read_us = baseline_us;
-            workspace.settle_displacement_counts = 0;
-            workspace.settle_min_displacement_counts = 0;
-            workspace.settle_max_displacement_counts = 0;
-            crate::diagnostic::checkpoint_breakaway_campaign(
-                crate::diagnostic::BreakawayCheckpoint::Capture,
-            );
-            *state = BandConfirmationState::Capture {
-                next_sample_us,
-                deadline_us,
-            };
-            BandConfirmationStep::At(next_sample_us)
         }
         BandConfirmationState::Capture {
             next_sample_us,
@@ -2603,7 +2809,10 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 Err(error) => return confirmation_current_guard_fault(error),
             }
             if read_us >= *deadline_us {
-                *state = BandConfirmationState::CommandZero;
+                *state = BandConfirmationState::RampZero {
+                    ramp: TargetRamp::new(workspace.last_target_rpm, 0, session.ramp_rate),
+                    next_tick_us: 0,
+                };
                 BandConfirmationStep::ReadyNow
             } else {
                 match next_grid_deadline(
@@ -2619,39 +2828,21 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 }
             }
         }
-        BandConfirmationState::CommandZero => {
-            let boundary =
-                finish_velocity_current_moving_phase(&mut workspace.current_observer, backend)
-                    .await;
-            if backend
-                .write_register(PID_VELOCITY_TARGET, 0)
+        BandConfirmationState::RampZero { ramp, next_tick_us } => {
+            match advance_zero_ramp(ramp, next_tick_us, workspace, safety, backend, STROKE_RAMP)
                 .await
-                .is_err()
             {
-                return confirmation_fault(CommissionError::Spi);
+                Ok(RampTick::Pending(at_us)) => BandConfirmationStep::At(at_us),
+                Ok(RampTick::Reached(schedule)) => {
+                    workspace.analysis.reset_with_structured_diagnostics();
+                    *state = BandConfirmationState::AnalyzeMoving {
+                        settle_deadline_us: schedule.settle_deadline_us,
+                        analysis_deadline_us: schedule.analysis_deadline_us,
+                    };
+                    BandConfirmationStep::ReadyNow
+                }
+                Err(error) => confirmation_ramp_fault(error),
             }
-            safety.enter_settle_phase();
-            if let Err(error) = boundary {
-                return confirmation_current_guard_fault(error);
-            }
-            if clear_velocity_error_sum(backend).await.is_err() {
-                return confirmation_fault(CommissionError::Spi);
-            }
-            let now_us = backend.elapsed_us();
-            let Some(settle_deadline_us) = now_us.checked_add(u64::from(ZERO_SETTLE_US)) else {
-                return confirmation_fault(CommissionError::InvalidSchedule);
-            };
-            let Some(analysis_deadline_us) =
-                now_us.checked_add(u64::from(SETTLE_ANALYSIS_BUDGET_US))
-            else {
-                return confirmation_fault(CommissionError::InvalidSchedule);
-            };
-            workspace.analysis.reset_with_structured_diagnostics();
-            *state = BandConfirmationState::AnalyzeMoving {
-                settle_deadline_us,
-                analysis_deadline_us,
-            };
-            BandConfirmationStep::ReadyNow
         }
         BandConfirmationState::AnalyzeMoving {
             settle_deadline_us,
@@ -3012,6 +3203,7 @@ pub(crate) struct BreakawayCampaignInputs {
     p_top: PidPGain,
     target_velocity_rpm: TmcMechanicalRpm,
     planned_velocity_mrev_s: u32,
+    ramp_rate: RampRate,
     effective_ceiling_mrev_s: u32,
     hard_torque_limit: u16,
     usable_torque_limit: u16,
@@ -3031,6 +3223,7 @@ pub(crate) struct BreakawayCampaignInputs {
 pub(crate) struct BreakawayCampaignRequest {
     pub(crate) target_velocity_rpm: TmcMechanicalRpm,
     pub(crate) planned_velocity_mrev_s: u32,
+    pub(crate) ramp_milli_rpm_per_ms: u32,
     pub(crate) effective_ceiling_mrev_s: u32,
     pub(crate) hard_torque_limit: u16,
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
@@ -3093,10 +3286,13 @@ impl BreakawayCampaign {
         };
         let probe_plan = plan_upward_breakaway_probe(p_start, p_top, probe_context)
             .map_err(|_| CommissionError::CampaignPlanInvalid)?;
+        let ramp_rate = RampRate::from_milli_rpm_per_ms(request.ramp_milli_rpm_per_ms)
+            .ok_or(CommissionError::CampaignPlanInvalid)?;
         let session = BreakawayProbeSession::new(
             probe_plan,
             request.target_velocity_rpm,
             request.planned_velocity_mrev_s,
+            ramp_rate,
         )
         .map_err(|_| CommissionError::CampaignPlanInvalid)?;
         Ok(Self {
@@ -3105,6 +3301,7 @@ impl BreakawayCampaign {
                 p_top,
                 target_velocity_rpm: request.target_velocity_rpm,
                 planned_velocity_mrev_s: request.planned_velocity_mrev_s,
+                ramp_rate,
                 effective_ceiling_mrev_s: request.effective_ceiling_mrev_s,
                 hard_torque_limit: request.hard_torque_limit,
                 usable_torque_limit,
@@ -3210,6 +3407,7 @@ pub(crate) fn plan_breakaway_campaign_command(
     let campaign = BreakawayCampaign::new(BreakawayCampaignRequest {
         target_velocity_rpm: plan.target_velocity_rpm,
         planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
+        ramp_milli_rpm_per_ms: plan.ramp_milli_rpm_per_ms,
         effective_ceiling_mrev_s: plan.effective_ceiling_mrev_s,
         hard_torque_limit,
         limit_evidence_capability: plan.limit_evidence_capability,
@@ -3618,6 +3816,7 @@ fn route_discovery_outcome(
             discovery_plan_digest,
             inputs.target_velocity_rpm,
             inputs.planned_velocity_mrev_s,
+            inputs.ramp_rate,
             transition_ceiling,
             inputs.nomination_p_below,
         ),
@@ -3752,6 +3951,7 @@ fn enter_discovery(
         floor_origin_clamped,
         inputs.target_velocity_rpm,
         inputs.planned_velocity_mrev_s,
+        inputs.ramp_rate,
     ) {
         Ok(session) => EmitContinuation::EnterPhase(BreakawayCampaignPhase::Discovery {
             state: AdditiveDiscoveryState::PlannedDiscovery,

@@ -15,6 +15,10 @@ use foci_tmc4671::{
     registers::{PID_VELOCITY_P_VELOCITY_I, STATUS_FLAGS},
 };
 
+fn test_ramp_rate() -> RampRate {
+    RampRate::from_accel(500_000).expect("nonzero ramp rate")
+}
+
 fn gain(raw: u16) -> PidPGain {
     PidPGain::new(raw).expect("raw gain within PidPGain range")
 }
@@ -98,7 +102,8 @@ fn run_probe_with_backend(
 ) -> (BreakawayProbeOutcome, MockBackend) {
     let target_velocity_rpm = TmcMechanicalRpm::from_register(target_velocity_rpm_raw);
     let mut session =
-        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394).expect("valid probe session");
+        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid probe session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BreakawayProbeState::PlannedProbe;
     let mut safety = test_safety();
@@ -108,7 +113,7 @@ fn run_probe_with_backend(
     let mut stroke_sign = 1_i32;
 
     for _ in 0..200_000 {
-        if matches!(state, BreakawayProbeState::CommandTarget) {
+        if matches!(state, BreakawayProbeState::RampTarget { .. }) {
             stroke_moving = is_moving(session.pending_role.direction(), session.pending_index);
             stroke_sign = direction_sign(session.pending_role.direction());
         }
@@ -150,7 +155,8 @@ fn no_register_traffic_happens_before_the_planned_probe_state_advances() {
     let plan = test_plan();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
     let mut session =
-        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394).expect("valid session");
+        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BreakawayProbeState::PlannedProbe;
     let mut safety = test_safety();
@@ -174,9 +180,13 @@ fn no_register_traffic_happens_before_the_planned_probe_state_advances() {
 
 #[test]
 fn probe_target_command_recovers_from_one_transient_spi_write_failure() {
-    let mut session =
-        BreakawayProbeSession::new(test_plan(), TmcMechanicalRpm::from_register(100), 4_394)
-            .expect("valid session");
+    let mut session = BreakawayProbeSession::new(
+        test_plan(),
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        test_ramp_rate(),
+    )
+    .expect("valid session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BreakawayProbeState::SetupSafety;
     let mut safety = test_safety();
@@ -202,7 +212,7 @@ fn probe_target_command_recovers_from_one_transient_spi_write_failure() {
         )),
         BreakawayProbeStep::ReadyNow
     ));
-    assert_eq!(state, BreakawayProbeState::CommandTarget);
+    assert!(matches!(state, BreakawayProbeState::RampTarget { .. }));
 
     backend.fail_writes_remaining = Some((PID_VELOCITY_TARGET.addr(), 1));
     let result = pollster::block_on(step_breakaway_probe(
@@ -214,19 +224,8 @@ fn probe_target_command_recovers_from_one_transient_spi_write_failure() {
     ));
 
     assert!(matches!(result, BreakawayProbeStep::At(_)));
-    assert!(matches!(state, BreakawayProbeState::Capture { .. }));
-    let target_writes = backend
-        .spi_log
-        .iter()
-        .filter(|operation| {
-            matches!(
-                operation,
-                SpiOp::Write(address, value)
-                    if *address == PID_VELOCITY_TARGET.addr() && *value == 100
-            )
-        })
-        .count();
-    assert_eq!(target_writes, 2);
+    assert!(matches!(state, BreakawayProbeState::RampTarget { .. }));
+    assert_eq!(velocity_target_writes(&backend.spi_log), [60, 60]);
 }
 
 #[test]
@@ -234,7 +233,8 @@ fn probe_retains_setup_safety_contract_through_capture_and_recovery() {
     let plan = test_plan();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
     let mut session =
-        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394).expect("valid session");
+        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BreakawayProbeState::PlannedProbe;
     let mut safety = test_safety();
@@ -273,7 +273,7 @@ fn probe_retains_setup_safety_contract_through_capture_and_recovery() {
     let mut saw_recovery = false;
     for _ in 0..20_000 {
         saw_gain |= matches!(state, BreakawayProbeState::WriteGain);
-        saw_target |= matches!(state, BreakawayProbeState::CommandTarget);
+        saw_target |= matches!(state, BreakawayProbeState::RampTarget { .. });
         saw_capture |= matches!(state, BreakawayProbeState::Capture { .. });
         saw_recovery |= matches!(state, BreakawayProbeState::Recover(_));
         let result = pollster::block_on(step_breakaway_probe(
@@ -335,9 +335,13 @@ fn probe_retains_setup_safety_contract_through_capture_and_recovery() {
 
 #[test]
 fn probe_streams_raw_evidence_before_recovery_and_decision_after_recovery() {
-    let mut session =
-        BreakawayProbeSession::new(test_plan(), TmcMechanicalRpm::from_register(100), 4_394)
-            .expect("valid session");
+    let mut session = BreakawayProbeSession::new(
+        test_plan(),
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        test_ramp_rate(),
+    )
+    .expect("valid session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BreakawayProbeState::PlannedProbe;
     let mut safety = test_safety();
@@ -387,9 +391,13 @@ fn probe_streams_raw_evidence_before_recovery_and_decision_after_recovery() {
 
 #[test]
 fn recovery_fault_leaves_raw_probe_evidence_without_a_decision() {
-    let mut session =
-        BreakawayProbeSession::new(test_plan(), TmcMechanicalRpm::from_register(100), 4_394)
-            .expect("valid session");
+    let mut session = BreakawayProbeSession::new(
+        test_plan(),
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        test_ramp_rate(),
+    )
+    .expect("valid session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BreakawayProbeState::PlannedProbe;
     let mut safety = test_safety();
@@ -505,7 +513,8 @@ fn wrong_direction_short_circuits_without_recovering() {
     let plan = test_plan();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
     let mut session =
-        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394).expect("valid session");
+        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BreakawayProbeState::PlannedProbe;
     let mut safety = test_safety();
@@ -553,15 +562,10 @@ fn wrong_direction_short_circuits_without_recovering() {
         })
         .collect();
     assert_eq!(
-        target_writes.len(),
-        2,
-        "no recovery stroke may follow a safety fault: {target_writes:?}"
+        target_writes,
+        [60, 100, 40, 0],
+        "one ramped stroke and its zero ramp; no recovery stroke may follow a safety fault"
     );
-    assert_ne!(
-        target_writes[0], 0,
-        "the first write is the commanded stroke"
-    );
-    assert_eq!(target_writes[1], 0, "the second write is CommandZero");
 
     let gain_writes = backend
         .spi_log
@@ -579,9 +583,13 @@ fn wrong_direction_short_circuits_without_recovering() {
 #[test]
 fn capture_interval_refusal_streams_evidence_then_terminates_without_decision() {
     crate::diagnostic::begin_breakaway_campaign();
-    let mut session =
-        BreakawayProbeSession::new(test_plan(), TmcMechanicalRpm::from_register(100), 4_394)
-            .expect("valid session");
+    let mut session = BreakawayProbeSession::new(
+        test_plan(),
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        test_ramp_rate(),
+    )
+    .expect("valid session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BreakawayProbeState::PlannedProbe;
     let mut safety = test_safety();
@@ -646,7 +654,8 @@ fn an_unconfirmed_settle_reports_validation_failure() {
     let plan = test_plan();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
     let mut session =
-        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394).expect("valid session");
+        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BreakawayProbeState::PlannedProbe;
     let mut safety = test_safety();
@@ -691,7 +700,8 @@ fn safety_faults_propagate_unchanged() {
     let plan = test_plan();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
     let mut session =
-        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394).expect("valid session");
+        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BreakawayProbeState::PlannedProbe;
     let mut safety = test_safety();
@@ -752,8 +762,9 @@ fn run_discovery(
     MockBackend,
 ) {
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
-        .expect("valid discovery session");
+    let mut session =
+        AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
     let mut safety = test_safety();
@@ -765,7 +776,7 @@ fn run_discovery(
     let mut stroke_sign = 1_i32;
 
     for _ in 0..1_000_000 {
-        if matches!(state, AdditiveDiscoveryState::CommandTarget) {
+        if matches!(state, AdditiveDiscoveryState::RampTarget { .. }) {
             stroke_numerator = response_numerator(session.direction, session.rung_index);
             stroke_sign = direction_sign(session.direction);
         }
@@ -800,8 +811,9 @@ fn run_discovery(
 fn no_discovery_motion_happens_before_the_planned_discovery_state_advances() {
     let request = discovery_request();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
-        .expect("valid discovery session");
+    let mut session =
+        AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
     let mut safety = test_safety();
@@ -827,8 +839,9 @@ fn no_discovery_motion_happens_before_the_planned_discovery_state_advances() {
 fn discovery_zeros_a_stale_velocity_feedforward_offset_at_ladder_start() {
     let request = discovery_request();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
-        .expect("valid discovery session");
+    let mut session =
+        AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
     let mut safety = test_safety();
@@ -866,9 +879,14 @@ fn discovery_zeros_a_stale_velocity_feedforward_offset_at_ladder_start() {
 #[test]
 fn discovery_retains_inherited_safety_contract_through_recovery() {
     let request = discovery_request();
-    let mut session =
-        AdditiveDiscoverySession::new(request, false, TmcMechanicalRpm::from_register(100), 4_394)
-            .expect("valid discovery session");
+    let mut session = AdditiveDiscoverySession::new(
+        request,
+        false,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        test_ramp_rate(),
+    )
+    .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
     let mut safety = test_safety();
@@ -939,8 +957,9 @@ fn insufficient_additive_span_is_a_plan_time_terminal_with_no_motion() {
     };
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
 
-    let outcome = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
-        .expect_err("a ceiling one step above breakaway cannot hold five structural rungs");
+    let outcome =
+        AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect_err("a ceiling one step above breakaway cannot hold five structural rungs");
 
     assert!(matches!(
         outcome,
@@ -957,8 +976,9 @@ fn additive_ladder_resolution_budget_exceeded_is_a_plan_time_terminal_with_no_mo
     };
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
 
-    let outcome = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
-        .expect_err("every candidate's first additive gap exceeds the resolution guard");
+    let outcome =
+        AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect_err("every candidate's first additive gap exceeds the resolution guard");
 
     assert!(matches!(
         outcome,
@@ -984,8 +1004,9 @@ fn an_in_band_rung_produces_target_band_selected() {
 fn settle_failure_after_in_band_rung_caps_and_nominates() {
     let request = discovery_request();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
-        .expect("valid discovery session");
+    let mut session =
+        AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
     let mut safety = test_safety();
@@ -999,7 +1020,7 @@ fn settle_failure_after_in_band_rung_caps_and_nominates() {
 
     let mut outcome = None;
     for _ in 0..1_000_000 {
-        if matches!(state, AdditiveDiscoveryState::CommandTarget) {
+        if matches!(state, AdditiveDiscoveryState::RampTarget { .. }) {
             stroke_numerator = 5;
             stroke_sign = direction_sign(session.direction);
         }
@@ -1043,8 +1064,9 @@ fn settle_failure_after_in_band_rung_caps_and_nominates() {
 fn discovery_streams_each_raw_observation_on_its_collection_tick() {
     let request = discovery_request();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
-        .expect("valid discovery session");
+    let mut session =
+        AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
     let mut safety = test_safety();
@@ -1058,7 +1080,7 @@ fn discovery_streams_each_raw_observation_on_its_collection_tick() {
     let mut previous_was_observation = false;
 
     for _ in 0..1_000_000 {
-        if matches!(state, AdditiveDiscoveryState::CommandTarget) {
+        if matches!(state, AdditiveDiscoveryState::RampTarget { .. }) {
             stroke_numerator = if session.rung_index == 0 { 5 } else { 8 };
             stroke_sign = direction_sign(session.direction);
         }
@@ -1454,8 +1476,9 @@ fn current_headroom_after_an_in_band_rung_retains_the_candidate() {
 fn wrong_direction_short_circuits_discovery_without_recovering() {
     let request = discovery_request();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
-        .expect("valid discovery session");
+    let mut session =
+        AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
     let mut safety = test_safety();
@@ -1504,15 +1527,10 @@ fn wrong_direction_short_circuits_discovery_without_recovering() {
         })
         .collect();
     assert_eq!(
-        target_writes.len(),
-        2,
-        "no recovery stroke may follow a safety fault: {target_writes:?}"
+        target_writes,
+        [60, 100, 40, 0],
+        "one ramped stroke and its zero ramp; no recovery stroke may follow a safety fault"
     );
-    assert_ne!(
-        target_writes[0], 0,
-        "the first write is the commanded stroke"
-    );
-    assert_eq!(target_writes[1], 0, "the second write is CommandZero");
 
     let gain_writes = backend
         .spi_log
@@ -1531,8 +1549,9 @@ fn wrong_direction_short_circuits_discovery_without_recovering() {
 fn one_unconfirmed_discovery_settle_retries_before_recovery() {
     let request = discovery_request();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
-        .expect("valid discovery session");
+    let mut session =
+        AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
     let mut safety = test_safety();
@@ -1582,8 +1601,9 @@ fn one_unconfirmed_discovery_settle_retries_before_recovery() {
 fn an_actionable_status_on_the_first_settle_is_not_retried() {
     let request = discovery_request();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
-        .expect("valid discovery session");
+    let mut session =
+        AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
     let mut safety = test_safety();
@@ -1648,8 +1668,9 @@ fn an_actionable_status_on_the_first_settle_is_not_retried() {
 fn an_unconfirmed_settle_reports_discovery_evidence_excluded() {
     let request = discovery_request();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
-        .expect("valid discovery session");
+    let mut session =
+        AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394, test_ramp_rate())
+            .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
     let mut safety = test_safety();
@@ -1832,6 +1853,7 @@ fn begin_band_confirmation_refuses_when_the_only_in_band_rung_is_over_ceiling() 
         42,
         TmcMechanicalRpm::from_register(100),
         4_394,
+        test_ramp_rate(),
         897,
         0,
     );
@@ -1850,6 +1872,7 @@ fn begin_band_confirmation_admits_an_in_band_rung_at_the_ceiling() {
         42,
         TmcMechanicalRpm::from_register(100),
         4_394,
+        test_ramp_rate(),
         925,
         0,
     );
@@ -1872,6 +1895,7 @@ fn run_confirmation(
         42,
         target_velocity_rpm,
         4_394,
+        test_ramp_rate(),
         u16::MAX,
         0,
     );
@@ -1898,7 +1922,7 @@ fn run_confirmation(
             write_gain_count += 1;
             direction_sequence.push(session.current_direction());
         }
-        if matches!(state, BandConfirmationState::CommandTarget) {
+        if matches!(state, BandConfirmationState::RampTarget { .. }) {
             stroke_numerator =
                 response_numerator(session.current_direction(), session.stroke_index);
             stroke_sign = direction_sign(session.current_direction());
@@ -1934,8 +1958,13 @@ fn run_confirmation(
 #[test]
 fn no_confirmation_motion_happens_before_the_planned_confirmation_state_advances() {
     let plan = confirmation_plan(724);
-    let mut session =
-        BandConfirmationSession::new(plan, 5.0, TmcMechanicalRpm::from_register(100), 4_394);
+    let mut session = BandConfirmationSession::new(
+        plan,
+        5.0,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        test_ramp_rate(),
+    );
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BandConfirmationState::PlannedConfirmation;
     let mut safety = test_safety();
@@ -1964,6 +1993,7 @@ fn confirmation_retains_inherited_safety_contract_through_recovery() {
         42,
         TmcMechanicalRpm::from_register(100),
         4_394,
+        test_ramp_rate(),
         u16::MAX,
         0,
     );
@@ -2047,6 +2077,7 @@ fn target_band_unconfirmable_from_discovery_spends_zero_confirmation_strokes() {
         42,
         target_velocity_rpm,
         4_394,
+        test_ramp_rate(),
         u16::MAX,
         0,
     );
@@ -2066,6 +2097,7 @@ fn target_band_not_reached_at_authority_consumes_current_headroom_before_band() 
         42,
         target_velocity_rpm,
         4_394,
+        test_ramp_rate(),
         u16::MAX,
         0,
     );
@@ -2221,6 +2253,7 @@ fn wrong_direction_short_circuits_confirmation_without_recovering() {
         42,
         target_velocity_rpm,
         4_394,
+        test_ramp_rate(),
         u16::MAX,
         0,
     );
@@ -2274,15 +2307,10 @@ fn wrong_direction_short_circuits_confirmation_without_recovering() {
         })
         .collect();
     assert_eq!(
-        target_writes.len(),
-        2,
-        "no recovery stroke may follow a safety fault: {target_writes:?}"
+        target_writes,
+        [60, 100, 40, 0],
+        "one ramped stroke and its zero ramp; no recovery stroke may follow a safety fault"
     );
-    assert_ne!(
-        target_writes[0], 0,
-        "the first write is the commanded stroke"
-    );
-    assert_eq!(target_writes[1], 0, "the second write is CommandZero");
 
     let gain_writes = backend
         .spi_log
@@ -2305,6 +2333,7 @@ fn an_unconfirmed_settle_reports_confirmation_evidence_excluded() {
         42,
         target_velocity_rpm,
         4_394,
+        test_ramp_rate(),
         u16::MAX,
         0,
     );
@@ -2382,6 +2411,7 @@ fn campaign_request() -> BreakawayCampaignRequest {
     BreakawayCampaignRequest {
         target_velocity_rpm: TmcMechanicalRpm::from_register(100),
         planned_velocity_mrev_s: 4_394,
+        ramp_milli_rpm_per_ms: test_ramp_rate().milli_rpm_per_ms(),
         effective_ceiling_mrev_s: 10_000,
         hard_torque_limit: 2_448,
         limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
@@ -2402,6 +2432,7 @@ fn integral_inputs(usable_torque_limit: u16) -> BreakawayCampaignInputs {
         p_top: gain(1_024),
         target_velocity_rpm: TmcMechanicalRpm::from_register(100),
         planned_velocity_mrev_s: 4_394,
+        ramp_rate: test_ramp_rate(),
         effective_ceiling_mrev_s: 10_000,
         hard_torque_limit: 2_448,
         usable_torque_limit,
@@ -2435,7 +2466,7 @@ fn run_campaign_probe(
 
     for _ in 0..1_000_000 {
         if let BreakawayCampaignPhase::Probe {
-            state: BreakawayProbeState::CommandTarget,
+            state: BreakawayProbeState::RampTarget { .. },
             session,
         } = campaign.phase()
         {
@@ -2497,7 +2528,7 @@ fn run_campaign_probe_collecting_events(
 
     for _ in 0..1_000_000 {
         if let BreakawayCampaignPhase::Probe {
-            state: BreakawayProbeState::CommandTarget,
+            state: BreakawayProbeState::RampTarget { .. },
             session,
         } = campaign.phase()
         {
@@ -2587,9 +2618,13 @@ fn a_new_campaign_starts_planned_and_its_first_step_issues_no_motion() {
 fn breakaway_breadcrumb_marks_probe_operation_boundaries() {
     crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
     crate::diagnostic::begin_breakaway_campaign();
-    let mut session =
-        BreakawayProbeSession::new(test_plan(), TmcMechanicalRpm::from_register(100), 4_394)
-            .expect("valid session");
+    let mut session = BreakawayProbeSession::new(
+        test_plan(),
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        test_ramp_rate(),
+    )
+    .expect("valid session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BreakawayProbeState::SetupSafety;
     let mut safety = test_safety();
@@ -2635,16 +2670,25 @@ fn breakaway_breadcrumb_marks_probe_operation_boundaries() {
         true,
     );
 
-    state = BreakawayProbeState::CommandTarget;
+    state = BreakawayProbeState::RampTarget {
+        ramp: TargetRamp::new(0, 100, test_ramp_rate()),
+        next_tick_us: 0,
+    };
     backend.fail_on_read = None;
-    let capture = pollster::block_on(step_breakaway_probe(
-        &mut state,
-        &mut workspace,
-        &mut session,
-        &mut safety,
-        &mut backend,
-    ));
-    assert!(matches!(capture, BreakawayProbeStep::At(_)));
+    while matches!(state, BreakawayProbeState::RampTarget { .. }) {
+        let BreakawayProbeStep::At(deadline_us) = pollster::block_on(step_breakaway_probe(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        )) else {
+            panic!("a ramp tick schedules the next tick or the capture");
+        };
+        if matches!(state, BreakawayProbeState::RampTarget { .. }) {
+            backend.elapsed_us_value = deadline_us;
+        }
+    }
     assert_breakaway_breadcrumb(crate::diagnostic::BreakawayCheckpoint::Capture, true);
 
     backend.fail_on_read = Some(foci_tmc4671::registers::ABN_DECODER_COUNT.addr());
@@ -2889,8 +2933,13 @@ fn an_accept_whose_confirmed_p_fails_6a_safety_refuses_integral_without_motion()
 #[test]
 fn a_confirmed_accept_whose_integral_plan_build_is_refused_reports_a_distinct_campaign_cause() {
     let (acceptance, plan) = accepted_confirmation(1_024);
-    let session =
-        BandConfirmationSession::new(plan, 5.0, TmcMechanicalRpm::from_register(100), 4_394);
+    let session = BandConfirmationSession::new(
+        plan,
+        5.0,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        test_ramp_rate(),
+    );
     let inputs = integral_inputs(1);
     let safety = test_safety();
     let backend = test_backend();
@@ -2965,8 +3014,13 @@ fn no_non_accept_confirmation_terminal_carries_a_integral_plan() {
 #[test]
 fn confirmation_evidence_excluded_after_a_recorded_stroke_reports_partial_evidence_not_empty() {
     let plan = confirmation_plan(724);
-    let mut session =
-        BandConfirmationSession::new(plan, 5.0, TmcMechanicalRpm::from_register(100), 4_394);
+    let mut session = BandConfirmationSession::new(
+        plan,
+        5.0,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        test_ramp_rate(),
+    );
     let atom = DiscoveryObservationAtom {
         mean_rate_q: 750_000,
         variance_of_mean_q2: 58_752_225,
@@ -3033,8 +3087,13 @@ fn confirmation_evidence_excluded_after_a_recorded_stroke_reports_partial_eviden
 #[test]
 fn safety_fault_after_a_recorded_stroke_reports_partial_evidence_not_empty() {
     let plan = confirmation_plan(724);
-    let mut session =
-        BandConfirmationSession::new(plan, 5.0, TmcMechanicalRpm::from_register(100), 4_394);
+    let mut session = BandConfirmationSession::new(
+        plan,
+        5.0,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        test_ramp_rate(),
+    );
     let atom = DiscoveryObservationAtom {
         mean_rate_q: 750_000,
         variance_of_mean_q2: 58_752_225,
@@ -3202,6 +3261,7 @@ fn the_campaign_hands_its_own_nomination_evidence_to_the_confirmation_terminal()
         false,
         TmcMechanicalRpm::from_register(100),
         4_394,
+        test_ramp_rate(),
     )
     .expect("valid discovery session");
     session.in_band = peaked_discovery_rungs(&[(500, 1_300), (512, 1_450)]);
@@ -3352,6 +3412,7 @@ fn discovery_rest_refusal_keeps_its_specific_terminal_status() {
         false,
         TmcMechanicalRpm::from_register(100),
         4_394,
+        test_ramp_rate(),
     )
     .expect("valid discovery session");
     let inputs = integral_inputs(2_448);
@@ -3545,6 +3606,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
         42,
         TmcMechanicalRpm::from_register(100),
         4_394,
+        test_ramp_rate(),
         u16::MAX,
         0,
     ) else {
@@ -3578,7 +3640,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     for _ in 0..2_000_000 {
         if let OuterPhase::BreakawayCampaign { campaign, .. } = &phase
             && let BreakawayCampaignPhase::Confirmation { state, session } = campaign.phase()
-            && matches!(state, BandConfirmationState::CommandTarget)
+            && matches!(state, BandConfirmationState::RampTarget { .. })
         {
             stroke_numerator = 5;
             stroke_sign = direction_sign(session.current_direction());
@@ -3679,6 +3741,7 @@ fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_integral_digest
         42,
         TmcMechanicalRpm::from_register(100),
         4_394,
+        test_ramp_rate(),
         u16::MAX,
         0,
     ) else {
@@ -3712,7 +3775,7 @@ fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_integral_digest
     for _ in 0..2_000_000 {
         if let OuterPhase::BreakawayCampaign { campaign, .. } = &phase
             && let BreakawayCampaignPhase::Confirmation { state, session } = campaign.phase()
-            && matches!(state, BandConfirmationState::CommandTarget)
+            && matches!(state, BandConfirmationState::RampTarget { .. })
         {
             stroke_numerator = 5;
             stroke_sign = direction_sign(session.current_direction());
@@ -4032,6 +4095,7 @@ fn a_dispatcher_fault_reports_the_discovery_rungs_already_collected() {
         false,
         TmcMechanicalRpm::from_register(100),
         4_394,
+        test_ramp_rate(),
     )
     .expect("valid discovery session");
     let mut campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign request");
@@ -4102,6 +4166,7 @@ fn breakaway_campaign_fault_terminal_names_the_owning_discovery_phase() {
         false,
         TmcMechanicalRpm::from_register(100),
         4_394,
+        test_ramp_rate(),
     )
     .expect("valid discovery session");
     let mut campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign request");
@@ -4218,6 +4283,7 @@ async fn engine_hand_off_events() -> std::vec::Vec<HandOffEvent> {
         42,
         TmcMechanicalRpm::from_register(100),
         4_394,
+        test_ramp_rate(),
         u16::MAX,
         0,
     ) else {
@@ -4283,7 +4349,7 @@ async fn engine_hand_off_events() -> std::vec::Vec<HandOffEvent> {
         if let OuterPhase::BreakawayCampaign { campaign, .. } = phase
             && let BreakawayCampaignPhase::Confirmation { state, session } = campaign.phase()
         {
-            if matches!(state, BandConfirmationState::CommandTarget) {
+            if matches!(state, BandConfirmationState::RampTarget { .. }) {
                 stroke_numerator = 5;
                 stroke_sign = direction_sign(session.current_direction());
             }
@@ -4372,5 +4438,469 @@ async fn the_engine_reports_one_integral_plan_before_any_integral_evidence() {
         entry < plan && plan < boundary && boundary < first_evidence,
         "expected entry < plan < boundary < first integral evidence, got \
          {entry} < {plan} < {boundary} < {first_evidence}: {events:?}"
+    );
+}
+
+fn velocity_target_writes(log: &[SpiOp]) -> std::vec::Vec<i32> {
+    log.iter()
+        .filter_map(|operation| match operation {
+            SpiOp::Write(address, value) if *address == PID_VELOCITY_TARGET.addr() => {
+                Some(*value as i32)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn ramp_budget() -> OuterMotionBudget {
+    OuterMotionBudget {
+        requested_velocity_mrev_s: 4_500,
+        max_stroke_travel_mrev: 8_000,
+        negative_position_headroom_mrev: 8_000,
+        positive_position_headroom_mrev: 8_000,
+        ..test_budget()
+    }
+}
+
+fn ramp_safety() -> OuterSafetyLimits {
+    let mut safety = OuterSafetyLimits::new(current_limit(2_448).raw(), ramp_budget());
+    safety
+        .configure_velocity_sweep_encoder_resolution(4_000)
+        .expect("valid encoder resolution");
+    safety
+        .configure_velocity_envelope_with_settle_ceiling(4_500, 10_000)
+        .expect("valid velocity envelope");
+    safety.set_encoder_baseline(0).expect("baseline configured");
+    safety
+        .arm_safety_observation(0)
+        .expect("safety observation armed");
+    safety
+}
+
+struct DiscoveryStroke {
+    state: AdditiveDiscoveryState,
+    workspace: BreakawayProbeWorkspace,
+    session: AdditiveDiscoverySession,
+    safety: OuterSafetyLimits,
+    backend: MockBackend,
+}
+
+impl DiscoveryStroke {
+    fn new(target_rpm: i32, rate: RampRate) -> Self {
+        Self {
+            state: AdditiveDiscoveryState::PlannedDiscovery,
+            workspace: BreakawayProbeWorkspace::new(),
+            session: AdditiveDiscoverySession::new(
+                discovery_request(),
+                false,
+                TmcMechanicalRpm::from_register(target_rpm),
+                4_394,
+                rate,
+            )
+            .expect("valid discovery session"),
+            safety: ramp_safety(),
+            backend: test_backend(),
+        }
+    }
+
+    /// Steps the stage once at the current clock and returns that clock.
+    fn step(&mut self) -> u64 {
+        let now_us = self.backend.elapsed_us_value;
+        let result = pollster::block_on(step_additive_discovery(
+            &mut self.state,
+            &mut self.workspace,
+            &mut self.session,
+            &mut self.safety,
+            &mut self.backend,
+        ));
+        match result {
+            AdditiveDiscoveryStep::At(deadline_us) => self.backend.elapsed_us_value = deadline_us,
+            AdditiveDiscoveryStep::Done(outcome) => panic!("stroke ended early: {outcome:?}"),
+            _ => {}
+        }
+        now_us
+    }
+
+    fn run_until(&mut self, mut done: impl FnMut(&Self) -> bool) {
+        for _ in 0..10_000 {
+            if done(self) {
+                return;
+            }
+            self.step();
+        }
+        panic!("stroke did not reach the expected state");
+    }
+
+    fn target_writes(&self) -> std::vec::Vec<i32> {
+        velocity_target_writes(&self.backend.spi_log)
+    }
+}
+
+#[test]
+fn discovery_stroke_ramps_to_target_and_back_at_the_planned_rate() {
+    let mut stroke = DiscoveryStroke::new(274, test_ramp_rate());
+
+    stroke.run_until(|stroke| matches!(stroke.state, AdditiveDiscoveryState::AnalyzeMoving { .. }));
+
+    let targets = stroke.target_writes();
+    assert_eq!(targets, [60, 120, 180, 240, 274, 214, 154, 94, 34, 0]);
+    assert!(
+        targets
+            .windows(2)
+            .all(|pair| (pair[1] - pair[0]).unsigned_abs() <= 60)
+    );
+}
+
+#[test]
+fn discovery_capture_deadline_starts_at_the_ramp_end() {
+    let mut stroke = DiscoveryStroke::new(274, test_ramp_rate());
+    let mut final_write_us = None;
+
+    while final_write_us.is_none() {
+        let now_us = stroke.step();
+        if stroke.target_writes().last() == Some(&274) {
+            final_write_us = Some(now_us);
+        }
+    }
+
+    let final_write_us = final_write_us.unwrap();
+    let AdditiveDiscoveryState::Capture { deadline_us, .. } = stroke.state else {
+        panic!(
+            "the final ramp write enters capture, got {:?}",
+            stroke.state
+        );
+    };
+    assert!(final_write_us >= 4_000, "the ramp spans five ticks");
+    assert_eq!(deadline_us - final_write_us, u64::from(MOVING_STROKE_US));
+    assert_eq!(stroke.workspace.observations.len(), 0);
+}
+
+fn in_settle_phase(safety: &OuterSafetyLimits) -> bool {
+    std::format!("{safety:?}").contains("in_settle_phase: true")
+}
+
+#[test]
+fn settle_phase_is_entered_when_the_zero_ramp_completes() {
+    let mut stroke = DiscoveryStroke::new(274, test_ramp_rate());
+    let mut settle_after = std::vec::Vec::new();
+
+    while settle_after.len() < 2 {
+        let writes_before = stroke.target_writes().len();
+        stroke.step();
+        let writes = stroke.target_writes();
+        if writes.len() > writes_before && matches!(writes.last(), Some(&34) | Some(&0)) {
+            settle_after.push(in_settle_phase(&stroke.safety));
+        }
+    }
+
+    assert_eq!(settle_after, [false, true]);
+}
+
+#[test]
+fn a_zero_span_ramp_runs_its_continuation_on_its_first_tick_without_a_write() {
+    let mut stroke = DiscoveryStroke::new(274, test_ramp_rate());
+    stroke.workspace.last_target_rpm = 274;
+    stroke.run_until(|stroke| matches!(stroke.state, AdditiveDiscoveryState::RampTarget { .. }));
+
+    let tick_us = stroke.step();
+
+    let AdditiveDiscoveryState::Capture { deadline_us, .. } = stroke.state else {
+        panic!("a zero-span ramp enters capture on its first tick");
+    };
+    assert_eq!(deadline_us - tick_us, u64::from(MOVING_STROKE_US));
+    assert!(stroke.target_writes().is_empty());
+}
+
+#[test]
+fn a_rate_whose_span_fits_one_tick_writes_the_target_once() {
+    let mut stroke = DiscoveryStroke::new(60, test_ramp_rate());
+    stroke.run_until(|stroke| matches!(stroke.state, AdditiveDiscoveryState::RampTarget { .. }));
+
+    let tick_us = stroke.step();
+
+    let AdditiveDiscoveryState::Capture { deadline_us, .. } = stroke.state else {
+        panic!("a one-tick ramp enters capture on its first tick");
+    };
+    assert_eq!(deadline_us - tick_us, u64::from(MOVING_STROKE_US));
+    assert_eq!(stroke.target_writes(), [60]);
+}
+
+#[test]
+fn an_actionable_status_at_the_moving_boundary_zeroes_the_target_at_once() {
+    let mut stroke = DiscoveryStroke::new(274, test_ramp_rate());
+    stroke.run_until(|stroke| matches!(stroke.state, AdditiveDiscoveryState::RampZero { .. }));
+    stroke
+        .backend
+        .registers
+        .insert(
+            STATUS_FLAGS.addr(),
+            crate::autotune::current_loop_actionable_status_mask(
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
+        )
+        .expect("status register fixture fits");
+
+    let result = pollster::block_on(step_additive_discovery(
+        &mut stroke.state,
+        &mut stroke.workspace,
+        &mut stroke.session,
+        &mut stroke.safety,
+        &mut stroke.backend,
+    ));
+
+    assert!(matches!(
+        result,
+        AdditiveDiscoveryStep::Done(AdditiveDiscoveryOutcome::SafetyFault {
+            error: CommissionError::SafetyEnvelopeViolation,
+            safety: None,
+        })
+    ));
+    assert_eq!(stroke.target_writes(), [60, 120, 180, 240, 274, 0]);
+}
+
+#[test]
+fn the_first_issued_ramp_write_is_verified_when_the_first_tick_rounds_to_no_change() {
+    let slow = RampRate::from_milli_rpm_per_ms(500).expect("nonzero ramp rate");
+    let mut stroke = DiscoveryStroke::new(2, slow);
+    stroke.run_until(|stroke| matches!(stroke.state, AdditiveDiscoveryState::RampTarget { .. }));
+    let mut verified_by_write = std::vec::Vec::new();
+
+    while !matches!(stroke.state, AdditiveDiscoveryState::Capture { .. }) {
+        let writes_before = stroke.target_writes().len();
+        let verified_before = stroke.backend.verified_write_calls;
+        stroke.step();
+        if stroke.target_writes().len() > writes_before {
+            verified_by_write.push(stroke.backend.verified_write_calls > verified_before);
+        }
+    }
+
+    assert_eq!(stroke.target_writes(), [1, 2]);
+    assert_eq!(verified_by_write, [true, false]);
+}
+
+#[test]
+fn probe_confirmation_and_discovery_all_ramp() {
+    let (_, probe_backend) = run_probe(test_plan(), |_direction, _index| true);
+    let (_, _, discovery_backend) =
+        run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
+            if rung_index == 0 { 5 } else { 8 }
+        });
+    let (_, confirmation_backend, _, _) = run_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(724)),
+        2_448,
+        |_direction, _stroke_index| 5,
+    );
+
+    for backend in [&probe_backend, &discovery_backend, &confirmation_backend] {
+        let targets = velocity_target_writes(&backend.spi_log);
+        assert_eq!(targets[..4], [60, 100, 40, 0], "ramped stroke: {targets:?}");
+    }
+}
+
+#[test]
+fn probe_excursion_baseline_is_read_at_the_ramp_start() {
+    let mut session = BreakawayProbeSession::new(
+        test_plan(),
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        test_ramp_rate(),
+    )
+    .expect("valid session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BreakawayProbeState::PlannedProbe;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let mut encoder_count = 0_i32;
+
+    for _ in 0..10_000 {
+        match pollster::block_on(step_breakaway_probe(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        )) {
+            BreakawayProbeStep::At(deadline_us) => {
+                backend.elapsed_us_value = deadline_us;
+                if matches!(state, BreakawayProbeState::RampTarget { .. }) {
+                    encoder_count += 3;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            BreakawayProbeStep::Observation(collected) => {
+                assert_eq!(collected.stroke_max_displacement_counts, 3);
+                assert!(collected.capture_max_interval_us <= 1_000);
+                return;
+            }
+            BreakawayProbeStep::Done(outcome) => panic!("probe ended early: {outcome:?}"),
+            _ => {}
+        }
+    }
+    panic!("the probe stroke did not produce an observation");
+}
+
+struct DispatchedDiscovery {
+    phase: OuterPhase,
+    backend: MockBackend,
+    position_counts: f64,
+    events: std::vec::Vec<BreakawayCampaignEvent>,
+}
+
+impl DispatchedDiscovery {
+    fn new(target_rpm: i32) -> Self {
+        let session = AdditiveDiscoverySession::new(
+            discovery_request(),
+            false,
+            TmcMechanicalRpm::from_register(target_rpm),
+            4_394,
+            test_ramp_rate(),
+        )
+        .expect("valid discovery session");
+        let mut campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign");
+        campaign.phase = BreakawayCampaignPhase::Discovery {
+            state: AdditiveDiscoveryState::PlannedDiscovery,
+            session,
+        };
+        Self {
+            phase: OuterPhase::BreakawayCampaign {
+                campaign,
+                workspace: BreakawayProbeWorkspace::new(),
+                safety: ramp_safety(),
+            },
+            backend: test_backend(),
+            position_counts: 0.0,
+            events: std::vec::Vec::new(),
+        }
+    }
+
+    fn discovery(&self) -> Option<(&AdditiveDiscoveryState, &AdditiveDiscoverySession)> {
+        match &self.phase {
+            OuterPhase::BreakawayCampaign { campaign, .. } => match campaign.phase() {
+                BreakawayCampaignPhase::Discovery { state, session } => Some((state, session)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Dispatches one tick; on `At` the plant moves at `counts_per_ms(written target)` until
+    /// the deadline. Returns false once the outer phase has failed.
+    fn tick(&mut self, mut counts_per_ms: impl FnMut(i32) -> f64) -> bool {
+        match dispatch_campaign_tick(&mut self.phase, &mut self.backend) {
+            StepResult::At(deadline_us) => {
+                let written = self
+                    .backend
+                    .registers
+                    .get(&PID_VELOCITY_TARGET.addr())
+                    .map_or(0, |value| *value as i32);
+                let elapsed_ms = (deadline_us - self.backend.elapsed_us_value) as f64 / 1_000.0;
+                self.position_counts += counts_per_ms(written) * elapsed_ms;
+                self.backend.elapsed_us_value = deadline_us;
+                let position = libm::floor(self.position_counts) as i32;
+                self.backend.mechanical_encoder_position_counts_value = position as u32;
+                self.backend.set_abn_decoder_count(position);
+                true
+            }
+            StepResult::BreakawayCampaignEvent(event) => {
+                self.events.push(event);
+                true
+            }
+            StepResult::OuterFailed(_) => false,
+            _ => true,
+        }
+    }
+
+    fn campaign_terminal_cause(&self) -> Option<u8> {
+        self.events.iter().find_map(|event| match event {
+            BreakawayCampaignEvent::CampaignTerminal(closure) => Some(closure.terminal_cause),
+            _ => None,
+        })
+    }
+
+    fn safety_fault_reason(&self) -> Option<u8> {
+        match &self.phase {
+            OuterPhase::FailedWithSafety { safety_fault, .. } => Some(safety_fault.reason),
+            _ => None,
+        }
+    }
+}
+
+#[test]
+fn discovery_step_peak_excludes_the_ramp_and_the_straddling_window() {
+    const TARGET_RPM: i32 = 270;
+    let mut run = DispatchedDiscovery::new(TARGET_RPM);
+
+    for _ in 0..10_000 {
+        if matches!(
+            run.discovery(),
+            Some((AdditiveDiscoveryState::RampZero { .. }, _))
+        ) {
+            break;
+        }
+        assert!(run.tick(|written| {
+            let tracked_rpm = if written == TARGET_RPM {
+                f64::from(TARGET_RPM)
+            } else {
+                1.3 * f64::from(TARGET_RPM)
+            };
+            tracked_rpm * 4_000.0 / 60_000.0
+        }));
+    }
+    assert!(run.tick(|_| 18.0), "the first zero-ramp tick runs");
+
+    let (_, session) = run.discovery().expect("still in discovery");
+    assert_eq!(session.pending_step_peak_permille, 1_000);
+}
+
+fn run_dispatched_fault(trigger_write: i32) -> DispatchedDiscovery {
+    let mut run = DispatchedDiscovery::new(274);
+    let mut jumped = false;
+
+    for _ in 0..10_000 {
+        let alive = run.tick(|written| {
+            if written == trigger_write && !jumped {
+                jumped = true;
+                900.0
+            } else {
+                0.0
+            }
+        });
+        if !alive {
+            return run;
+        }
+    }
+    panic!("the dispatched discovery did not fail");
+}
+
+#[test]
+fn an_encoder_velocity_fault_during_the_ramp_is_caught_by_the_safety_sample() {
+    let run = run_dispatched_fault(120);
+
+    assert_eq!(velocity_target_writes(&run.backend.spi_log), [60, 120, 0]);
+    assert_eq!(
+        run.safety_fault_reason(),
+        Some(crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY)
+    );
+    assert_eq!(
+        run.campaign_terminal_cause(),
+        Some(BreakawayTerminalCause::DiscoverySafetyFault as u8)
+    );
+}
+
+#[test]
+fn an_encoder_velocity_fault_during_the_zero_ramp_is_caught_by_the_safety_sample() {
+    let run = run_dispatched_fault(154);
+
+    assert_eq!(
+        velocity_target_writes(&run.backend.spi_log),
+        [60, 120, 180, 240, 274, 214, 154, 0]
+    );
+    assert_eq!(
+        run.safety_fault_reason(),
+        Some(crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY)
+    );
+    assert_eq!(
+        run.campaign_terminal_cause(),
+        Some(BreakawayTerminalCause::DiscoverySafetyFault as u8)
     );
 }

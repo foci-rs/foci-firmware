@@ -1,12 +1,10 @@
 //! Linear target ramp that spaces velocity targets one per millisecond tick.
 
-#![allow(dead_code, reason = "no production caller consumes the ramp yet")]
-
 /// Multiplier applied to the configured acceleration limit when shaping a ramp.
 pub(crate) const RAMP_ACCEL_MULTIPLIER: u32 = 2;
 
 /// Ramp slew rate in milli-RPM per millisecond tick. Never zero.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct RampRate(u64);
 
 impl RampRate {
@@ -43,7 +41,7 @@ impl RampRate {
 }
 
 /// Iterator-style generator of per-tick velocity targets from one RPM to another.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct TargetRamp {
     from_rpm: i32,
     to_rpm: i32,
@@ -72,6 +70,10 @@ impl TargetRamp {
     }
 
     /// Ramp duration in microseconds.
+    #[allow(
+        dead_code,
+        reason = "durations are planned from RampRate::ramp_us_for_span_rpm"
+    )]
     pub(crate) fn ramp_us(&self) -> u32 {
         self.rate.ramp_us_for_span_rpm(self.span_rpm())
     }
@@ -97,6 +99,16 @@ impl TargetRamp {
             -delta
         };
         i32::try_from(i64::from(self.from_rpm) + signed).ok()
+    }
+
+    /// The target the ramp starts from.
+    pub(crate) fn origin_rpm(&self) -> i32 {
+        self.from_rpm
+    }
+
+    /// Whether at least one tick has been taken.
+    pub(crate) fn is_started(&self) -> bool {
+        self.tick > 0
     }
 
     /// Whether every target has been produced; true from construction for a zero-tick ramp.
@@ -163,7 +175,7 @@ mod tests {
         assert_eq!(small.ticks(), 1);
         assert_eq!(small.next(), Some(60));
         assert_eq!(small.next(), None);
-        let mut none = TargetRamp::new(100, 100, rate);
+        let none = TargetRamp::new(100, 100, rate);
         assert_eq!(none.ticks(), 0);
         assert!(none.is_complete());
     }
