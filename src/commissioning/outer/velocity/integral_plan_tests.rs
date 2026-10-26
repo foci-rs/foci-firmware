@@ -847,7 +847,7 @@ fn integral_authority_rejects_an_acceptance_for_a_different_candidate() {
 #[test]
 fn breakaway_plan_digest_reflects_the_half_octave_insertion() {
     let plan = build_test_breakaway_plan();
-    assert_eq!(plan.digest(), 17_406_821_423_780_811_778);
+    assert_eq!(plan.digest(), 17_037_049_690_968_400_623);
 }
 
 fn breakaway_acquisition_context() -> AcquisitionContext {
@@ -1420,6 +1420,31 @@ fn schema_17_still_hashes_i_top_cap_in_its_digest() {
 }
 
 #[test]
+fn pre_ramp_schemas_keep_the_ramp_out_of_their_digest() {
+    let mut plan = build_test_breakaway_plan();
+    let ramp_shaped = plan.digest();
+    plan.ramp_us = plan.ramp_us.wrapping_add(1_000);
+    assert_ne!(plan.digest(), ramp_shaped);
+
+    for schema_revision in [INTEGRAL_EVIDENCE_SCHEMA_REVISION, 18] {
+        plan.schema_revision = schema_revision;
+        let baseline = plan.digest();
+        plan.ramp_us = plan.ramp_us.wrapping_add(1_000);
+        plan.ramp_milli_rpm_per_ms = plan.ramp_milli_rpm_per_ms.wrapping_add(1);
+        assert_eq!(plan.digest(), baseline);
+    }
+}
+
+#[test]
+fn schema_18_breakaway_plan_still_hashes_i_top_cap_in_its_digest() {
+    let mut plan = build_test_breakaway_plan();
+    plan.schema_revision = 18;
+    let baseline = plan.digest();
+    plan.i_top_cap = plan.i_top_cap.wrapping_add(1);
+    assert_ne!(plan.digest(), baseline);
+}
+
+#[test]
 fn schema_16_breakaway_plan_also_hashes_i_top_cap_changes_in_its_digest() {
     let mut plan = build_test_breakaway_plan();
     assert_eq!(plan.schema_revision, BREAKAWAY_INTEGRAL_SCHEMA_REVISION);
@@ -1454,10 +1479,10 @@ fn signed_deficit_target_uses_the_conservative_directional_endpoints() {
 
 #[test]
 fn integral_ladder_appends_the_exact_cap_without_changing_history() {
-    assert_eq!(PROPORTIONAL_PLAN_SCHEMA_REVISION, 14);
+    assert_eq!(PROPORTIONAL_PLAN_SCHEMA_REVISION, 18);
     assert_eq!(INTEGRAL_EVIDENCE_SCHEMA_REVISION, 17);
     assert_eq!(BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION, 17);
-    assert_eq!(BREAKAWAY_INTEGRAL_SCHEMA_REVISION, 18);
+    assert_eq!(BREAKAWAY_INTEGRAL_SCHEMA_REVISION, 19);
     assert_ne!(
         BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION,
         PROPORTIONAL_PLAN_SCHEMA_REVISION

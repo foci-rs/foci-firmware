@@ -241,12 +241,12 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     core.push_u16(plan.hard_torque_limit);
     core.push_u16(plan.usable_torque_limit);
     core.push_u8(plan.limit_evidence_capability as u8);
-    if matches!(
-        plan.schema_revision,
-        super::integral_plan::INTEGRAL_EVIDENCE_SCHEMA_REVISION
-            | super::integral_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION
-    ) {
+    if plan.schema_revision >= super::integral_plan::INTEGRAL_EVIDENCE_SCHEMA_REVISION {
         core.push_u16(plan.i_top_cap);
+    }
+    if plan.schema_revision >= super::integral_plan::FIRST_RAMP_SHAPED_INTEGRAL_SCHEMA_REVISION {
+        core.push_u32(plan.ramp_milli_rpm_per_ms);
+        core.push_u32(plan.ramp_us);
     }
 
     let mut schedule = VelocitySweepCanonicalRecord::new();
@@ -1060,6 +1060,21 @@ mod tests {
                 .all(|record| record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX)
         );
         assert_eq!(records[1].as_bytes().len(), 124);
+
+        let ramp_shaped = super::super::integral_plan::VelocityIntegralPlan {
+            schema_revision: super::super::integral_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
+            ..plan
+        };
+        let [core, _, _] = encode_velocity_integral_plan_trace(7, ramp_shaped);
+        let core = core.as_bytes();
+        assert_eq!(&core[7..15], &ramp_shaped.digest().to_le_bytes());
+        assert_eq!(&core[97..99], &ramp_shaped.i_top_cap.to_le_bytes());
+        assert_eq!(
+            &core[99..103],
+            &ramp_shaped.ramp_milli_rpm_per_ms.to_le_bytes()
+        );
+        assert_eq!(&core[103..107], &ramp_shaped.ramp_us.to_le_bytes());
+        assert_eq!(core.len(), 107);
     }
 
     fn plan() -> VelocityIntegralExecutionPlan {

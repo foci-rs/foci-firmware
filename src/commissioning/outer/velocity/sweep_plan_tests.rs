@@ -90,7 +90,7 @@ fn proportional_plan_uses_operational_current_authority_and_new_schemas() {
     assert_eq!(historical.usable_torque_limit, 2_534);
     assert_eq!(historical.p_top.raw(), 2_457);
     assert_eq!(combined.schema_revision, PROPORTIONAL_PLAN_SCHEMA_REVISION);
-    assert_eq!(PROPORTIONAL_PLAN_SCHEMA_REVISION, 14);
+    assert_eq!(PROPORTIONAL_PLAN_SCHEMA_REVISION, 18);
     assert_eq!(combined.recovery_nominal_slot_us, 2_316_958);
     assert_eq!(combined.nominal_workflow_ms, 286_971);
     assert_eq!(combined.target_velocity_rpm.raw(), 263);

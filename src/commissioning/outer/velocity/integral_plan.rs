@@ -24,7 +24,9 @@ use super::velocity_clamp::VelocityLimitEvidenceCapability;
 pub const INTEGRAL_EVIDENCE_SCHEMA_REVISION: u16 = 17;
 /// Integral schema for the breakaway-seeded campaign; binds the accepted
 /// [`super::band_confirmation::BandConfirmationPlan`] digest instead of a Proportional sweep digest.
-pub const BREAKAWAY_INTEGRAL_SCHEMA_REVISION: u16 = 18;
+pub const BREAKAWAY_INTEGRAL_SCHEMA_REVISION: u16 = 19;
+/// First Integral schema whose plan identity binds the target ramp.
+pub const FIRST_RAMP_SHAPED_INTEGRAL_SCHEMA_REVISION: u16 = 19;
 /// Largest predeclared positive-I ladder accepted by the family-128 table.
 pub const INTEGRAL_MAX_POSITIVE_RUNGS: usize = 30;
 /// Minimum representable positive Q4.12 velocity-I gain.
@@ -233,8 +235,10 @@ impl VelocityIntegralPlan {
         hash_value!(self.family_size);
         hash_value!(self.total_rung_count);
         hash_value!(self.expected_observations);
-        hash_value!(self.ramp_milli_rpm_per_ms);
-        hash_value!(self.ramp_us);
+        if self.schema_revision >= FIRST_RAMP_SHAPED_INTEGRAL_SCHEMA_REVISION {
+            hash_value!(self.ramp_milli_rpm_per_ms);
+            hash_value!(self.ramp_us);
+        }
         hash_value!(self.moving_stroke_us);
         hash_value!(self.zero_settle_us);
         hash_value!(self.analysis_budget_us);
@@ -260,10 +264,7 @@ impl VelocityIntegralPlan {
         if !matches!(self.slot_order, IntegralSlotOrder::ForwardFirst) {
             hash_value!(self.slot_order.report_code());
         }
-        if matches!(
-            self.schema_revision,
-            INTEGRAL_EVIDENCE_SCHEMA_REVISION | BREAKAWAY_INTEGRAL_SCHEMA_REVISION
-        ) {
+        if self.schema_revision >= INTEGRAL_EVIDENCE_SCHEMA_REVISION {
             hash_value!(self.i_top_cap);
         }
         hash
