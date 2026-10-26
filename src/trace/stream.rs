@@ -7,7 +7,7 @@
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
 /// Firmware trace protocol version.
-pub const PROTOCOL_VERSION: u8 = 23;
+pub const PROTOCOL_VERSION: u8 = 24;
 /// Fixed envelope length in bytes.
 pub const HEADER_LEN: usize = 32;
 /// Maximum critical frame transport budget in bytes.
@@ -656,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn critical_payload_reserves_bytes_84_to_88_as_zero_under_protocol_23() {
+    fn critical_payload_reserves_bytes_84_to_88_as_zero_under_protocol_24() {
         let sample = CriticalSample {
             step_position: -1,
             tmc_position_actual: 2,
@@ -698,7 +698,7 @@ mod tests {
             boot_id: 0,
         });
         assert_eq!(frame.bytes()[4], PROTOCOL_VERSION);
-        assert_eq!(PROTOCOL_VERSION, 23);
+        assert_eq!(PROTOCOL_VERSION, 24);
     }
 
     #[test]
@@ -741,7 +741,7 @@ mod tests {
 
     #[test]
     fn fixed_payload_lengths_match_spec() {
-        assert_eq!(PROTOCOL_VERSION, 23);
+        assert_eq!(PROTOCOL_VERSION, 24);
         assert_eq!(CRITICAL_PAYLOAD_LEN, 88);
         assert_eq!(CURRENT_PATH_PAYLOAD_LEN, 16);
         assert_eq!(PHASE_ADVANCE_PAYLOAD_LEN, 12);

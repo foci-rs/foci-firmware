@@ -3254,6 +3254,47 @@ fn a_nominated_campaign_terminal_carries_the_step_peak_and_excluded_count() {
 }
 
 #[test]
+fn the_campaign_streams_each_classified_rungs_step_peak_on_its_margin() {
+    let mut campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign request");
+    let mut session = AdditiveDiscoverySession::new(
+        discovery_request(),
+        false,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        test_ramp_rate(),
+    )
+    .expect("valid discovery session");
+    session.in_band = peaked_discovery_rungs(&[(500, 1_300), (512, 1_375)]);
+    let cursor = 0;
+    campaign.phase = BreakawayCampaignPhase::Discovery {
+        state: AdditiveDiscoveryState::StreamMargins { cursor },
+        session,
+    };
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    backend.fail_on_write = Some(PID_VELOCITY_P_VELOCITY_I.addr());
+
+    let mut margins = std::vec::Vec::new();
+    for _ in 0..16 {
+        match pollster::block_on(step_breakaway_campaign(
+            &mut campaign,
+            &mut workspace,
+            &mut safety,
+            &mut backend,
+        )) {
+            BreakawayCampaignStep::Event(BreakawayCampaignEvent::DiscoveryRungMargin(margin)) => {
+                margins.push((margin.p_raw, margin.step_peak_permille));
+            }
+            BreakawayCampaignStep::Done(_) => break,
+            _ => {}
+        }
+    }
+
+    assert_eq!(margins, [(500, 1_300), (512, 1_375)]);
+}
+
+#[test]
 fn the_campaign_hands_its_own_nomination_evidence_to_the_confirmation_terminal() {
     let mut campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign request");
     let mut session = AdditiveDiscoverySession::new(

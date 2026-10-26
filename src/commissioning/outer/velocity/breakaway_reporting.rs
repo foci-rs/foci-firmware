@@ -499,6 +499,7 @@ pub(crate) fn discovery_rung_margin_report(
         margin_percent_milli,
         half_width_percent_milli,
         adjacent_rate_step_percent_milli,
+        step_peak_permille: entry.step_peak_permille,
     })
 }
 

@@ -320,6 +320,7 @@ fn encode_discovery_rung_margin_has_stable_frame_layout() {
         margin_percent_milli: 500,
         half_width_percent_milli: 4_500,
         adjacent_rate_step_percent_milli: -1_200,
+        step_peak_permille: 1_375,
     };
     let record = encode_discovery_rung_margin(report);
     let expected = Expected::new()
@@ -333,8 +334,11 @@ fn encode_discovery_rung_margin_has_stable_frame_layout() {
         .i32(report.upper_percent_milli)
         .i32(report.margin_percent_milli)
         .i32(report.half_width_percent_milli)
-        .i32(report.adjacent_rate_step_percent_milli);
+        .i32(report.adjacent_rate_step_percent_milli)
+        .u16(report.step_peak_permille);
     assert_eq!(record.as_bytes(), expected.bytes());
+    assert_eq!(record.as_bytes().len(), 40);
+    assert_eq!(&record.as_bytes()[38..40], &1_375u16.to_le_bytes());
 }
 
 #[test]
@@ -605,6 +609,7 @@ fn every_encoder_uses_a_distinct_local_tag() {
             margin_percent_milli: 0,
             half_width_percent_milli: 0,
             adjacent_rate_step_percent_milli: 0,
+            step_peak_permille: 0,
         })
         .as_bytes()[0],
         encode_rung_zero_diagnostic(BreakawayRungZeroDiagnostic {
