@@ -1052,6 +1052,9 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             {
                 return fault_terminal(session, backend, None, ROBUSTNESS_CAUSE_IO, counts_per_rev);
             }
+            if first {
+                safety.restart_primitive_clock(backend.elapsed_us());
+            }
             if !ramp.is_complete() {
                 return match next_ramp_tick_us(&mut next_tick_us, first, backend.elapsed_us()) {
                     Ok(at_us) => {
@@ -1500,6 +1503,9 @@ async fn advance_leg_ramp<B: CommissioningBackend>(
         ));
     }
     let written_us = backend.elapsed_us();
+    if first && !opens_primitive {
+        safety.restart_primitive_clock(written_us);
+    }
     if first && opens_primitive {
         safety.end_primitive();
         if safety.begin_velocity_step_primitive(written_us).is_err() {
@@ -4678,5 +4684,326 @@ mod tests {
         assert_eq!(robustness_cycle_ramp_us(180, rate), 12_000);
         let slow = RampRate::from_milli_rpm_per_ms(100_000).expect("nonzero rate");
         assert_eq!(robustness_cycle_ramp_us(176, slow), 7_000);
+    }
+
+    #[test]
+    fn the_primitive_clock_restarts_at_the_reverse_and_zero_ramp_first_writes() {
+        const SPI_STEP_US: u64 = 7;
+        let mut parts = RunParts::new(point_at_180());
+        parts.backend.spi_elapsed_step_us = SPI_STEP_US;
+        let mut driver = TickDriver::new(parts, 0);
+        let mut on_tick = steady_tick;
+        let ended = driver.run_until(&mut on_tick, |state| {
+            matches!(state, RobustnessReversalState::ReverseRamp { ramp, .. } if ramp.is_started())
+        });
+        assert!(ended.is_none());
+        let opened_position = driver.parts.safety.primitive_start_position;
+        assert_eq!(
+            driver.parts.safety.primitive_start_us,
+            Some(driver.parts.workspace.previous_read_us + SPI_STEP_US),
+            "the reverse ramp's first write restarts the clock"
+        );
+
+        let ended = driver.run_until(&mut on_tick, |state| {
+            matches!(state, RobustnessReversalState::ZeroRamp { ramp, .. } if ramp.is_started())
+        });
+
+        assert!(ended.is_none());
+        let RobustnessReversalState::ZeroRamp { next_tick_us, .. } = driver.parts.state else {
+            unreachable!()
+        };
+        assert_eq!(
+            driver.parts.safety.primitive_start_us,
+            Some(next_tick_us - CAPTURE_PERIOD_US),
+            "the zero ramp's first write restarts the clock"
+        );
+        assert_eq!(
+            driver.parts.safety.primitive_start_position,
+            opened_position
+        );
+    }
+
+    struct TickContext {
+        phase: CapturePhase,
+        leg_tick: u32,
+        target: i32,
+        index: usize,
+    }
+
+    /// Steps a tracked run one tick at a time, running the outer safety sample after every
+    /// scheduled tick and, on entry to each analysis state, `analysis_us` of further 1 ms samples
+    /// while the plant keeps moving at its commanded sign.
+    struct TickDriver {
+        parts: RunParts,
+        analysis_us: u64,
+        encoder_count: i32,
+        previous_phase: Option<CapturePhase>,
+        previous_state: RobustnessReversalState,
+        leg_tick: u32,
+        ticks: usize,
+    }
+
+    fn is_analysis(state: &RobustnessReversalState) -> bool {
+        matches!(
+            state,
+            RobustnessReversalState::EstablishAnalyze { .. }
+                | RobustnessReversalState::ReverseAnalyze { .. }
+                | RobustnessReversalState::ZeroAnalyze { .. }
+        )
+    }
+
+    impl TickDriver {
+        fn new(parts: RunParts, analysis_us: u64) -> Self {
+            let previous_state = parts.state;
+            Self {
+                parts,
+                analysis_us,
+                encoder_count: 0,
+                previous_phase: None,
+                previous_state,
+                leg_tick: 0,
+                ticks: 0,
+            }
+        }
+
+        fn written_target(&self) -> i32 {
+            *self
+                .parts
+                .backend
+                .registers
+                .get(&PID_VELOCITY_TARGET.addr())
+                .unwrap_or(&0) as i32
+        }
+
+        fn sample(&mut self) -> Option<RobustnessReversalTerminal> {
+            let raw = self.encoder_count.rem_euclid(4_000);
+            self.parts.backend.set_abn_decoder_count(raw);
+            self.parts.backend.mechanical_encoder_position_counts_value = raw as u32;
+            match pollster::block_on(check_outer_safety(
+                &mut self.parts.safety,
+                &mut self.parts.backend,
+            )) {
+                Ok(None) => None,
+                Ok(Some(fault)) => {
+                    let StepResult::RobustnessReversalTerminal(terminal) = fault_terminal(
+                        &self.parts.session,
+                        &self.parts.backend,
+                        Some(fault),
+                        ROBUSTNESS_CAUSE_SAFETY_FAULT,
+                        COUNTS_PER_REV,
+                    ) else {
+                        unreachable!("fault_terminal builds a robustness terminal")
+                    };
+                    Some(terminal)
+                }
+                Err(error) => panic!("outer safety sample failed: {error:?}"),
+            }
+        }
+
+        fn run_analysis_time(&mut self) -> Option<RobustnessReversalTerminal> {
+            for _ in 0..self.analysis_us / 1_000 {
+                self.parts.backend.elapsed_us_value += 1_000;
+                self.encoder_count += self.written_target().signum() * STEADY_DELTA;
+                if let Some(terminal) = self.sample() {
+                    return Some(terminal);
+                }
+            }
+            None
+        }
+
+        /// Runs until the terminal, or `None` once `stop` holds after a step.
+        fn run_until(
+            &mut self,
+            on_tick: &mut impl FnMut(&mut RunParts, TickContext) -> i32,
+            stop: impl Fn(&RobustnessReversalState) -> bool,
+        ) -> Option<RobustnessReversalTerminal> {
+            for _ in 0..STEP_BUDGET {
+                let result = self.parts.step();
+                self.parts.harvest_targets();
+                self.parts.backend.spi_log.clear();
+                self.parts.log_cursor = 0;
+                let state = self.parts.state;
+                let recovering = matches!(state, RobustnessReversalState::RecoverOrigin(_));
+                if recovering
+                    && !matches!(
+                        self.previous_state,
+                        RobustnessReversalState::RecoverOrigin(_)
+                    )
+                {
+                    self.parts.recoveries += 1;
+                }
+                let entered_analysis = is_analysis(&state)
+                    && core::mem::discriminant(&state)
+                        != core::mem::discriminant(&self.previous_state);
+                self.previous_state = state;
+                let phase = capture_phase(&state);
+                if phase.is_some() && phase != self.previous_phase {
+                    self.leg_tick = 0;
+                }
+                self.previous_phase = phase;
+                match result {
+                    StepResult::ReadyNow => {
+                        if entered_analysis && let Some(terminal) = self.run_analysis_time() {
+                            return Some(terminal);
+                        }
+                    }
+                    StepResult::At(deadline) => {
+                        self.parts.backend.elapsed_us_value = deadline;
+                        let context = TickContext {
+                            phase: phase.expect("At is scheduled only from a capture state"),
+                            leg_tick: self.leg_tick,
+                            target: self.written_target(),
+                            index: self.ticks,
+                        };
+                        self.encoder_count += on_tick(&mut self.parts, context);
+                        self.ticks += 1;
+                        self.leg_tick += 1;
+                        if let Some(terminal) = self.sample() {
+                            return Some(terminal);
+                        }
+                    }
+                    StepResult::RobustnessReversalTerminal(terminal) => return Some(terminal),
+                    other => panic!("unexpected step result: {other:?}"),
+                }
+                if stop(&self.parts.state) {
+                    return None;
+                }
+            }
+            panic!("robustness reversal run exceeded its bounded step budget");
+        }
+
+        fn run(
+            &mut self,
+            mut on_tick: impl FnMut(&mut RunParts, TickContext) -> i32,
+        ) -> RobustnessReversalTerminal {
+            self.run_until(&mut on_tick, |_| false)
+                .expect("an unbounded run ends in a terminal")
+        }
+
+        /// Index of the tick on which the run ended.
+        fn last_tick(&self) -> usize {
+            self.ticks - 1
+        }
+    }
+
+    fn steady_tick(_parts: &mut RunParts, context: TickContext) -> i32 {
+        context.target.signum() * STEADY_DELTA
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum InjectedFault {
+        VelocityCap,
+        PositionWindow,
+        ObservationGap,
+        QuarterTurn,
+    }
+
+    impl InjectedFault {
+        const ALL: [Self; 4] = [
+            Self::VelocityCap,
+            Self::PositionWindow,
+            Self::ObservationGap,
+            Self::QuarterTurn,
+        ];
+
+        fn reason(self) -> u8 {
+            use crate::commissioning::types::{
+                OUTER_SAFETY_FAULT_POSITION, OUTER_SAFETY_FAULT_VELOCITY,
+            };
+            match self {
+                Self::VelocityCap => OUTER_SAFETY_FAULT_VELOCITY,
+                Self::PositionWindow => OUTER_SAFETY_FAULT_POSITION,
+                Self::ObservationGap => OUTER_SAFETY_FAULT_OBSERVATION_GAP,
+                Self::QuarterTurn => OUTER_SAFETY_FAULT_QUARTER_TURN,
+            }
+        }
+
+        fn inject(self, parts: &mut RunParts, context: &TickContext) -> i32 {
+            let steady = context.target.signum() * STEADY_DELTA;
+            let quarter_turn = parts.safety.quarter_turn_fault_counts as i32;
+            match self {
+                Self::VelocityCap => quarter_turn - 100,
+                Self::PositionWindow => {
+                    let reached = parts.safety.unwrapped_position + steady;
+                    let window = reached.unsigned_abs() - 1;
+                    parts.safety.negative_position_window = window;
+                    parts.safety.positive_position_window = window;
+                    steady
+                }
+                Self::ObservationGap => {
+                    parts.backend.elapsed_us_value += MAX_SAFETY_OBSERVATION_GAP_US;
+                    steady
+                }
+                Self::QuarterTurn => quarter_turn,
+            }
+        }
+    }
+
+    /// A run whose position stays off zero, so the absolute window can always be closed in front
+    /// of it.
+    fn fault_run_parts() -> RunParts {
+        let mut parts = RunParts::new(test_point());
+        parts.safety.unwrapped_position = STEADY_DELTA / 2;
+        parts
+    }
+
+    /// Ticks of the first cycle on which the reverse ramp and the zero ramp take their first
+    /// safety sample after restarting the primitive clock.
+    fn restart_ticks() -> [usize; 2] {
+        let mut reverse_ramp = None;
+        let mut zero_ramp = None;
+        let mut driver = TickDriver::new(fault_run_parts(), 0);
+        let _ = driver.run(|parts, context| {
+            if context.leg_tick == 0 {
+                match context.phase {
+                    CapturePhase::ReverseRamp => {
+                        reverse_ramp = reverse_ramp.or(Some(context.index))
+                    }
+                    CapturePhase::ZeroRamp => zero_ramp = zero_ramp.or(Some(context.index)),
+                    _ => {}
+                }
+            }
+            steady_tick(parts, context)
+        });
+        [
+            reverse_ramp.expect("the run reaches a reverse ramp"),
+            zero_ramp.expect("the run reaches a zero ramp"),
+        ]
+    }
+
+    fn detection_latency(fault: InjectedFault, at_tick: usize) -> usize {
+        let mut driver = TickDriver::new(fault_run_parts(), 0);
+        let terminal = driver.run(|parts, context| {
+            if context.index == at_tick {
+                fault.inject(parts, &context)
+            } else {
+                steady_tick(parts, context)
+            }
+        });
+        assert_eq!(
+            terminal.safety_fault.map(|report| report.reason),
+            Some(fault.reason()),
+            "{fault:?} injected at tick {at_tick}"
+        );
+        driver.last_tick() - at_tick
+    }
+
+    #[test]
+    fn faults_around_each_primitive_clock_restart_are_detected_on_the_same_tick() {
+        let restarts = restart_ticks();
+        let mid_reverse_capture = (restarts[0] + restarts[1]) / 2;
+        for fault in InjectedFault::ALL {
+            let unrestarted = detection_latency(fault, mid_reverse_capture);
+            assert_eq!(unrestarted, 0, "{fault:?} away from any restart");
+            for restart in restarts {
+                for at_tick in [restart - 1, restart, restart + 1] {
+                    assert_eq!(
+                        detection_latency(fault, at_tick),
+                        unrestarted,
+                        "{fault:?} injected at tick {at_tick} around the restart at {restart}"
+                    );
+                }
+            }
+        }
     }
 }

@@ -501,6 +501,16 @@ impl OuterSafetyLimits {
         Ok(())
     }
 
+    /// Restart the open primitive's duration clock at `now_us`, keeping its start position,
+    /// velocity history and peak. The transient allowance counts as spent, so the velocity bound
+    /// in force never widens. Does nothing when no primitive is open.
+    pub(crate) fn restart_primitive_clock(&mut self, now_us: u64) {
+        if self.primitive_start_us.is_some() {
+            self.primitive_start_us = Some(now_us);
+            self.velocity_step_primitive = false;
+        }
+    }
+
     pub(crate) fn end_primitive(&mut self) {
         if self.primitive_start_us.is_some() {
             defmt::info!(
@@ -1037,9 +1047,9 @@ mod tests {
         OuterSafetyTimingStage, TraceSummarySeqs, step_outer_with_trace,
     };
     use crate::commissioning::types::{
-        OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_POSITION,
-        OUTER_SAFETY_FAULT_POSITION_LOCAL, OUTER_SAFETY_FAULT_QUARTER_TURN,
-        OUTER_SAFETY_FAULT_VELOCITY, StepResult,
+        OUTER_SAFETY_FAULT_DURATION, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
+        OUTER_SAFETY_FAULT_POSITION, OUTER_SAFETY_FAULT_POSITION_LOCAL,
+        OUTER_SAFETY_FAULT_QUARTER_TURN, OUTER_SAFETY_FAULT_VELOCITY, StepResult,
     };
     use foci_tmc4671::registers::ABN_DECODER_COUNT;
 
@@ -1696,6 +1706,87 @@ mod tests {
             assert_eq!(safety.last_accepted_observation(), observation);
             assert!(safety.ceiling_latched());
         });
+    }
+
+    #[test]
+    fn restarting_the_primitive_clock_measures_the_duration_cap_from_the_restart() {
+        let mut safety = envelope_armed_safety(1_450, 3_450);
+        safety.begin_velocity_step_primitive(100_000).unwrap();
+        let mut backend = MockBackend::new();
+        let mut sample_at = |safety: &mut OuterSafetyLimits, now_us: u64| {
+            backend.elapsed_us_value = now_us;
+            pollster::block_on(check_outer_safety(safety, &mut backend)).unwrap()
+        };
+        for now_us in (101_000..=2_000_000).step_by(1_000) {
+            assert_eq!(sample_at(&mut safety, now_us), None);
+        }
+
+        safety.restart_primitive_clock(2_000_000);
+
+        for now_us in (2_001_000..=5_000_000).step_by(1_000) {
+            assert_eq!(
+                sample_at(&mut safety, now_us),
+                None,
+                "the cap runs from the restart, not from the primitive open"
+            );
+        }
+        let fault = sample_at(&mut safety, 5_001_000).expect("the restarted clock expires");
+        assert_eq!(fault.reason, OUTER_SAFETY_FAULT_DURATION);
+        assert_eq!(fault.elapsed_us, 3_001_000);
+    }
+
+    #[test]
+    fn restarting_the_primitive_clock_keeps_position_history_peak_and_cap() {
+        pollster::block_on(async {
+            let mut safety = envelope_armed_safety(1_450, 3_450);
+            safety.unwrapped_position = 37;
+            safety.begin_velocity_step_primitive(100_000).unwrap();
+            let mut backend = MockBackend::new();
+            for now_us in (101_000..=200_000).step_by(1_000) {
+                backend.elapsed_us_value = now_us;
+                backend.mechanical_encoder_position_counts_value =
+                    if now_us == 101_000 { 4 } else { 8 };
+                assert_eq!(
+                    check_outer_safety(&mut safety, &mut backend).await,
+                    Ok(None)
+                );
+            }
+            let start_position = safety.primitive_start_position;
+            let peak = safety.primitive_peak_milli_counts_per_s();
+            let excursion = safety.max_local_position_excursion();
+            let observation = safety.last_accepted_observation();
+            let cap = safety.active_velocity_cap_milli_counts_per_s(200_000);
+
+            safety.restart_primitive_clock(200_000);
+
+            assert_eq!(safety.primitive_start_us, Some(200_000));
+            assert_eq!(safety.primitive_start_position, start_position);
+            assert_eq!(safety.primitive_peak_milli_counts_per_s(), peak);
+            assert_eq!(safety.max_local_position_excursion(), excursion);
+            assert_eq!(safety.last_accepted_observation(), observation);
+            assert_eq!(
+                safety.active_velocity_cap_milli_counts_per_s(200_000),
+                cap,
+                "a restart does not reopen the transient allowance"
+            );
+            backend.elapsed_us_value = 201_000;
+            backend.mechanical_encoder_position_counts_value = 8 + 30;
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .unwrap()
+                .expect("the first window after the restart is evaluated");
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+        });
+    }
+
+    #[test]
+    fn restarting_the_primitive_clock_without_an_open_primitive_does_nothing() {
+        let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+
+        safety.restart_primitive_clock(5_000);
+
+        assert_eq!(safety.primitive_start_us, None);
+        assert_eq!(safety.primitive_start_position, None);
     }
 
     #[test]
