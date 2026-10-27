@@ -390,6 +390,12 @@ pub enum CommissionError {
     CurrentGainUnrepresentable,
     /// Resistance identification read a bus voltage outside 18 to 60 V. Code 122.
     ResistanceBusVoltageOutOfRange,
+    /// Additive discovery's velocity-loop output reached the hard current limit before any
+    /// rung was in band. Code 123.
+    DiscoveryHardClip,
+    /// The TMC status word carried an actionable bit when additive discovery read the current
+    /// guard. Code 124.
+    DiscoveryCurrentGuardStatus,
 }
 
 /// Specific outcome behind a `CommissionError::PositionTuneFailed`.
@@ -570,6 +576,8 @@ impl CommissionError {
             Self::CurrentValidationEnvelopeUnreachable => 120,
             Self::CurrentGainUnrepresentable => 121,
             Self::ResistanceBusVoltageOutOfRange => 122,
+            Self::DiscoveryHardClip => 123,
+            Self::DiscoveryCurrentGuardStatus => 124,
         }
     }
 }
@@ -872,6 +880,8 @@ mod tests {
             CommissionError::CurrentValidationEnvelopeUnreachable,
             CommissionError::CurrentGainUnrepresentable,
             CommissionError::ResistanceBusVoltageOutOfRange,
+            CommissionError::DiscoveryHardClip,
+            CommissionError::DiscoveryCurrentGuardStatus,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -999,6 +1009,11 @@ mod tests {
         assert_eq!(
             CommissionError::ResistanceBusVoltageOutOfRange.status_code(),
             122
+        );
+        assert_eq!(CommissionError::DiscoveryHardClip.status_code(), 123);
+        assert_eq!(
+            CommissionError::DiscoveryCurrentGuardStatus.status_code(),
+            124
         );
     }
 

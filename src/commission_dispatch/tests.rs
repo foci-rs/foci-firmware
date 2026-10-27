@@ -2162,6 +2162,57 @@ async fn outer_failed_safety_envelope_restores_entry_gains() {
 }
 
 #[fixture_test]
+async fn outer_failed_discovery_stops_fail_closed_like_a_safety_envelope_violation() {
+    use core::sync::atomic::Ordering;
+    use foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I;
+    for err in [
+        crate::autotune::CommissionError::DiscoveryHardClip,
+        crate::autotune::CommissionError::DiscoveryCurrentGuardStatus,
+    ] {
+        let mut backend = MockBackend::new();
+        let (_, _, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut en = true;
+        tmc_state().motor_armed.store(true, Ordering::Relaxed);
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        let mut engine = Some(robustness_reversal_engine());
+        seed_motor_sentinel(&mut backend).await;
+        seed_stability_clock(&mut backend);
+
+        let outcome = drive_commission_result(
+            StepResult::OuterFailed(err),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4095,
+        )
+        .await;
+
+        assert!(!*state.calibrated, "{err:?}");
+        assert!(!*state.motor_enabled, "{err:?}");
+        assert!(!backend.enable_pin, "{err:?}");
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed), "{err:?}");
+        assert!(
+            backend.spi_log.iter().any(|op| {
+                matches!(op, SpiOp::Write(addr, _) if *addr == PID_VELOCITY_P_VELOCITY_I.addr())
+            }),
+            "{err:?} must run the safety-fault gain restore"
+        );
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult { status, .. },
+                actions,
+            } => {
+                assert_eq!(status, err.status_code());
+                assert_eq!(actions.stepper, StepperPostAction::Stop);
+            }
+            _ => panic!("expected TuneResult for {err:?}"),
+        }
+        clear_motor_sentinel();
+    }
+}
+
+#[fixture_test]
 async fn outer_failed_soft_failure_holds_motor() {
     use core::sync::atomic::Ordering;
     let mut backend = MockBackend::new();

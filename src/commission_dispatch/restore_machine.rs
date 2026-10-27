@@ -832,17 +832,17 @@ impl TerminalRestoreMachine {
                         self.terminal.outer_error = CommissionError::Spi;
                     }
                     let error = self.terminal.outer_error;
-                    self.terminal.is_safety_fault = matches!(
+                    let envelope_stop = matches!(
                         error,
-                        CommissionError::Spi
-                            | CommissionError::Shutdown
-                            | CommissionError::SafetyEnvelopeViolation
+                        CommissionError::SafetyEnvelopeViolation
+                            | CommissionError::DiscoveryHardClip
+                            | CommissionError::DiscoveryCurrentGuardStatus
                     );
+                    self.terminal.is_safety_fault = envelope_stop
+                        || matches!(error, CommissionError::Spi | CommissionError::Shutdown);
                     if self.terminal.is_safety_fault {
                         self.terminal.outer_restore_failure = Some(error);
-                        if matches!(error, CommissionError::SafetyEnvelopeViolation)
-                            && self.entry_snapshot(engine).is_some()
-                        {
+                        if envelope_stop && self.entry_snapshot(engine).is_some() {
                             self.cursor = RestoreCursor::OuterFailedSafetyRestore(None);
                         } else {
                             self.cursor = RestoreCursor::OuterFailedModeRamp;

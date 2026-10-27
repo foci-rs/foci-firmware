@@ -1635,7 +1635,10 @@ fn discovery_current_guard_fault(error: VelocityCurrentGuardError) -> AdditiveDi
     discovery_fault(match error {
         VelocityCurrentGuardError::InvalidLimit => CommissionError::InvalidCurrentLimit,
         VelocityCurrentGuardError::RegisterIo => CommissionError::Spi,
-        VelocityCurrentGuardError::ActionableStatus(_) => CommissionError::SafetyEnvelopeViolation,
+        VelocityCurrentGuardError::ActionableStatus(status) => {
+            defmt::warn!("discovery current guard actionable status: {:#x}", status);
+            CommissionError::DiscoveryCurrentGuardStatus
+        }
     })
 }
 
@@ -1926,7 +1929,19 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     return discovery_fault(CommissionError::VelocityWrongDirection);
                 }
                 VelocityObservationClass::HardClipFault => {
-                    return discovery_fault(CommissionError::SafetyEnvelopeViolation);
+                    defmt::warn!(
+                        "discovery hard clip: rung={} predicted_torque_target={} hard_limit={} \
+                         usable_limit={} in_band={}",
+                        session.rung_index,
+                        input.predicted_torque_target_abs,
+                        input.hard_torque_limit,
+                        input.usable_torque_limit,
+                        session.in_band.count()
+                    );
+                    if session.in_band.count() == 0 {
+                        return discovery_fault(CommissionError::DiscoveryHardClip);
+                    }
+                    session.pending_headroom_stop = true;
                 }
                 VelocityObservationClass::InvalidEvidenceFault => {
                     return AdditiveDiscoveryStep::Done(

@@ -1473,6 +1473,34 @@ fn current_headroom_after_an_in_band_rung_retains_the_candidate() {
 }
 
 #[test]
+fn hard_clip_before_any_in_band_rung_reports_the_hard_clip_error() {
+    let (outcome, _session, _) = run_discovery(discovery_request(), 100, |_direction, _rung| 2);
+
+    let AdditiveDiscoveryOutcome::SafetyFault { error, safety } = outcome else {
+        panic!("expected SafetyFault, got {outcome:?}");
+    };
+    assert_eq!(error, CommissionError::DiscoveryHardClip);
+    assert_eq!(safety, None);
+}
+
+#[test]
+fn hard_clip_after_an_in_band_rung_closes_the_ladder_and_retains_the_candidate() {
+    let (outcome, _session, _) = run_discovery(
+        discovery_request(),
+        170,
+        |_direction, rung_index| match rung_index {
+            2 => 5,
+            _ => 2,
+        },
+    );
+
+    let AdditiveDiscoveryOutcome::TargetBandSelected(collected) = outcome else {
+        panic!("expected TargetBandSelected, got {outcome:?}");
+    };
+    assert_eq!(collected.count(), 1);
+}
+
+#[test]
 fn wrong_direction_short_circuits_discovery_without_recovering() {
     let request = discovery_request();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
@@ -1651,7 +1679,7 @@ fn an_actionable_status_on_the_first_settle_is_not_retried() {
                 let AdditiveDiscoveryOutcome::SafetyFault { error, safety } = outcome else {
                     panic!("actionable status must remain a safety fault: {outcome:?}");
                 };
-                assert_eq!(error, CommissionError::SafetyEnvelopeViolation);
+                assert_eq!(error, CommissionError::DiscoveryCurrentGuardStatus);
                 assert!(safety.is_none());
                 assert_eq!(
                     settle_attempts, 1,
@@ -4688,7 +4716,7 @@ fn an_actionable_status_at_the_moving_boundary_zeroes_the_target_at_once() {
     assert!(matches!(
         result,
         AdditiveDiscoveryStep::Done(AdditiveDiscoveryOutcome::SafetyFault {
-            error: CommissionError::SafetyEnvelopeViolation,
+            error: CommissionError::DiscoveryCurrentGuardStatus,
             safety: None,
         })
     ));
