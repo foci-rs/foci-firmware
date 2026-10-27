@@ -14,13 +14,16 @@ pub const BUILD_FEATURE_REST_CHAIN_ON_EVIDENCE: u16 = 1 << 3;
 /// The Integral transition gate models the standard velocity meter's fixed-rate
 /// quantum instead of one encoder count per PWM period.
 pub const BUILD_FEATURE_STANDARD_METER_QUANTUM: u16 = 1 << 4;
+/// Robustness reverse legs are observed to the measurement budget and gated on late tracking.
+pub const BUILD_FEATURE_FIXED_TIME_REVERSAL_OBSERVATION: u16 = 1 << 5;
 
 /// Analysis-rule feature bits compiled into this build, stamped on every plan.
 pub const BUILD_FEATURES: u16 = BUILD_FEATURE_Q4_12_GAINS
     | BUILD_FEATURE_DRIFT_BOUND_GATE
     | BUILD_FEATURE_SUFFIX_WALK_CONTINUES
     | BUILD_FEATURE_REST_CHAIN_ON_EVIDENCE
-    | BUILD_FEATURE_STANDARD_METER_QUANTUM;
+    | BUILD_FEATURE_STANDARD_METER_QUANTUM
+    | BUILD_FEATURE_FIXED_TIME_REVERSAL_OBSERVATION;
 
 /// Cross-run validity of one selected directional model or fragment.
 #[repr(u8)]

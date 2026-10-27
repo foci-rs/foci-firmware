@@ -53,7 +53,7 @@ use super::robustness_cycles::{
     CycleLedger, CycleRecord, LedgerAction, ROBUSTNESS_CYCLES_PER_DIRECTION,
 };
 use super::robustness_evidence::{RobustnessDirectionSummary, RobustnessEvidence, summary_cause};
-use super::robustness_late_tracking::LateTracking;
+use super::robustness_late_tracking::{LateTracking, LateTrackingAccumulator};
 use super::robustness_metrics::{
     PROBE_BAND_WINDOW_SAMPLES, REVERSAL_PEAK_REJECT_PERMILLE, ROBUSTNESS_BAND_DWELL_US,
     ROBUSTNESS_BAND_FRACTION_PCT, ROBUSTNESS_LEG_AMPLITUDE_PCT, ROBUSTNESS_MEASUREMENT_BUDGET_US,
@@ -84,6 +84,7 @@ pub(crate) struct RobustnessReversalWorkspace {
     blocker: DyadicBlocker<VELOCITY_SWEEP_BLOCK_LEVELS>,
     analysis: StationarityWork,
     capture: ReversalOnlineAccumulator,
+    late_tracking: Option<LateTrackingAccumulator>,
     previous_encoder_raw: u32,
     previous_read_us: u64,
     current_observer: VelocityCurrentObserver,
@@ -101,6 +102,7 @@ impl RobustnessReversalWorkspace {
             blocker: DyadicBlocker::new(),
             analysis: StationarityWork::new(),
             capture: ReversalOnlineAccumulator::new(),
+            late_tracking: None,
             previous_encoder_raw: 0,
             previous_read_us: 0,
             current_observer: VelocityCurrentObserver::EMPTY,
@@ -231,12 +233,11 @@ pub(crate) enum RobustnessReversalState {
         ramp: TargetRamp,
         next_tick_us: u64,
     },
-    /// Collect the measured reversal capture: search for band entry up to the
-    /// budget, then sample a settled tail for the stationarity analysis.
+    /// Collect the measured reversal capture until the budget deadline, regardless of when the
+    /// band is entered.
     ReverseCapture {
         next_sample_us: u64,
         budget_deadline_us: u64,
-        settle_deadline_us: Option<u64>,
     },
     /// Analyze the reversal capture for band-entry reconvergence.
     ReverseAnalyze {
@@ -422,7 +423,8 @@ struct LegScore<'a> {
     forward_settle_time_us: u32,
     reconvergence_time_us: u32,
     recovery_iae: i64,
-    suffix: &'a crate::autotune::velocity_measurement::StationarySuffix,
+    late_tracking: LateTracking,
+    suffix: Option<&'a crate::autotune::velocity_measurement::StationarySuffix>,
     ring: &'a VelocityObservationRing,
 }
 
@@ -434,35 +436,38 @@ fn score_reversal_leg(input: LegScore<'_>) -> Result<ReversalMetrics, Commission
         forward_settle_time_us,
         reconvergence_time_us,
         recovery_iae,
+        late_tracking,
         suffix,
         ring,
     } = input;
     let signed_target_rpm = reverse_target_rpm(point, direction);
-    let (settled_low, settled_high) = settled_rate_interval_q(suffix)?;
-    let (deficit_low, deficit_high) =
-        deficit_interval_q(signed_target_rpm, counts_per_rev, settled_low, settled_high)?;
-    let settled_residual_q = deficit_low.saturating_add(deficit_high) / 2;
     let target_rate_q_value = target_rate_q(signed_target_rpm, counts_per_rev);
-    let suffix_len = usize::from(suffix.suffix_len);
-    let start_index = ring.observation_len().saturating_sub(suffix_len);
-    let dac_rms = dac_rms_q(ring, start_index, suffix_len, target_rate_q_value);
-    let mut metrics = ReversalMetrics {
+    let (settled_residual_q, dac_rms) = match suffix {
+        Some(suffix) => {
+            let (settled_low, settled_high) = settled_rate_interval_q(suffix)?;
+            let (deficit_low, deficit_high) =
+                deficit_interval_q(signed_target_rpm, counts_per_rev, settled_low, settled_high)?;
+            let suffix_len = usize::from(suffix.suffix_len);
+            let start_index = ring.observation_len().saturating_sub(suffix_len);
+            (
+                deficit_low.saturating_add(deficit_high) / 2,
+                dac_rms_q(ring, start_index, suffix_len, target_rate_q_value),
+            )
+        }
+        None => (0, 0),
+    };
+    Ok(ReversalMetrics {
         reconvergence_time_us,
         settled_residual_q,
         recovery_iae_q: recovery_iae,
         dac_rms_q: dac_rms,
         forward_settle_time_us,
-        reconvergence_ratio_ppm: 0,
-        late_tracking: LateTracking {
-            ppm: 0,
-            window_delta_counts: 0,
-            window_elapsed_us: 0,
-            window_start_us: 0,
-        },
-    };
-    metrics.reconvergence_ratio_ppm =
-        reconvergence_ratio_ppm(reconvergence_time_us, forward_settle_time_us);
-    Ok(metrics)
+        reconvergence_ratio_ppm: reconvergence_ratio_ppm(
+            reconvergence_time_us,
+            forward_settle_time_us,
+        ),
+        late_tracking,
+    })
 }
 
 async fn observe_tick<B: CommissioningBackend>(
@@ -880,7 +885,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                             *state = RobustnessReversalState::ReverseCapture {
                                 next_sample_us,
                                 budget_deadline_us,
-                                settle_deadline_us: None,
                             };
                             StepResult::At(next_sample_us)
                         }
@@ -893,7 +897,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
         RobustnessReversalState::ReverseCapture {
             next_sample_us,
             budget_deadline_us,
-            settle_deadline_us,
         } => {
             if backend.elapsed_us() < next_sample_us {
                 return StepResult::At(next_sample_us);
@@ -903,23 +906,16 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 Ok(sample) => sample,
                 Err(fault) => return tick_fault_terminal(session, backend, fault, counts_per_rev),
             };
-            match advance_capture(
-                &mut workspace.capture,
-                read_us,
-                elapsed_us,
-                delta,
+            match advance_reverse_capture(
+                workspace,
+                (read_us, elapsed_us, delta),
                 next_sample_us,
                 budget_deadline_us,
-                settle_deadline_us,
             ) {
-                CaptureAdvance::Continue {
-                    next_sample_us,
-                    settle_deadline_us,
-                } => {
+                CaptureAdvance::Continue { next_sample_us, .. } => {
                     *state = RobustnessReversalState::ReverseCapture {
                         next_sample_us,
                         budget_deadline_us,
-                        settle_deadline_us,
                     };
                     StepResult::At(next_sample_us)
                 }
@@ -984,58 +980,60 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     );
                 }
             };
-            let direction = session.direction;
-            match stationarity {
-                StationarityResult::Usable(suffix) => {
-                    let Some(reconvergence_time_us) = workspace.capture.band_entry_us() else {
-                        retry_or_finalize_inconclusive(state, session, workspace.last_target_rpm);
-                        return StepResult::ReadyNow;
-                    };
-                    let metrics = match score_reversal_leg(LegScore {
-                        point: &session.point,
-                        direction,
-                        counts_per_rev: safety.counts_per_rev(),
-                        forward_settle_time_us: session.pending_forward_settle_us,
-                        reconvergence_time_us,
-                        recovery_iae: workspace.capture.recovery_iae_q(),
-                        suffix: &suffix,
-                        ring: &workspace.observations,
-                    }) {
-                        Ok(metrics) => metrics,
-                        Err(_) => {
-                            return fault_terminal(
-                                session,
-                                backend,
-                                None,
-                                ROBUSTNESS_CAUSE_SCORING_FAILED,
-                                counts_per_rev,
-                            );
-                        }
-                    };
-                    let overshoot = workspace.capture.reversal_overshoot_counts();
-                    let peak = scored_peak_permille(
-                        safety.primitive_peak_milli_counts_per_s(),
-                        leg_amplitude_rpm(&session.point).unsigned_abs(),
+            let suffix = match stationarity {
+                StationarityResult::Usable(suffix) => Some(suffix),
+                StationarityResult::Excluded(_) => None,
+            };
+            let late_tracking = workspace
+                .late_tracking
+                .as_ref()
+                .and_then(LateTrackingAccumulator::result);
+            let (Some(reconvergence_time_us), Some(late_tracking)) =
+                (workspace.capture.band_entry_us(), late_tracking)
+            else {
+                retry_or_finalize_inconclusive(state, session, workspace.last_target_rpm);
+                return StepResult::ReadyNow;
+            };
+            let metrics = match score_reversal_leg(LegScore {
+                point: &session.point,
+                direction: session.direction,
+                counts_per_rev,
+                forward_settle_time_us: session.pending_forward_settle_us,
+                reconvergence_time_us,
+                recovery_iae: workspace.capture.recovery_iae_q(),
+                late_tracking,
+                suffix: suffix.as_ref(),
+                ring: &workspace.observations,
+            }) {
+                Ok(metrics) => metrics,
+                Err(_) => {
+                    return fault_terminal(
+                        session,
+                        backend,
+                        None,
+                        ROBUSTNESS_CAUSE_SCORING_FAILED,
                         counts_per_rev,
-                        REVERSAL_PEAK_REJECT_PERMILLE,
                     );
-                    session.pending_cycle = Some(PendingCycle {
-                        metrics,
-                        wire: CycleWire {
-                            reconvergence_ms: to_ms_saturating(metrics.reconvergence_time_us),
-                            overshoot_counts: overshoot,
-                            forward_settle_ms: to_ms_saturating(metrics.forward_settle_time_us),
-                        },
-                        peak_permille: peak,
-                    });
-                    *state = zero_ramp_state(session, workspace.last_target_rpm);
-                    StepResult::ReadyNow
                 }
-                StationarityResult::Excluded(_) => {
-                    retry_or_finalize_inconclusive(state, session, workspace.last_target_rpm);
-                    StepResult::ReadyNow
-                }
-            }
+            };
+            let overshoot = workspace.capture.reversal_overshoot_counts();
+            let peak = scored_peak_permille(
+                safety.primitive_peak_milli_counts_per_s(),
+                leg_amplitude_rpm(&session.point).unsigned_abs(),
+                counts_per_rev,
+                REVERSAL_PEAK_REJECT_PERMILLE,
+            );
+            session.pending_cycle = Some(PendingCycle {
+                metrics,
+                wire: CycleWire {
+                    reconvergence_ms: to_ms_saturating(metrics.reconvergence_time_us),
+                    overshoot_counts: overshoot,
+                    forward_settle_ms: to_ms_saturating(metrics.forward_settle_time_us),
+                },
+                peak_permille: peak,
+            });
+            *state = zero_ramp_state(session, workspace.last_target_rpm);
+            StepResult::ReadyNow
         }
         RobustnessReversalState::ZeroRamp {
             mut ramp,
@@ -1587,6 +1585,7 @@ fn open_leg_capture<B: CommissioningBackend>(
         ROBUSTNESS_BAND_DWELL_US,
         PROBE_BAND_WINDOW_SAMPLES,
     );
+    workspace.late_tracking = LateTrackingAccumulator::new(target_rate);
     let deadlines = started_us
         .checked_add(CAPTURE_PERIOD_US)
         .zip(started_us.checked_add(u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US)));
@@ -1639,6 +1638,35 @@ fn advance_capture(
                 settle_deadline_us,
             }
         }
+    }
+}
+
+/// Feeds one reverse-leg observation `(read_us, elapsed_us, delta)`. The leg is observed until
+/// its budget deadline regardless of when it enters the band; it then converges if it entered the
+/// band and is exhausted otherwise.
+fn advance_reverse_capture(
+    workspace: &mut RobustnessReversalWorkspace,
+    (read_us, elapsed_us, delta): (u64, u32, i32),
+    next_sample_us: u64,
+    budget_deadline_us: u64,
+) -> CaptureAdvance {
+    workspace.capture.observe(delta, elapsed_us);
+    if let Some(late_tracking) = workspace.late_tracking.as_mut() {
+        let started_us =
+            budget_deadline_us.saturating_sub(u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US));
+        let since_start_us = u32::try_from(read_us.saturating_sub(started_us)).unwrap_or(u32::MAX);
+        late_tracking.observe(since_start_us, delta, elapsed_us);
+    }
+    if read_us < budget_deadline_us {
+        return CaptureAdvance::Continue {
+            next_sample_us: (next_sample_us + CAPTURE_PERIOD_US).min(budget_deadline_us),
+            settle_deadline_us: None,
+        };
+    }
+    if workspace.capture.band_entry_us().is_some() {
+        CaptureAdvance::Converged
+    } else {
+        CaptureAdvance::Exhausted
     }
 }
 
@@ -2389,6 +2417,15 @@ mod tests {
             selected_response_intervals_q: [[12_000_000, 13_000_000], [-13_000_000, -12_000_000]],
             ..test_point()
         }
+    }
+
+    /// Absolute windows wide enough that reverse-side drift never calls for an origin recovery,
+    /// so a run sees only the recoveries its own script causes.
+    fn drift_free_parts(point: AcceptancePoint) -> RunParts {
+        let mut parts = RunParts::new(point);
+        parts.safety.negative_position_window *= 4;
+        parts.safety.positive_position_window *= 4;
+        parts
     }
 
     #[test]
@@ -3796,9 +3833,14 @@ mod tests {
         let mut parts = RunParts::new(recovery_point());
         assert!(matches!(parts.step(), StepResult::ReadyNow));
         let leg = leg_travel(&recovery_point());
+        let band = parts
+            .session
+            .recovery_plan
+            .expect("setup plans the recovery")
+            .origin_band_counts as i32;
         parts.session.direction = 1;
         parts.safety.negative_position_window = (2 * leg) as u32;
-        parts.safety.positive_position_window = leg as u32;
+        parts.safety.positive_position_window = (leg + band) as u32;
         parts.safety.position_window = leg as u32;
         parts.safety.unwrapped_position = -(leg + 1);
 
@@ -3810,7 +3852,12 @@ mod tests {
             }
         });
 
-        assert_eq!(parts.recoveries, 1);
+        assert!(parts.recoveries >= 1);
+        assert_eq!(
+            parts.targets[..2],
+            [176, 0],
+            "the recovery's return leg runs before any establish leg"
+        );
         assert_ne!(terminal.cause, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED);
         assert!(terminal.safety_fault.is_none());
         assert_ne!(terminal.outcome, RobustnessOutcome::Failed);
@@ -3820,7 +3867,7 @@ mod tests {
     fn exhausted_establish_unwinds_to_origin_before_its_retry() {
         let mut establish_legs = 0u32;
         let (terminal, parts) = drive_parts(
-            RunParts::new(recovery_point()),
+            drift_free_parts(recovery_point()),
             Envelope::Tracked,
             move |phase, tick, target| {
                 if phase == CapturePhase::Establish && tick == 0 {
@@ -3852,7 +3899,7 @@ mod tests {
         let mut establish_legs = 0u32;
         let mut zero_windows = 0u32;
         let (terminal, parts) = drive_parts(
-            RunParts::new(recovery_point()),
+            drift_free_parts(recovery_point()),
             Envelope::Tracked,
             move |phase, tick, target| {
                 if phase == CapturePhase::Establish && tick == 0 {
@@ -3887,7 +3934,7 @@ mod tests {
         let mut reverse_legs = 0u32;
         let mut zero_windows = 0u32;
         let (terminal, parts) = drive_parts(
-            RunParts::new(recovery_point()),
+            drift_free_parts(recovery_point()),
             Envelope::Tracked,
             move |phase, tick, target| {
                 if phase == CapturePhase::Reverse && tick == 0 {
@@ -3981,42 +4028,6 @@ mod tests {
     }
 
     #[test]
-    fn excluded_reverse_leg_unwinds_before_its_retry() {
-        let mut reverse_legs = 0u32;
-        let (terminal, parts) = drive_parts(
-            RunParts::new(test_point()),
-            Envelope::Untracked,
-            move |phase, tick, target| {
-                if phase == CapturePhase::Reverse && tick == 0 {
-                    reverse_legs += 1;
-                }
-                if target == 0 {
-                    return 0;
-                }
-                match phase {
-                    CapturePhase::Reverse if reverse_legs == 1 => {
-                        if tick < 80 {
-                            target.signum() * STEADY_DELTA
-                        } else {
-                            target.signum() * STEADY_DELTA + (tick as i32 - 80) * 3
-                        }
-                    }
-                    _ => target.signum() * STEADY_DELTA,
-                }
-            },
-        );
-        assert_eq!(
-            &parts.targets[..14],
-            &[
-                60, 120, 150, 90, 30, -30, -90, -150, -90, -30, 0, 60, 120, 150
-            ]
-        );
-        assert_eq!(parts.recoveries, 1);
-        assert_eq!(terminal.evidence.directions[0].retry_count, 1);
-        assert!(terminal.safety_fault.is_none());
-    }
-
-    #[test]
     fn slot_consuming_inconclusive_unwinds_then_routes() {
         let mut jitter_high = false;
         let (terminal, parts) = drive_parts(
@@ -4074,7 +4085,7 @@ mod tests {
     fn contained_recovery_with_headroom_continues() {
         let mut establish_legs = 0u32;
         let (terminal, parts) = drive_parts(
-            RunParts::new(recovery_point()),
+            drift_free_parts(recovery_point()),
             Envelope::Tracked,
             move |phase, tick, target| {
                 if phase == CapturePhase::Establish && tick == 0 {
@@ -4735,6 +4746,7 @@ mod tests {
     /// while the plant keeps moving at its commanded sign.
     struct TickDriver {
         parts: RunParts,
+        tracked: bool,
         analysis_us: u64,
         encoder_count: i32,
         previous_phase: Option<CapturePhase>,
@@ -4757,6 +4769,7 @@ mod tests {
             let previous_state = parts.state;
             Self {
                 parts,
+                tracked: true,
                 analysis_us,
                 encoder_count: 0,
                 previous_phase: None,
@@ -4779,6 +4792,9 @@ mod tests {
             let raw = self.encoder_count.rem_euclid(4_000);
             self.parts.backend.set_abn_decoder_count(raw);
             self.parts.backend.mechanical_encoder_position_counts_value = raw as u32;
+            if !self.tracked {
+                return None;
+            }
             match pollster::block_on(check_outer_safety(
                 &mut self.parts.safety,
                 &mut self.parts.backend,
@@ -5005,5 +5021,207 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Drives an untracked campaign whose establish and rest legs track their targets while each
+    /// reverse capture tick delivers `reverse(direction, attempt, tick, steady)`, where `attempt`
+    /// counts that direction's reverse legs from 1.
+    fn drive_reverse_script(
+        mut reverse: impl FnMut(usize, usize, u32, i32) -> i32,
+    ) -> (RobustnessReversalTerminal, RobustnessReversalSession) {
+        let mut attempt = [0usize; DIRECTION_COUNT];
+        let (terminal, _backend, session) =
+            drive_scripted(test_point(), move |phase, tick, target| match phase {
+                CapturePhase::Reverse => {
+                    let direction = usize::from(target > 0);
+                    if tick == 0 {
+                        attempt[direction] += 1;
+                    }
+                    reverse(
+                        direction,
+                        attempt[direction],
+                        tick,
+                        target.signum() * STEADY_DELTA,
+                    )
+                }
+                _ if target != 0 => target.signum() * STEADY_DELTA,
+                _ => 0,
+            });
+        (terminal, session)
+    }
+
+    const LATE_WINDOW_TICKS: core::ops::Range<u32> = 600..700;
+    const BUDGET_TICKS: u32 = ROBUSTNESS_MEASUREMENT_BUDGET_US / 1_000;
+
+    /// Maximum over the 16-tick windows inside the late window of `|rate - target| / target` in
+    /// ppm, computed directly from the scripted per-tick deltas at 1 ms per tick.
+    fn expected_late_ppm(delta_at: impl Fn(u32) -> i32) -> u32 {
+        let target = i64::from(STEADY_DELTA) * 16;
+        (LATE_WINDOW_TICKS.start..=LATE_WINDOW_TICKS.end - 16)
+            .map(|first| {
+                let sum: i64 = (first..first + 16)
+                    .map(|tick| i64::from(delta_at(tick).abs()))
+                    .sum();
+                u32::try_from((sum - target).unsigned_abs() * 1_000_000 / target.unsigned_abs())
+                    .expect("ppm fits u32")
+            })
+            .max()
+            .expect("the late window holds at least one window")
+    }
+
+    #[test]
+    fn reverse_leg_observes_to_the_budget_deadline_after_band_entry() {
+        let mut reverse_ticks = std::vec::Vec::new();
+        let (terminal, _session) = drive_reverse_script(|_, _, tick, steady| {
+            if tick == 0 {
+                reverse_ticks.push(0u32);
+            }
+            *reverse_ticks.last_mut().expect("a leg started") += 1;
+            steady
+        });
+
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert_eq!(
+            reverse_ticks.len(),
+            ROBUSTNESS_CYCLES_PER_DIRECTION * DIRECTION_COUNT
+        );
+        assert!(
+            reverse_ticks.iter().all(|&ticks| ticks == BUDGET_TICKS),
+            "every reverse leg samples to its budget deadline: {reverse_ticks:?}"
+        );
+    }
+
+    #[test]
+    fn a_reverse_leg_without_band_entry_by_the_deadline_is_inconclusive_and_retried() {
+        let mut reverse_ticks = std::vec::Vec::new();
+        let (terminal, parts) = drive_parts(
+            RunParts::new(test_point()),
+            Envelope::Untracked,
+            |phase, tick, target| match phase {
+                CapturePhase::Reverse => {
+                    if tick == 0 {
+                        reverse_ticks.push(0u32);
+                    }
+                    *reverse_ticks.last_mut().expect("a leg started") += 1;
+                    if reverse_ticks.len() == 1 {
+                        0
+                    } else {
+                        target.signum() * STEADY_DELTA
+                    }
+                }
+                _ => target.signum() * STEADY_DELTA,
+            },
+        );
+
+        assert_eq!(reverse_ticks[0], BUDGET_TICKS);
+        assert_eq!(
+            &parts.targets[..14],
+            &[
+                60, 120, 150, 90, 30, -30, -90, -150, -90, -30, 0, 60, 120, 150
+            ],
+            "the inconclusive leg ramps to rest and retries its cycle"
+        );
+        assert_eq!(
+            parts.recoveries, 1,
+            "the inconclusive leg unwinds before its retry"
+        );
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert_eq!(terminal.evidence.directions[0].retry_count, 1);
+        assert_eq!(terminal.evidence.directions[0].valid_cycles, 5);
+    }
+
+    fn late_drift(tick: u32, steady: i32) -> i32 {
+        if tick < LATE_WINDOW_TICKS.start {
+            steady
+        } else {
+            steady + steady.signum() * ((tick - LATE_WINDOW_TICKS.start) / 4) as i32
+        }
+    }
+
+    #[test]
+    fn a_suffix_exclusion_does_not_discard_late_tracking() {
+        let mut attempt = 0usize;
+        let mut on_tick = |_parts: &mut RunParts, context: TickContext| {
+            let steady = context.target.signum() * STEADY_DELTA;
+            match context.phase {
+                CapturePhase::Reverse => {
+                    if context.leg_tick == 0 {
+                        attempt += 1;
+                    }
+                    if attempt == 1 {
+                        late_drift(context.leg_tick, steady)
+                    } else {
+                        steady
+                    }
+                }
+                _ => steady,
+            }
+        };
+        let mut driver = TickDriver::new(RunParts::new(test_point()), 0);
+        driver.tracked = false;
+        let ended = driver.run_until(&mut on_tick, |state| {
+            matches!(state, RobustnessReversalState::ReverseAnalyze { .. })
+        });
+        assert!(ended.is_none());
+        let mut analysis = StationarityWork::new();
+        let mut blocker = DyadicBlocker::<VELOCITY_SWEEP_BLOCK_LEVELS>::new();
+        let stationarity = loop {
+            match poll_stationarity(
+                &mut analysis,
+                &driver.parts.workspace.observations,
+                &mut blocker,
+            ) {
+                Ok(None) => {}
+                Ok(Some((result, _, _))) => break result,
+                Err(error) => panic!("stationarity poll failed: {error:?}"),
+            }
+        };
+        assert!(
+            matches!(stationarity, StationarityResult::Excluded(_)),
+            "the drifting suffix is excluded"
+        );
+
+        let terminal = driver
+            .run_until(&mut on_tick, |_| false)
+            .expect("the run ends in a terminal");
+
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert_eq!(terminal.evidence.directions[0].retry_count, 0);
+        let first = driver.parts.session.ledgers[0].cycles()[0].expect("the excluded leg is kept");
+        assert_eq!(first.settled_residual_q, 0);
+        assert_eq!(
+            first.late_tracking.ppm,
+            expected_late_ppm(|tick| late_drift(tick, STEADY_DELTA))
+        );
+    }
+
+    #[test]
+    fn a_reverse_leg_without_a_late_window_is_inconclusive() {
+        let mut driver = TickDriver::new(RunParts::new(test_point()), 0);
+        driver.tracked = false;
+        let mut on_tick = steady_tick;
+        let ended = driver.run_until(&mut on_tick, |state| {
+            matches!(state, RobustnessReversalState::ReverseAnalyze { .. })
+        });
+        assert!(ended.is_none());
+        assert!(driver.parts.workspace.capture.band_entry_us().is_some());
+        let target_q = target_rate_q(reverse_target_rpm(&test_point(), 0), COUNTS_PER_REV);
+        driver.parts.workspace.late_tracking = LateTrackingAccumulator::new(target_q);
+
+        let ended = driver.run_until(&mut on_tick, |state| {
+            !matches!(state, RobustnessReversalState::ReverseAnalyze { .. })
+        });
+
+        assert!(ended.is_none());
+        assert!(matches!(
+            driver.parts.state,
+            RobustnessReversalState::ZeroRamp { .. }
+        ));
+        assert_eq!(
+            driver.parts.session.ledgers[0].inconclusive_retries_used(),
+            1
+        );
+        assert_eq!(driver.parts.session.ledgers[0].valid_cycles(), 0);
+        assert!(driver.parts.session.pending_cycle.is_none());
     }
 }

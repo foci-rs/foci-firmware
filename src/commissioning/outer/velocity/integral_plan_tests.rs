@@ -847,7 +847,7 @@ fn integral_authority_rejects_an_acceptance_for_a_different_candidate() {
 #[test]
 fn breakaway_plan_digest_reflects_the_half_octave_insertion() {
     let plan = build_test_breakaway_plan();
-    assert_eq!(plan.digest(), 9_059_005_830_507_212_888);
+    assert_eq!(plan.digest(), 7_462_038_565_066_147_576);
 }
 
 fn breakaway_acquisition_context() -> AcquisitionContext {
