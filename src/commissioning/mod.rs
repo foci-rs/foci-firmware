@@ -1193,7 +1193,14 @@ impl CommissioningEngine {
                 });
             }
             StepResult::VelocityIntegralTerminal(_) => {}
+            #[cfg(not(feature = "trace"))]
             StepResult::RobustnessReversalTerminal(_) => {}
+            #[cfg(feature = "trace")]
+            StepResult::RobustnessReversalTerminal(terminal) => {
+                crate::commissioning::outer::velocity::robustness_trace::emit_late_tracking_records(
+                    backend, terminal,
+                );
+            }
             #[cfg(not(feature = "trace"))]
             StepResult::BreakawayCampaignEvent(_) => {}
             #[cfg(not(feature = "trace"))]
