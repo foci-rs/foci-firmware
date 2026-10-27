@@ -2,14 +2,15 @@
 
 use crate::commissioning::outer::velocity::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION;
 use crate::commissioning::outer::velocity::robustness_evidence::RobustnessEvidence;
+use crate::commissioning::outer::velocity::robustness_late_tracking::LateTracking;
 use crate::commissioning::types::RobustnessReversalTerminal;
 
 /// Independent robustness evidence schema revision.
 ///
 /// Packed as a `u8` on the wire; kept `u16` for schema comparisons elsewhere.
-pub const ROBUSTNESS_SCHEMA_REVISION: u16 = 5;
+pub const ROBUSTNESS_SCHEMA_REVISION: u16 = 6;
 
-/// Bytes in the compact schema-5 robustness-terminal reply payload.
+/// Bytes in the compact robustness-terminal reply payload.
 pub const ROBUSTNESS_TERMINAL_REPLY_BYTES: usize = 51;
 
 /// Scale factor from wire IAE encoding to internal microseconds.
@@ -93,7 +94,7 @@ pub(crate) fn encode_robustness_terminal_reply(
     bytes
 }
 
-/// Bytes in the schema-5 per-cycle robustness-evidence payload.
+/// Bytes in the per-cycle robustness-evidence payload.
 pub(crate) const ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES: usize = 51;
 
 const CYCLE_SLOT_UNFILLED: u16 = 0xFFFF;
@@ -103,13 +104,15 @@ const CYCLE_SLOT_UNFILLED: u16 = 0xFFFF;
 pub(crate) struct CycleWire {
     /// Time to reconverge to the target band after the reversal, in ms.
     pub reconvergence_ms: u16,
-    /// Saturating count of overshoot peaks observed during this cycle.
+    /// Peak excess of actual displacement over the ideal constant-target trajectory, in
+    /// counts, over the whole reverse leg up to its measurement budget (not only up to band
+    /// entry plus the settle tail); saturates at `u16::MAX`.
     pub overshoot_counts: u16,
     /// Time to settle in the forward direction after reconvergence, in ms.
     pub forward_settle_ms: u16,
 }
 
-/// Encode one direction's schema-5 per-cycle robustness-evidence payload.
+/// Encode one direction's per-cycle robustness-evidence payload.
 ///
 /// Layout: 14-byte header, [`ROBUSTNESS_CYCLES_PER_DIRECTION`] 6-byte cycle triples, tail
 /// count, and displaced-tail triple. Unfilled slots encode as [`CYCLE_SLOT_UNFILLED`].
@@ -148,6 +151,76 @@ pub(crate) fn encode_robustness_cycle_evidence(
     push_reply(&mut bytes, &mut offset, &[evidence.tail_counts[index]]);
     push_cycle_triple(&mut bytes, &mut offset, &evidence.displaced_tails[index]);
     debug_assert_eq!(offset, ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES);
+    bytes
+}
+
+/// Bytes in one cycle slot's late-tracking evidence payload.
+pub const ROBUSTNESS_LATE_TRACKING_EVIDENCE_REPLY_BYTES: usize = 32;
+
+const LATE_TRACKING_FLAG_FILLED: u8 = 1 << 0;
+const LATE_TRACKING_FLAG_SUFFIX_EXCLUDED: u8 = 1 << 1;
+
+/// Encode one direction and cycle slot's late-tracking evidence payload.
+///
+/// Layout (little endian): `direction u8, schema u8, slot u8, flags u8` (bit 0 filled, bit 1
+/// stationary suffix excluded), `ppm u32, window_delta_counts i32, window_elapsed_us u32,
+/// window_start_us u32, target_rate_q i64, median_ppm u32`. An unfilled slot carries zeroed
+/// window fields and flags; the direction's target rate and median are always present.
+pub(crate) fn encode_robustness_late_tracking_evidence(
+    direction: u8,
+    slot: u8,
+    evidence: &RobustnessEvidence,
+) -> [u8; ROBUSTNESS_LATE_TRACKING_EVIDENCE_REPLY_BYTES] {
+    let index = usize::from(direction);
+    let slot_index = usize::from(slot);
+    let window = evidence.late_cycles[index][slot_index];
+    let flags = match window {
+        Some(_) if evidence.late_suffix_excluded[index][slot_index] => {
+            LATE_TRACKING_FLAG_FILLED | LATE_TRACKING_FLAG_SUFFIX_EXCLUDED
+        }
+        Some(_) => LATE_TRACKING_FLAG_FILLED,
+        None => 0,
+    };
+    let window = window.unwrap_or(LateTracking {
+        ppm: 0,
+        window_delta_counts: 0,
+        window_elapsed_us: 0,
+        window_start_us: 0,
+    });
+    let mut bytes = [0_u8; ROBUSTNESS_LATE_TRACKING_EVIDENCE_REPLY_BYTES];
+    let mut offset = 0;
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &[direction, ROBUSTNESS_SCHEMA_REVISION as u8, slot, flags],
+    );
+    push_reply(&mut bytes, &mut offset, &window.ppm.to_le_bytes());
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &window.window_delta_counts.to_le_bytes(),
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &window.window_elapsed_us.to_le_bytes(),
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &window.window_start_us.to_le_bytes(),
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &evidence.late_target_rate_q[index].to_le_bytes(),
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &evidence.late_tracking_medians_ppm[index].to_le_bytes(),
+    );
+    debug_assert_eq!(offset, ROBUSTNESS_LATE_TRACKING_EVIDENCE_REPLY_BYTES);
     bytes
 }
 
@@ -231,6 +304,10 @@ mod tests {
             cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
             tail_counts: [1, 0],
             displaced_tails: [Some(cycle(700, 5, 40)), None],
+            late_tracking_medians_ppm: [7, 6_250],
+            late_target_rate_q: [987_654_321, -1_234_567_890_123],
+            late_cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
+            late_suffix_excluded: [[false; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
         }
     }
 
@@ -253,6 +330,10 @@ mod tests {
                 cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
                 tail_counts: [0, 0],
                 displaced_tails: [None, None],
+                late_tracking_medians_ppm: [0, 0],
+                late_target_rate_q: [0, 0],
+                late_cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
+                late_suffix_excluded: [[false; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
             },
             run_started_us: 10_000,
             run_completed_us: 90_000,
@@ -268,7 +349,7 @@ mod tests {
 
         #[rustfmt::skip]
         let expected: [u8; ROBUSTNESS_TERMINAL_REPLY_BYTES] = [
-            0x05,
+            0x06,
             0x44, 0x33, 0x22, 0x11,
             0x01, 0x02,
             0x00, 0x04, 0x00, 0x02,
@@ -417,7 +498,7 @@ mod tests {
 
         #[rustfmt::skip]
         let expected: [u8; ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES] = [
-            0x00, 0x05,
+            0x00, 0x06,
             0x11, 0x00, 0x00, 0x00,
             0x09, 0x00, 0x00, 0x00,
             0x15, 0x00, 0x00, 0x00,
@@ -462,6 +543,71 @@ mod tests {
     #[test]
     fn robustness_cycle_evidence_fits_a_single_klipper_frame_at_any_oid() {
         const { assert!(ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES <= 54) };
+    }
+
+    #[test]
+    fn encode_late_tracking_evidence_places_a_filled_slot_at_fixed_offsets() {
+        let mut evidence = evidence();
+        evidence.late_cycles[1][2] = Some(LateTracking {
+            ppm: 123_456,
+            window_delta_counts: -160,
+            window_elapsed_us: 16_000,
+            window_start_us: 612_000,
+        });
+        evidence.late_suffix_excluded[1][2] = true;
+
+        let bytes = encode_robustness_late_tracking_evidence(1, 2, &evidence);
+
+        #[rustfmt::skip]
+        let expected: [u8; ROBUSTNESS_LATE_TRACKING_EVIDENCE_REPLY_BYTES] = [
+            0x01, 0x06, 0x02, 0x03,
+            0x40, 0xE2, 0x01, 0x00,
+            0x60, 0xFF, 0xFF, 0xFF,
+            0x80, 0x3E, 0x00, 0x00,
+            0xA0, 0x56, 0x09, 0x00,
+            0x35, 0xFB, 0x04, 0x8E, 0xE0, 0xFE, 0xFF, 0xFF,
+            0x6A, 0x18, 0x00, 0x00,
+        ];
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn encode_late_tracking_evidence_zeroes_the_audit_fields_of_an_unfilled_slot() {
+        let mut evidence = evidence();
+        evidence.late_suffix_excluded[0][4] = true;
+
+        let bytes = encode_robustness_late_tracking_evidence(0, 4, &evidence);
+
+        #[rustfmt::skip]
+        let expected: [u8; ROBUSTNESS_LATE_TRACKING_EVIDENCE_REPLY_BYTES] = [
+            0x00, 0x06, 0x04, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0xB1, 0x68, 0xDE, 0x3A, 0x00, 0x00, 0x00, 0x00,
+            0x07, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn schema_byte_is_6_in_all_three_payloads() {
+        let evidence = evidence();
+
+        let terminal = encode_robustness_terminal_reply(&terminal());
+        let cycle = encode_robustness_cycle_evidence(0, &evidence, &evidence.cycles[0]);
+        let late = encode_robustness_late_tracking_evidence(0, 0, &evidence);
+
+        assert_eq!(terminal[0], 6);
+        assert_eq!(cycle[1], 6);
+        assert_eq!(late[1], 6);
+    }
+
+    #[test]
+    fn late_tracking_evidence_fits_a_single_klipper_frame_at_any_oid() {
+        const { assert!(ROBUSTNESS_LATE_TRACKING_EVIDENCE_REPLY_BYTES == 32) };
+        const { assert!(ROBUSTNESS_LATE_TRACKING_EVIDENCE_REPLY_BYTES <= 54) };
     }
 
     #[test]

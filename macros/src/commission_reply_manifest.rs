@@ -14,10 +14,10 @@
 //! ```
 //! `param` is only present for the one entry (`foci_commission_timing`)
 //! whose trait-method parameter type differs from its wire reply type; all
-//! other entries use `reply` for both. `no_default` marks the one entry
-//! (`foci_robustness_cycle_evidence`) that must stay a required trait
-//! method (no default body) even though its forwarding body is generated
-//! like every other entry.
+//! other entries use `reply` for both. `no_default` marks the entries
+//! (`foci_robustness_cycle_evidence`, `foci_robustness_late_tracking_evidence`)
+//! that must stay required trait methods (no default body) even though their
+//! forwarding bodies are generated like every other entry.
 
 use syn::{
     Ident, LitStr, Path, PathArguments, Token, Type, braced,

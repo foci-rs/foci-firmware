@@ -3,6 +3,7 @@
 //! Tracks filled slots, the inconclusive-retry and tail-grace budgets, and the summary
 //! statistics the robustness gate consumes.
 
+use super::robustness_late_tracking::LateTracking;
 use super::robustness_metrics::ReversalMetrics;
 
 /// Number of reversal-cycle slots run per direction (K).
@@ -231,6 +232,12 @@ impl CycleLedger {
     /// Whether a second tail cycle latched the tail rejection.
     pub(crate) fn tail_rejected(&self) -> bool {
         self.tail_rejected
+    }
+
+    /// Late-tracking window of each slot, in cycle order; an unfilled slot is `None`.
+    pub(crate) fn late_cycles(&self) -> [Option<LateTracking>; ROBUSTNESS_CYCLES_PER_DIRECTION] {
+        self.slots
+            .map(|slot| slot.map(|metrics| metrics.late_tracking))
     }
 
     /// Raw slot contents, in cycle order.

@@ -32,6 +32,15 @@ macro_rules! __commission_reply_manifest {
                 no_default,
             }
             entry {
+                name: foci_robustness_late_tracking_evidence,
+                doc: "Emit one direction and cycle slot's late-tracking robustness evidence,",
+                doc: "ahead of the compact terminal. No default: every board sink must decide",
+                doc: "whether and how to forward this reply.",
+                reply: foci_firmware::ankyra::replies::FociRobustnessLateTrackingEvidence<'_>,
+                fields: { oid: u8, payload: &[u8] },
+                no_default,
+            }
+            entry {
                 name: foci_commission_timing,
                 doc: "Emit timing-quality evidence for one commissioning electrical method.",
                 doc: "",
@@ -575,6 +584,28 @@ pub fn emit_robustness_cycle_evidence<S: CommissionReplySink>(
     }
 }
 
+/// Emit each direction and cycle slot's late-tracking evidence, one reply per slot.
+pub fn emit_robustness_late_tracking_evidence<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    evidence: &crate::commissioning::outer::velocity::robustness_evidence::RobustnessEvidence,
+) {
+    use crate::commissioning::outer::velocity::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION;
+
+    for direction in 0..evidence.late_cycles.len() {
+        for slot in 0..ROBUSTNESS_CYCLES_PER_DIRECTION {
+            let payload = crate::commissioning::outer::velocity::robustness_reporting::
+                encode_robustness_late_tracking_evidence(direction as u8, slot as u8, evidence);
+            sink.foci_robustness_late_tracking_evidence(
+                crate::ankyra::replies::FociRobustnessLateTrackingEvidence {
+                    oid,
+                    payload: &payload,
+                },
+            );
+        }
+    }
+}
+
 /// Emit the complete exact velocity-integral plan as bounded causal fragments.
 pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
     sink: &mut S,
@@ -799,6 +830,7 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(
             }
             if let Some(evidence) = robustness_evidence {
                 emit_robustness_cycle_evidence(sink, oid, &evidence);
+                emit_robustness_late_tracking_evidence(sink, oid, &evidence);
             }
             let report_seq = crate::state::report_seq::next_report_seq(channel);
             if result.position_tune.drove_a_rung() {
@@ -843,6 +875,7 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(
                 sink.foci_outer_safety_fault(oid, fault);
             }
             emit_robustness_cycle_evidence(sink, oid, &terminal.evidence);
+            emit_robustness_late_tracking_evidence(sink, oid, &terminal.evidence);
             emit_robustness_reversal_terminal(sink, oid, terminal);
         }
         ReplyPayload::BreakawayCampaignEvent { oid, event } => {
@@ -1232,6 +1265,10 @@ mod tests {
             oid: u8,
             payload: Vec<u8>,
         },
+        RobustnessLateTrackingEvidence {
+            oid: u8,
+            payload: Vec<u8>,
+        },
         Calibrate {
             oid: u8,
             status: u8,
@@ -1453,6 +1490,16 @@ mod tests {
             report: crate::ankyra::replies::FociRobustnessCycleEvidence<'_>,
         ) {
             self.events.push(Event::RobustnessCycleEvidence {
+                oid: report.oid,
+                payload: report.payload.to_vec(),
+            });
+        }
+
+        fn foci_robustness_late_tracking_evidence(
+            &mut self,
+            report: crate::ankyra::replies::FociRobustnessLateTrackingEvidence<'_>,
+        ) {
+            self.events.push(Event::RobustnessLateTrackingEvidence {
                 oid: report.oid,
                 payload: report.payload.to_vec(),
             });
@@ -3148,6 +3195,61 @@ mod tests {
         );
     }
 
+    fn late_tracking_events(
+        oid: u8,
+        evidence: &crate::commissioning::outer::velocity::robustness_evidence::RobustnessEvidence,
+    ) -> Vec<Event> {
+        use crate::commissioning::outer::velocity::robustness_reporting::encode_robustness_late_tracking_evidence;
+
+        (0..2_u8)
+            .flat_map(|direction| (0..5_u8).map(move |slot| (direction, slot)))
+            .map(|(direction, slot)| Event::RobustnessLateTrackingEvidence {
+                oid,
+                payload: encode_robustness_late_tracking_evidence(direction, slot, evidence)
+                    .to_vec(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_terminal_emits_ten_late_tracking_replies() {
+        use crate::commission_dispatch::robustness::{
+            RobustnessPreflightRejection, failed_robustness_terminal,
+        };
+        use crate::commissioning::outer::velocity::robustness_reporting::ROBUSTNESS_LATE_TRACKING_EVIDENCE_REPLY_BYTES;
+
+        let terminal =
+            failed_robustness_terminal(4, RobustnessPreflightRejection::NoAcceptedCandidate);
+
+        let mut sink = RecordingSink::default();
+        emit_terminal_reply(
+            &mut sink,
+            0,
+            ReplyPayload::RobustnessReversalTerminal { oid: 5, terminal },
+        );
+
+        let late: Vec<&Vec<u8>> = sink
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                Event::RobustnessLateTrackingEvidence { oid: 5, payload } => Some(payload),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(late.len(), 10);
+        for (index, payload) in late.iter().enumerate() {
+            assert_eq!(payload.len(), ROBUSTNESS_LATE_TRACKING_EVIDENCE_REPLY_BYTES);
+            assert_eq!(usize::from(payload[0]), index / 5);
+            assert_eq!(usize::from(payload[2]), index % 5);
+        }
+        let terminal_index = sink
+            .events
+            .iter()
+            .position(|event| matches!(event, Event::RobustnessReversalTerminal { .. }))
+            .expect("the terminal is emitted");
+        assert_eq!(terminal_index, sink.events.len() - 1);
+    }
+
     #[test]
     fn emit_terminal_reply_routes_the_robustness_terminal_payload() {
         use crate::commissioning::outer::velocity::robustness_evidence::{
@@ -3203,6 +3305,10 @@ mod tests {
                 cycles: [example_cycles, example_cycles],
                 tail_counts: [1, 0],
                 displaced_tails: [example_cycles[0], None],
+                late_tracking_medians_ppm: [6_250, 0],
+                late_target_rate_q: [-480_000, 480_000],
+                late_cycles: [[None; 5]; 2],
+                late_suffix_excluded: [[false; 5]; 2],
             },
             run_started_us: 1_000,
             run_completed_us: 2_000,
@@ -3237,11 +3343,14 @@ mod tests {
                     )
                     .to_vec(),
                 },
-                Event::RobustnessReversalTerminal {
-                    oid: 3,
-                    payload: encode_robustness_terminal_reply(&terminal).to_vec(),
-                },
             ]
+            .into_iter()
+            .chain(late_tracking_events(3, &terminal.evidence))
+            .chain([Event::RobustnessReversalTerminal {
+                oid: 3,
+                payload: encode_robustness_terminal_reply(&terminal).to_vec(),
+            }])
+            .collect::<Vec<_>>()
         );
         assert_eq!(
             encode_robustness_terminal_reply(&terminal).len(),
@@ -3290,15 +3399,18 @@ mod tests {
                     payload: encode_robustness_cycle_evidence(1, &evidence, &evidence.cycles[1])
                         .to_vec(),
                 },
-                Event::Tune {
-                    oid: 8,
-                    report_seq: 0,
-                    status: 9,
-                    velocity_p: result.velocity_p,
-                    position_p: result.position_p,
-                    warning_code: result.warning_code,
-                },
             ]
+            .into_iter()
+            .chain(late_tracking_events(8, &evidence))
+            .chain([Event::Tune {
+                oid: 8,
+                report_seq: 0,
+                status: 9,
+                velocity_p: result.velocity_p,
+                position_p: result.position_p,
+                warning_code: result.warning_code,
+            }])
+            .collect::<Vec<_>>()
         );
     }
 
@@ -3344,6 +3456,10 @@ mod tests {
                 cycles: [[None; crate::commissioning::outer::velocity::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
                 tail_counts: [0, 0],
                 displaced_tails: [None, None],
+                late_tracking_medians_ppm: [0, 0],
+                late_target_rate_q: [0, 0],
+                late_cycles: [[None; 5]; 2],
+                late_suffix_excluded: [[false; 5]; 2],
             },
             run_started_us: 1_000,
             run_completed_us: 2_000,
@@ -3399,11 +3515,14 @@ mod tests {
                     )
                     .to_vec(),
                 },
-                Event::RobustnessReversalTerminal {
-                    oid: 3,
-                    payload: encode_robustness_terminal_reply(&terminal).to_vec(),
-                },
             ]
+            .into_iter()
+            .chain(late_tracking_events(3, &terminal.evidence))
+            .chain([Event::RobustnessReversalTerminal {
+                oid: 3,
+                payload: encode_robustness_terminal_reply(&terminal).to_vec(),
+            }])
+            .collect::<Vec<_>>()
         );
     }
 }

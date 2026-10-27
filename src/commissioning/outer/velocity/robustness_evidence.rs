@@ -5,6 +5,7 @@
 //! per-cycle triples.
 
 use super::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION;
+use super::robustness_late_tracking::LateTracking;
 use super::robustness_metrics::{TRIP_IAE, TRIP_LATE_TRACKING, TRIP_PEAK, TRIP_TIME, worse_of};
 use super::robustness_reporting::CycleWire;
 use crate::commission_dispatch::robustness::{
@@ -56,6 +57,17 @@ pub struct RobustnessEvidence {
     pub tail_counts: [u8; 2],
     /// The grace-retried (displaced) tail cycle per direction, if any.
     pub(crate) displaced_tails: [Option<CycleWire>; 2],
+    /// Median late-tracking deviation per direction, in parts per million of the target.
+    pub late_tracking_medians_ppm: [u32; 2],
+    /// Signed reverse-leg target rate each direction's late tracking was measured against,
+    /// in rate-Q units.
+    pub late_target_rate_q: [i64; 2],
+    /// Per-slot late-tracking windows for each direction, in cycle order; an unfilled slot is
+    /// `None`.
+    pub(crate) late_cycles: [[Option<LateTracking>; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
+    /// Per-slot flag set when the leg's stationary suffix was excluded, so its settled
+    /// residual and dAC_rms are reported as 0 rather than measured.
+    pub(crate) late_suffix_excluded: [[bool; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
 }
 
 /// Derive the primary `ROBUSTNESS_CAUSE_*` from both directions tripped masks

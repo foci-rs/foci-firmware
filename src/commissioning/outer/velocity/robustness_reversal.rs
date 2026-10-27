@@ -138,6 +138,8 @@ struct PendingCycle {
     wire: CycleWire,
     /// Scored reversal peak in permille of the leg target; 0 when not scored.
     peak_permille: u16,
+    /// Whether the leg's stationary suffix was excluded from the settled-tail metrics.
+    suffix_excluded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
@@ -163,6 +165,8 @@ pub(crate) struct RobustnessReversalSession {
     cycle_wires: [[Option<CycleWire>; ROBUSTNESS_CYCLES_PER_DIRECTION]; DIRECTION_COUNT],
     /// The grace-retried (displaced) tail cycle wire triple, per direction.
     displaced_tail_wires: [Option<CycleWire>; DIRECTION_COUNT],
+    /// Per-slot stationary-suffix exclusion, mirroring each ledger's filled slots.
+    suffix_excluded: [[bool; ROBUSTNESS_CYCLES_PER_DIRECTION]; DIRECTION_COUNT],
     /// Slot cursor mirroring each ledger cursor.
     cycle_cursor: [usize; DIRECTION_COUNT],
     pending_forward_settle_us: u32,
@@ -195,6 +199,7 @@ impl RobustnessReversalSession {
             peak_scored_cycles: [0; DIRECTION_COUNT],
             cycle_wires: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; DIRECTION_COUNT],
             displaced_tail_wires: [None; DIRECTION_COUNT],
+            suffix_excluded: [[false; ROBUSTNESS_CYCLES_PER_DIRECTION]; DIRECTION_COUNT],
             cycle_cursor: [0; DIRECTION_COUNT],
             pending_forward_settle_us: 0,
             pending_cycle: None,
@@ -315,6 +320,10 @@ fn establish_target_rpm(point: &AcceptancePoint, direction: usize) -> i32 {
 
 fn reverse_target_rpm(point: &AcceptancePoint, direction: usize) -> i32 {
     -establish_target_rpm(point, direction)
+}
+
+fn reverse_target_rate_q(point: &AcceptancePoint, direction: usize, counts_per_rev: u32) -> i64 {
+    target_rate_q(reverse_target_rpm(point, direction), counts_per_rev)
 }
 
 const ESTABLISH_LEG_WINDOW_US: u32 =
@@ -441,7 +450,7 @@ fn score_reversal_leg(input: LegScore<'_>) -> Result<ReversalMetrics, Commission
         ring,
     } = input;
     let signed_target_rpm = reverse_target_rpm(point, direction);
-    let target_rate_q_value = target_rate_q(signed_target_rpm, counts_per_rev);
+    let target_rate_q_value = reverse_target_rate_q(point, direction, counts_per_rev);
     let (settled_residual_q, dac_rms) = match suffix {
         Some(suffix) => {
             let (settled_low, settled_high) = settled_rate_interval_q(suffix)?;
@@ -1031,6 +1040,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     forward_settle_ms: to_ms_saturating(metrics.forward_settle_time_us),
                 },
                 peak_permille: peak,
+                suffix_excluded: suffix.is_none(),
             });
             *state = zero_ramp_state(session, workspace.last_target_rpm);
             StepResult::ReadyNow
@@ -1752,11 +1762,15 @@ fn apply_pending_cycle(
     pending: PendingCycle,
 ) {
     let direction = session.direction;
+    let cursor = session.cycle_cursor[direction];
     let action = record_cycle(
         session,
         CycleRecord::Conclusive(pending.metrics),
         Some(pending.wire),
     );
+    if action != LedgerAction::RetryTail {
+        session.suffix_excluded[direction][cursor] = pending.suffix_excluded;
+    }
     if pending.peak_permille != 0 && action != LedgerAction::RetryTail {
         session.peak_rate_permille[direction] =
             session.peak_rate_permille[direction].max(pending.peak_permille);
@@ -1932,6 +1946,19 @@ fn assembled_evidence(
             session.ledgers[1].tail_count(),
         ],
         displaced_tails: session.displaced_tail_wires,
+        late_tracking_medians_ppm: [
+            session.ledgers[0].median_late_tracking_ppm(),
+            session.ledgers[1].median_late_tracking_ppm(),
+        ],
+        late_target_rate_q: [
+            reverse_target_rate_q(&session.point, 0, counts_per_rev),
+            reverse_target_rate_q(&session.point, 1, counts_per_rev),
+        ],
+        late_cycles: [
+            session.ledgers[0].late_cycles(),
+            session.ledgers[1].late_cycles(),
+        ],
+        late_suffix_excluded: session.suffix_excluded,
     }
 }
 
@@ -3157,6 +3184,7 @@ mod tests {
             metrics: tail,
             wire: tail_wire,
             peak_permille: 0,
+            suffix_excluded: false,
         };
 
         let mut state = RobustnessReversalState::EstablishWriteGain;
@@ -5189,6 +5217,9 @@ mod tests {
         assert_eq!(terminal.evidence.directions[0].retry_count, 0);
         let first = driver.parts.session.ledgers[0].cycles()[0].expect("the excluded leg is kept");
         assert_eq!(first.settled_residual_q, 0);
+        let mut excluded = [[false; ROBUSTNESS_CYCLES_PER_DIRECTION]; DIRECTION_COUNT];
+        excluded[0][0] = true;
+        assert_eq!(terminal.evidence.late_suffix_excluded, excluded);
         assert_eq!(
             first.late_tracking.ppm,
             expected_late_ppm(|tick| late_drift(tick, STEADY_DELTA))
@@ -5459,5 +5490,45 @@ mod tests {
                 "the retired residual gate would not have caught it"
             );
         }
+    }
+
+    #[test]
+    fn the_medians_and_target_rate_match_the_cycle_ledgers() {
+        let (terminal, session) = drive_reverse_script(|_, attempt, tick, steady| {
+            if attempt <= 2 {
+                nine_tenths_late(tick, steady)
+            } else {
+                one_count_in_sixteen(tick, steady)
+            }
+        });
+
+        let evidence = terminal.evidence;
+        for direction in 0..DIRECTION_COUNT {
+            let ledger = &session.ledgers[direction];
+            assert_eq!(
+                evidence.late_tracking_medians_ppm[direction],
+                ledger.median_late_tracking_ppm()
+            );
+            assert_eq!(evidence.late_tracking_medians_ppm[direction], 6_250);
+            assert_eq!(evidence.late_cycles[direction], ledger.late_cycles());
+            let ppms: std::vec::Vec<u32> = evidence.late_cycles[direction]
+                .iter()
+                .map(|slot| slot.expect("every slot filled").ppm)
+                .collect();
+            assert_eq!(ppms, [100_000, 100_000, 6_250, 6_250, 6_250]);
+            assert_eq!(
+                evidence.late_target_rate_q[direction],
+                target_rate_q(reverse_target_rpm(&test_point(), direction), COUNTS_PER_REV)
+            );
+        }
+        assert_ne!(evidence.late_target_rate_q[0], 0);
+        assert_eq!(
+            evidence.late_target_rate_q[0],
+            -evidence.late_target_rate_q[1]
+        );
+        assert_eq!(
+            evidence.late_suffix_excluded,
+            [[false; ROBUSTNESS_CYCLES_PER_DIRECTION]; DIRECTION_COUNT]
+        );
     }
 }

@@ -558,7 +558,9 @@ pub struct FociResistanceAxis {
 
 #[cfg(test)]
 mod resistance_reply_size_tests {
-    use super::{FociResistanceRun, FociRobustnessCycleEvidence};
+    use super::{
+        FociResistanceRun, FociRobustnessCycleEvidence, FociRobustnessLateTrackingEvidence,
+    };
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
 
@@ -620,6 +622,18 @@ mod resistance_reply_size_tests {
             payload: &payload,
         };
         assert_fits_with_id(&reply, "foci_robustness_cycle_evidence");
+    }
+
+    #[test]
+    fn robustness_late_tracking_evidence_reply_fits_klipper_message_limit() {
+        let payload = [u8::MAX;
+            crate::commissioning::outer::velocity::robustness_reporting::
+                ROBUSTNESS_LATE_TRACKING_EVIDENCE_REPLY_BYTES];
+        let reply = FociRobustnessLateTrackingEvidence {
+            oid: u8::MAX,
+            payload: &payload,
+        };
+        assert_fits_with_id(&reply, "foci_robustness_late_tracking_evidence");
     }
 }
 
@@ -1286,6 +1300,13 @@ pub struct FociVelocityIntegralTerminal<'a> {
 /// Compact per-cycle reversal-standstill robustness evidence, one per direction.
 #[klipper_reply]
 pub struct FociRobustnessCycleEvidence<'a> {
+    pub oid: u8,
+    pub payload: &'a [u8],
+}
+
+/// Late-tracking reversal-robustness evidence, one per direction and cycle slot.
+#[klipper_reply]
+pub struct FociRobustnessLateTrackingEvidence<'a> {
     pub oid: u8,
     pub payload: &'a [u8],
 }

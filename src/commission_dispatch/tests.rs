@@ -317,6 +317,12 @@ impl CommissionReplySink for ReplyRecorder {
     ) {
     }
 
+    fn foci_robustness_late_tracking_evidence(
+        &mut self,
+        _report: crate::ankyra::replies::FociRobustnessLateTrackingEvidence<'_>,
+    ) {
+    }
+
     fn foci_calibrate_result(
         &mut self,
         _oid: u8,

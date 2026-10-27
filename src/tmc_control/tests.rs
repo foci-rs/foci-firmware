@@ -72,9 +72,9 @@ fn runtime_starts_disarmed_and_uncalibrated() {
 #[test]
 fn channel_runtime_size_stays_bounded() {
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_368);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_592);
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_352);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_576);
 }
 
 #[test]

@@ -221,6 +221,10 @@ fn zero_robustness_evidence() -> RobustnessEvidence {
         cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
         tail_counts: [0, 0],
         displaced_tails: [None, None],
+        late_tracking_medians_ppm: [0, 0],
+        late_target_rate_q: [0, 0],
+        late_cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
+        late_suffix_excluded: [[false; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
     }
 }
 
