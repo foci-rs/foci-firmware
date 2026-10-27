@@ -5224,4 +5224,93 @@ mod tests {
         assert_eq!(driver.parts.session.ledgers[0].valid_cycles(), 0);
         assert!(driver.parts.session.pending_cycle.is_none());
     }
+
+    #[test]
+    fn establish_leg_still_ends_at_band_entry_plus_the_settle_tail() {
+        let mut legs: std::vec::Vec<(Option<u32>, u32)> = std::vec::Vec::new();
+        let mut driver = TickDriver::new(RunParts::new(test_point()), 0);
+        driver.tracked = false;
+        let terminal = driver.run(|parts, context| {
+            if context.phase == CapturePhase::Establish {
+                if context.leg_tick == 0 {
+                    legs.push((None, 0));
+                }
+                let leg = legs.last_mut().expect("a leg started");
+                if leg.0.is_none() && parts.workspace.capture.band_entry_us().is_some() {
+                    leg.0 = Some(context.leg_tick);
+                }
+                leg.1 += 1;
+            }
+            steady_tick(parts, context)
+        });
+
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert_eq!(
+            legs.len(),
+            ROBUSTNESS_CYCLES_PER_DIRECTION * DIRECTION_COUNT
+        );
+        for (detected_after, ticks) in legs {
+            let detected_after = detected_after.expect("the establish leg enters the band");
+            assert_eq!(ticks, detected_after + ROBUSTNESS_SETTLE_TAIL_US / 1_000);
+            assert!(ticks < BUDGET_TICKS);
+        }
+    }
+
+    #[test]
+    fn a_clean_campaign_completes_inside_a_3000_ms_primitive_duration_cap() {
+        const WORST_ANALYSIS_US: u64 = 230_000;
+        assert!(WORST_ANALYSIS_US < u64::from(SETTLE_ANALYSIS_BUDGET_US));
+        let mut parts = RunParts::new(recovery_point());
+        parts.safety.budget.max_duration_ms = 3_000;
+        let mut zero_windows = 0u32;
+        let mut driver = TickDriver::new(parts, WORST_ANALYSIS_US);
+
+        let terminal = driver.run(|parts, context| match context.phase {
+            CapturePhase::Zero => {
+                if context.leg_tick == 0 {
+                    zero_windows += 1;
+                }
+                if zero_windows % 2 == 1 { 2 } else { 0 }
+            }
+            _ => steady_tick(parts, context),
+        });
+
+        assert!(
+            terminal.safety_fault.is_none(),
+            "{:?}",
+            terminal.safety_fault
+        );
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_PASS);
+        assert!(
+            zero_windows as usize >= 2 * ROBUSTNESS_CYCLES_PER_DIRECTION * DIRECTION_COUNT,
+            "every between-cycles rest is retried once: {zero_windows} windows"
+        );
+    }
+
+    #[test]
+    fn repeated_origin_recovery_is_tolerated_without_wedging() {
+        let mut driver = TickDriver::new(RunParts::new(recovery_point()), 0);
+
+        let terminal = driver.run(steady_tick);
+
+        assert!(
+            terminal.safety_fault.is_none(),
+            "{:?}",
+            terminal.safety_fault
+        );
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_PASS);
+        assert!(
+            driver.parts.recoveries >= 2,
+            "reverse-side drift recovers the origin more than once: {}",
+            driver.parts.recoveries
+        );
+        for direction in terminal.evidence.directions {
+            assert_eq!(
+                direction.valid_cycles,
+                ROBUSTNESS_CYCLES_PER_DIRECTION as u8
+            );
+        }
+    }
 }
