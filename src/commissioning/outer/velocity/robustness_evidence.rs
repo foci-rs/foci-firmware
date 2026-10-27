@@ -5,12 +5,12 @@
 //! per-cycle triples.
 
 use super::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION;
-use super::robustness_metrics::{TRIP_IAE, TRIP_PEAK, TRIP_RESIDUAL, TRIP_TIME, worse_of};
+use super::robustness_metrics::{TRIP_IAE, TRIP_LATE_TRACKING, TRIP_PEAK, TRIP_TIME, worse_of};
 use super::robustness_reporting::CycleWire;
 use crate::commission_dispatch::robustness::{
-    ROBUSTNESS_CAUSE_IAE_EXCEEDED, ROBUSTNESS_CAUSE_PASS,
+    ROBUSTNESS_CAUSE_IAE_EXCEEDED, ROBUSTNESS_CAUSE_LATE_TRACKING_EXCEEDED, ROBUSTNESS_CAUSE_PASS,
     ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE, ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED,
-    ROBUSTNESS_CAUSE_RESIDUAL_EXCEEDED, ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED,
+    ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED,
 };
 
 /// One reversal direction's cycle-summary robustness evidence, as reported
@@ -61,7 +61,7 @@ pub struct RobustnessEvidence {
 /// Derive the primary `ROBUSTNESS_CAUSE_*` from both directions tripped masks
 /// and inconclusive flags.
 ///
-/// Priority: first tripped threshold cause (time > peak > residual > IAE), then
+/// Priority: first tripped threshold cause (time > peak > late tracking > IAE), then
 /// `RECONVERGENCE_INCONCLUSIVE` if either direction is inconclusive, else `PASS`.
 /// Never returns `ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY` or the internal-fault causes.
 pub(crate) fn summary_cause(
@@ -75,8 +75,8 @@ pub(crate) fn summary_cause(
         ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED
     } else if combined & TRIP_PEAK != 0 {
         ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED
-    } else if combined & TRIP_RESIDUAL != 0 {
-        ROBUSTNESS_CAUSE_RESIDUAL_EXCEEDED
+    } else if combined & TRIP_LATE_TRACKING != 0 {
+        ROBUSTNESS_CAUSE_LATE_TRACKING_EXCEEDED
     } else if combined & TRIP_IAE != 0 {
         ROBUSTNESS_CAUSE_IAE_EXCEEDED
     } else if inconclusive_a || inconclusive_b {
@@ -135,8 +135,51 @@ mod tests {
             ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED
         );
         assert_eq!(
-            summary_cause(TRIP_PEAK, TRIP_RESIDUAL, false, false),
+            summary_cause(TRIP_PEAK, TRIP_LATE_TRACKING, false, false),
             ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED
         );
+    }
+
+    #[test]
+    fn summary_cause_ranks_time_then_peak_then_late_tracking_then_iae() {
+        assert_eq!(
+            summary_cause(
+                TRIP_TIME | TRIP_PEAK | TRIP_LATE_TRACKING | TRIP_IAE,
+                0,
+                false,
+                false
+            ),
+            ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED
+        );
+        assert_eq!(
+            summary_cause(TRIP_PEAK | TRIP_LATE_TRACKING | TRIP_IAE, 0, false, false),
+            ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED
+        );
+        assert_eq!(
+            summary_cause(TRIP_LATE_TRACKING | TRIP_IAE, 0, false, false),
+            ROBUSTNESS_CAUSE_LATE_TRACKING_EXCEEDED
+        );
+        assert_eq!(
+            summary_cause(0, TRIP_LATE_TRACKING, true, true),
+            ROBUSTNESS_CAUSE_LATE_TRACKING_EXCEEDED
+        );
+    }
+
+    #[test]
+    fn late_tracking_cause_number_is_24_and_cause_2_is_not_reused() {
+        use crate::commission_dispatch::robustness as r;
+
+        assert_eq!(ROBUSTNESS_CAUSE_LATE_TRACKING_EXCEEDED, 24);
+        let all = [
+            r::ROBUSTNESS_CAUSE_PASS,
+            r::ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED,
+            r::ROBUSTNESS_CAUSE_IAE_EXCEEDED,
+            r::ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE,
+            r::ROBUSTNESS_CAUSE_NO_ACCEPTED_CANDIDATE,
+            r::ROBUSTNESS_CAUSE_SAFETY_FAULT,
+            r::ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED,
+            r::ROBUSTNESS_CAUSE_LATE_TRACKING_EXCEEDED,
+        ];
+        assert!(all.iter().all(|&cause| cause != 2));
     }
 }

@@ -179,6 +179,14 @@ impl CycleLedger {
         saturating_i64_to_i32(median_i64(&mut values[..count]))
     }
 
+    /// Median late-tracking deviation over filled slots, in parts per million.
+    pub(crate) fn median_late_tracking_ppm(&self) -> u32 {
+        let mut values: [i64; ROBUSTNESS_CYCLES_PER_DIRECTION] =
+            [0; ROBUSTNESS_CYCLES_PER_DIRECTION];
+        let count = self.collect_i64(&mut values, |m| i64::from(m.late_tracking.ppm));
+        u32::try_from(median_i64(&mut values[..count])).unwrap_or(u32::MAX)
+    }
+
     /// Median recovery IAE over filled slots, converted from the stored
     /// rate-Q microseconds into rate-Q seconds, saturating into `i32`.
     pub(crate) fn median_recovery_iae_qs(&self) -> i32 {
@@ -297,6 +305,7 @@ fn median_i64(values: &mut [i64]) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commissioning::outer::velocity::robustness_metrics::late_tracking_at;
 
     fn metrics(reconv_ms: u32) -> ReversalMetrics {
         metrics_with_iae(reconv_ms, LOW_IAE_Q)
@@ -318,6 +327,7 @@ mod tests {
             dac_rms_q: 0,
             forward_settle_time_us: 10_000,
             reconvergence_ratio_ppm: 0,
+            late_tracking: late_tracking_at(0),
         }
     }
 
@@ -510,6 +520,38 @@ mod tests {
         assert!(grace_ledger.meets_floor());
     }
 
+    fn ledger_with_late_ppm(ppms: &[u32]) -> CycleLedger {
+        let mut ledger = CycleLedger::new(i64::MAX);
+        for &ppm in ppms {
+            ledger.record(CycleRecord::Conclusive(ReversalMetrics {
+                late_tracking: late_tracking_at(ppm),
+                ..metrics(100)
+            }));
+        }
+        ledger
+    }
+
+    #[test]
+    fn ledger_median_late_tracking_tolerates_two_outliers_but_not_three() {
+        let two = ledger_with_late_ppm(&[1_000, 2_000, 3_000, 900_000, 900_000]);
+        assert_eq!(two.median_late_tracking_ppm(), 3_000);
+        let three = ledger_with_late_ppm(&[1_000, 2_000, 900_000, 900_000, 900_000]);
+        assert_eq!(three.median_late_tracking_ppm(), 900_000);
+    }
+
+    #[test]
+    fn a_direction_below_the_valid_cycle_floor_stays_inconclusive_not_passing() {
+        use crate::commissioning::outer::velocity::robustness_evidence::summary_cause;
+
+        let ledger = ledger_with_late_ppm(&[0, 0, 0]);
+        assert!(!ledger.meets_floor());
+        let healthy = ledger_with_late_ppm(&[0, 0, 0, 0]);
+        assert_eq!(
+            summary_cause(0, 0, !ledger.meets_floor(), !healthy.meets_floor()),
+            crate::commission_dispatch::robustness::ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE
+        );
+    }
+
     #[test]
     fn median_dac_rms_q_reduces_filled_slots_with_no_unit_conversion() {
         let mut ledger = CycleLedger::new(i64::MAX);
@@ -520,6 +562,7 @@ mod tests {
             dac_rms_q,
             forward_settle_time_us: 5_000,
             reconvergence_ratio_ppm: 0,
+            late_tracking: late_tracking_at(0),
         };
         for value in [100_i64, 300, 200] {
             ledger.record(CycleRecord::Conclusive(metrics(value)));

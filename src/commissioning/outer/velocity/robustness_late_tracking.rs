@@ -16,7 +16,7 @@ pub(crate) const LATE_TRACKING_MAX_PPM: u32 = 50_000;
 
 /// The worst late-tracking window and the sums that produced it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub(crate) struct LateTracking {
+pub struct LateTracking {
     /// Deviation of the window rate from the target, in parts per million of the target.
     pub ppm: u32,
     /// Summed displacement over the window, in counts.

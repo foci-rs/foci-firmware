@@ -53,6 +53,7 @@ use super::robustness_cycles::{
     CycleLedger, CycleRecord, LedgerAction, ROBUSTNESS_CYCLES_PER_DIRECTION,
 };
 use super::robustness_evidence::{RobustnessDirectionSummary, RobustnessEvidence, summary_cause};
+use super::robustness_late_tracking::LateTracking;
 use super::robustness_metrics::{
     PROBE_BAND_WINDOW_SAMPLES, REVERSAL_PEAK_REJECT_PERMILLE, ROBUSTNESS_BAND_DWELL_US,
     ROBUSTNESS_BAND_FRACTION_PCT, ROBUSTNESS_LEG_AMPLITUDE_PCT, ROBUSTNESS_MEASUREMENT_BUDGET_US,
@@ -452,6 +453,12 @@ fn score_reversal_leg(input: LegScore<'_>) -> Result<ReversalMetrics, Commission
         dac_rms_q: dac_rms,
         forward_settle_time_us,
         reconvergence_ratio_ppm: 0,
+        late_tracking: LateTracking {
+            ppm: 0,
+            window_delta_counts: 0,
+            window_elapsed_us: 0,
+            window_start_us: 0,
+        },
     };
     metrics.reconvergence_ratio_ppm =
         reconvergence_ratio_ppm(reconvergence_time_us, forward_settle_time_us);
@@ -1813,6 +1820,12 @@ fn median_tripped(ledger: &CycleLedger, point: &AcceptancePoint, counts_per_rev:
         dac_rms_q: 0,
         forward_settle_time_us: u32::from(ledger.median_forward_settle_ms()).saturating_mul(1_000),
         reconvergence_ratio_ppm: 0,
+        late_tracking: LateTracking {
+            ppm: ledger.median_late_tracking_ppm(),
+            window_delta_counts: 0,
+            window_elapsed_us: 0,
+            window_start_us: 0,
+        },
     };
     let (_, thresholds) = constructed_thresholds(point, counts_per_rev);
     tripped_mask(&median_metrics, &thresholds)
@@ -2129,7 +2142,7 @@ mod tests {
         IntegralPlanIdentity, IntegralRetentionSlot,
     };
     use crate::commissioning::outer::velocity::robustness_metrics::{
-        ROBUSTNESS_MAX_RETRIES, ROBUSTNESS_THRESHOLDS,
+        ROBUSTNESS_MAX_RETRIES, ROBUSTNESS_THRESHOLDS, late_tracking_at,
     };
     use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use crate::commissioning::types::OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY;
@@ -2610,6 +2623,7 @@ mod tests {
             dac_rms_q: 0,
             forward_settle_time_us: HUGE_DURATION_US,
             reconvergence_ratio_ppm: 0,
+            late_tracking: late_tracking_at(0),
         }));
         session.ledgers[1].record(CycleRecord::Conclusive(ReversalMetrics {
             reconvergence_time_us: HUGE_DURATION_US,
@@ -2618,6 +2632,7 @@ mod tests {
             dac_rms_q: 0,
             forward_settle_time_us: HUGE_DURATION_US,
             reconvergence_ratio_ppm: 0,
+            late_tracking: late_tracking_at(0),
         }));
 
         let evidence = assembled_evidence(&session, test_safety().counts_per_rev());
@@ -2922,6 +2937,7 @@ mod tests {
             dac_rms_q: 0,
             forward_settle_time_us: 10_000,
             reconvergence_ratio_ppm: 0,
+            late_tracking: late_tracking_at(0),
         }
     }
 
@@ -2998,6 +3014,7 @@ mod tests {
             dac_rms_q: 0,
             forward_settle_time_us: 10_000,
             reconvergence_ratio_ppm: 0,
+            late_tracking: late_tracking_at(0),
         }
     }
 
@@ -3221,6 +3238,7 @@ mod tests {
                 dac_rms_q: 0,
                 forward_settle_time_us: 10_000,
                 reconvergence_ratio_ppm: 0,
+                late_tracking: late_tracking_at(0),
             }));
         }
 
@@ -3246,6 +3264,7 @@ mod tests {
                 dac_rms_q,
                 forward_settle_time_us: 10_000,
                 reconvergence_ratio_ppm: 0,
+                late_tracking: late_tracking_at(0),
             }));
         }
 

@@ -7,6 +7,7 @@
 use crate::autotune::velocity_measurement::VELOCITY_RATE_Q_SCALE;
 use crate::autotune::velocity_measurement::VelocityObservationSource;
 
+use super::robustness_late_tracking::{LATE_TRACKING_MAX_PPM, LateTracking};
 use super::sweep_plan::{ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM};
 
 const MICROS_PER_SECOND: i128 = 1_000_000;
@@ -32,6 +33,8 @@ pub struct ReversalMetrics {
     /// `reconvergence_time_us` expressed as parts-per-million of
     /// `forward_settle_time_us`. Populated by the calling phase, not here.
     pub reconvergence_ratio_ppm: u32,
+    /// Fixed-time late-tracking deviation over the validation interval.
+    pub late_tracking: LateTracking,
 }
 
 /// Derive the per-tick rate in rate-Q units (`VELOCITY_RATE_Q_SCALE`).
@@ -363,10 +366,12 @@ impl ReversalOnlineAccumulator {
 pub(crate) struct RobustnessThresholds {
     /// Maximum allowed `reconvergence_time_us`.
     pub t_max_us: u32,
-    /// Maximum allowed `|settled_residual_q|`.
+    /// Retained residual bound; evidence only, no longer gated.
     pub r_max_q: i64,
     /// Maximum allowed `recovery_iae_q`.
     pub iae_max_q: i64,
+    /// Maximum allowed late-tracking deviation, in parts per million of the target.
+    pub late_tracking_max_ppm: u32,
 }
 
 /// Conservative seed thresholds, deliberately loose. The gate compares the per-direction
@@ -378,12 +383,13 @@ pub(crate) const ROBUSTNESS_THRESHOLDS: RobustnessThresholds = RobustnessThresho
     t_max_us: ROBUSTNESS_MEASUREMENT_BUDGET_US - ROBUSTNESS_TRIP_TIME_HEADROOM_US,
     r_max_q: 1_173_333,
     iae_max_q: 2 * (2 * 11_733_333) * 500_000,
+    late_tracking_max_ppm: LATE_TRACKING_MAX_PPM,
 };
 
 /// Bit set in `tripped_mask` when `reconvergence_time_us` exceeds `t_max_us`.
 pub(crate) const TRIP_TIME: u8 = 1 << 0;
-/// Bit set in `tripped_mask` when `|settled_residual_q|` exceeds `r_max_q`.
-pub(crate) const TRIP_RESIDUAL: u8 = 1 << 1;
+/// Bit set in `tripped_mask` when the late-tracking deviation exceeds `late_tracking_max_ppm`.
+pub(crate) const TRIP_LATE_TRACKING: u8 = 1 << 1;
 /// Bit set in `tripped_mask` when `recovery_iae_q` exceeds `iae_max_q`.
 pub(crate) const TRIP_IAE: u8 = 1 << 2;
 /// Bit set in a direction's tripped mask when its maximum scored reversal velocity peak
@@ -470,7 +476,7 @@ pub(crate) fn reduce_plant_rate_q(intervals: &[[i32; 2]; 2]) -> i64 {
 /// Construct plant-adaptive robustness thresholds from the identified settled-rate response
 /// (`plant_rate_q`, see [`reduce_plant_rate_q`]) and the reference target rate.
 ///
-/// `t_max_us` and `r_max_q` carry over from [`ROBUSTNESS_THRESHOLDS`]; only `iae_max_q`
+/// `t_max_us`, `r_max_q` and `late_tracking_max_ppm` carry over from [`ROBUSTNESS_THRESHOLDS`]; only `iae_max_q`
 /// adapts. See [`ROBUSTNESS_IAE_COEFF_NUM`] for the `plant_rate_q` provenance requirement.
 pub(crate) fn robustness_thresholds_for(
     plant_rate_q: i64,
@@ -493,18 +499,19 @@ pub(crate) fn robustness_thresholds_for(
         t_max_us: ROBUSTNESS_THRESHOLDS.t_max_us,
         r_max_q: ROBUSTNESS_THRESHOLDS.r_max_q,
         iae_max_q,
+        late_tracking_max_ppm: ROBUSTNESS_THRESHOLDS.late_tracking_max_ppm,
     }
 }
 
-/// Compute the tripped bitmask for `m` against `t`: which of time, residual,
+/// Compute the tripped bitmask for `m` against `t`: which of time, late tracking,
 /// and IAE gates failed, independently of one another.
 pub(crate) fn tripped_mask(m: &ReversalMetrics, t: &RobustnessThresholds) -> u8 {
     let mut mask = 0u8;
     if m.reconvergence_time_us > t.t_max_us {
         mask |= TRIP_TIME;
     }
-    if m.settled_residual_q.unsigned_abs() > t.r_max_q.unsigned_abs() {
-        mask |= TRIP_RESIDUAL;
+    if m.late_tracking.ppm > t.late_tracking_max_ppm {
+        mask |= TRIP_LATE_TRACKING;
     }
     if m.recovery_iae_q > t.iae_max_q {
         mask |= TRIP_IAE;
@@ -516,6 +523,16 @@ pub(crate) fn tripped_mask(m: &ReversalMetrics, t: &RobustnessThresholds) -> u8 
 /// either direction trips any gate.
 pub(crate) fn worse_of(a: u8, b: u8) -> u8 {
     a | b
+}
+
+#[cfg(test)]
+pub(crate) fn late_tracking_at(ppm: u32) -> LateTracking {
+    LateTracking {
+        ppm,
+        window_delta_counts: 0,
+        window_elapsed_us: 0,
+        window_start_us: 0,
+    }
 }
 
 #[cfg(test)]
@@ -673,12 +690,59 @@ mod tests {
         assert_eq!(online.band_entry_us(), None);
     }
 
+    fn quiet_metrics() -> ReversalMetrics {
+        ReversalMetrics {
+            reconvergence_time_us: 0,
+            settled_residual_q: 0,
+            recovery_iae_q: 0,
+            dac_rms_q: 0,
+            forward_settle_time_us: 0,
+            reconvergence_ratio_ppm: 0,
+            late_tracking: late_tracking_at(0),
+        }
+    }
+
+    fn open_thresholds() -> RobustnessThresholds {
+        RobustnessThresholds {
+            t_max_us: u32::MAX,
+            r_max_q: 0,
+            iae_max_q: i64::MAX,
+            late_tracking_max_ppm: LATE_TRACKING_MAX_PPM,
+        }
+    }
+
+    #[test]
+    fn tripped_mask_flags_late_tracking_strictly_above_the_limit() {
+        let t = open_thresholds();
+        let at = ReversalMetrics {
+            late_tracking: late_tracking_at(50_000),
+            ..quiet_metrics()
+        };
+        let over = ReversalMetrics {
+            late_tracking: late_tracking_at(50_001),
+            ..quiet_metrics()
+        };
+        assert_eq!(tripped_mask(&at, &t), 0);
+        assert_eq!(tripped_mask(&over, &t), TRIP_LATE_TRACKING);
+    }
+
+    #[test]
+    fn settled_residual_never_trips_the_gate() {
+        let m = ReversalMetrics {
+            settled_residual_q: i64::MAX,
+            late_tracking: late_tracking_at(LATE_TRACKING_MAX_PPM),
+            ..quiet_metrics()
+        };
+        assert_eq!(tripped_mask(&m, &open_thresholds()), 0);
+    }
+
     #[test]
     fn tripped_mask_flags_each_threshold_independently() {
         let t = RobustnessThresholds {
             t_max_us: 100_000,
             r_max_q: 500,
             iae_max_q: 1_000_000,
+            late_tracking_max_ppm: 50_000,
         };
         let ok = ReversalMetrics {
             reconvergence_time_us: 50_000,
@@ -687,6 +751,7 @@ mod tests {
             dac_rms_q: 0,
             forward_settle_time_us: 20_000,
             reconvergence_ratio_ppm: 0,
+            late_tracking: late_tracking_at(0),
         };
         assert_eq!(tripped_mask(&ok, &t), 0);
         let slow = ReversalMetrics {
@@ -696,29 +761,14 @@ mod tests {
         assert_eq!(tripped_mask(&slow, &t), TRIP_TIME);
         let bad = ReversalMetrics {
             reconvergence_time_us: 200_000,
-            settled_residual_q: -900,
+            late_tracking: late_tracking_at(60_000),
             recovery_iae_q: 2_000_000,
             ..ok
         };
-        assert_eq!(tripped_mask(&bad, &t), TRIP_TIME | TRIP_RESIDUAL | TRIP_IAE);
-    }
-
-    #[test]
-    fn residual_gate_uses_absolute_value() {
-        let t = RobustnessThresholds {
-            t_max_us: u32::MAX,
-            r_max_q: 500,
-            iae_max_q: i64::MAX,
-        };
-        let neg = ReversalMetrics {
-            reconvergence_time_us: 0,
-            settled_residual_q: -600,
-            recovery_iae_q: 0,
-            dac_rms_q: 0,
-            forward_settle_time_us: 0,
-            reconvergence_ratio_ppm: 0,
-        };
-        assert_eq!(tripped_mask(&neg, &t), TRIP_RESIDUAL);
+        assert_eq!(
+            tripped_mask(&bad, &t),
+            TRIP_TIME | TRIP_LATE_TRACKING | TRIP_IAE
+        );
     }
 
     #[test]
@@ -883,6 +933,7 @@ mod tests {
             dac_rms_q: 0,
             forward_settle_time_us: 240_000,
             reconvergence_ratio_ppm: 0,
+            late_tracking: late_tracking_at(0),
         };
         assert_eq!(tripped_mask(&accept, &t) & TRIP_IAE, 0);
         let reject = ReversalMetrics {

@@ -27,8 +27,6 @@ const MICROS_PER_MILLI: u32 = 1_000;
 pub const ROBUSTNESS_CAUSE_PASS: u8 = 0;
 /// At least one direction's `reconvergence_time_us` exceeded its threshold.
 pub const ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED: u8 = 1;
-/// At least one direction's `settled_residual_q` exceeded its threshold.
-pub const ROBUSTNESS_CAUSE_RESIDUAL_EXCEEDED: u8 = 2;
 /// At least one direction's `recovery_iae_q` exceeded its threshold.
 pub const ROBUSTNESS_CAUSE_IAE_EXCEEDED: u8 = 3;
 /// At least one direction never reached a sustained band-entry dwell within
@@ -72,6 +70,8 @@ pub const ROBUSTNESS_CAUSE_DISPATCH_ABORT: u8 = 22;
 /// At least one direction's maximum scored reversal velocity peak reached the outer-safety
 /// cap in leg-target units less one settle band.
 pub const ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED: u8 = 23;
+/// At least one direction's median late-tracking deviation exceeded its limit.
+pub const ROBUSTNESS_CAUSE_LATE_TRACKING_EXCEEDED: u8 = 24;
 
 /// Definitive rejection of a robustness-reversal preflight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
