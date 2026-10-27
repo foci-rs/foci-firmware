@@ -30,6 +30,8 @@ mod recovery_tests;
 pub mod reproduction;
 pub(crate) mod robustness_cycles;
 pub mod robustness_evidence;
+#[expect(dead_code)]
+pub(crate) mod robustness_late_tracking;
 pub mod robustness_metrics;
 pub(crate) mod robustness_reporting;
 pub(crate) mod robustness_reversal;
