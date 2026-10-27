@@ -2161,11 +2161,11 @@ pub(crate) fn robustness_pass_outer_result(
 mod tests {
     use super::*;
     use crate::commission_dispatch::robustness::{
-        ROBUSTNESS_CAUSE_IAE_EXCEEDED, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED,
-        ROBUSTNESS_CAUSE_PASS, ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE,
-        ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED, ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID,
-        ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED, ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED,
-        ROBUSTNESS_CAUSE_TAIL_REPEATED,
+        ROBUSTNESS_CAUSE_IAE_EXCEEDED, ROBUSTNESS_CAUSE_LATE_TRACKING_EXCEEDED,
+        ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED, ROBUSTNESS_CAUSE_PASS,
+        ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE, ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED,
+        ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED,
+        ROBUSTNESS_CAUSE_REVERSAL_PEAK_EXCEEDED, ROBUSTNESS_CAUSE_TAIL_REPEATED,
     };
     use crate::commission_dispatch::test_support::{
         MockBackend, SpiOp, current_limit, sample_entry_snapshot,
@@ -5310,6 +5310,153 @@ mod tests {
             assert_eq!(
                 direction.valid_cycles,
                 ROBUSTNESS_CYCLES_PER_DIRECTION as u8
+            );
+        }
+    }
+
+    fn late_tracking_ppms(
+        session: &RobustnessReversalSession,
+        direction: usize,
+    ) -> std::vec::Vec<u32> {
+        session.ledgers[direction]
+            .cycles()
+            .iter()
+            .flatten()
+            .map(|metrics| metrics.late_tracking.ppm)
+            .collect()
+    }
+
+    /// One count over the target in every 16th late-window tick: each 16-tick window runs at
+    /// 161/160 of the target, 6,250 ppm.
+    fn one_count_in_sixteen(tick: u32, steady: i32) -> i32 {
+        if LATE_WINDOW_TICKS.contains(&tick) && tick.is_multiple_of(16) {
+            steady + steady.signum()
+        } else {
+            steady
+        }
+    }
+
+    /// The late window delivered at nine tenths of the target, 100,000 ppm.
+    fn nine_tenths_late(tick: u32, steady: i32) -> i32 {
+        if LATE_WINDOW_TICKS.contains(&tick) {
+            steady * 9 / 10
+        } else {
+            steady
+        }
+    }
+
+    #[test]
+    fn late_tracking_does_not_depend_on_when_the_band_is_entered() {
+        let run = |stall_ticks: u32| {
+            let (terminal, session) = drive_reverse_script(move |_, _, tick, steady| {
+                if tick < stall_ticks {
+                    0
+                } else {
+                    one_count_in_sixteen(tick, steady)
+                }
+            });
+            assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+            [
+                late_tracking_ppms(&session, 0),
+                late_tracking_ppms(&session, 1),
+            ]
+        };
+
+        let early = run(60);
+        let late = run(200);
+
+        let expected = expected_late_ppm(|tick| one_count_in_sixteen(tick, STEADY_DELTA));
+        assert_eq!(expected, 6_250);
+        for ppms in early.iter().chain(late.iter()) {
+            assert_eq!(
+                ppms.as_slice(),
+                &[expected; ROBUSTNESS_CYCLES_PER_DIRECTION]
+            );
+        }
+        assert_eq!(early, late);
+    }
+
+    #[test]
+    fn a_script_tracking_inside_the_limit_in_the_late_window_passes_end_to_end() {
+        let (terminal, session) =
+            drive_reverse_script(|_, _, tick, steady| one_count_in_sixteen(tick, steady));
+
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_PASS);
+        for ledger in &session.ledgers {
+            assert_eq!(ledger.median_late_tracking_ppm(), 6_250);
+        }
+    }
+
+    #[test]
+    fn a_script_exceeding_the_limit_in_the_late_window_rejects_with_cause_24() {
+        let (terminal, session) =
+            drive_reverse_script(|_, _, tick, steady| nine_tenths_late(tick, steady));
+
+        assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_LATE_TRACKING_EXCEEDED);
+        assert_eq!(terminal.cause, 24);
+        for ledger in &session.ledgers {
+            assert!(ledger.median_late_tracking_ppm() > 50_000);
+            assert_eq!(ledger.median_late_tracking_ppm(), 100_000);
+        }
+        for direction in terminal.evidence.directions {
+            assert_ne!(direction.trip_count, 0);
+        }
+    }
+
+    #[test]
+    fn two_over_limit_cycles_per_direction_still_pass_and_three_reject() {
+        let run = |outliers: usize| {
+            drive_reverse_script(move |_, attempt, tick, steady| {
+                if attempt <= outliers {
+                    nine_tenths_late(tick, steady)
+                } else {
+                    steady
+                }
+            })
+        };
+
+        let (two, two_session) = run(2);
+        let (three, three_session) = run(3);
+
+        assert_eq!(two.outcome, RobustnessOutcome::Complete);
+        assert_eq!(two.cause, ROBUSTNESS_CAUSE_PASS);
+        for direction in 0..DIRECTION_COUNT {
+            assert_eq!(
+                late_tracking_ppms(&two_session, direction),
+                [100_000, 100_000, 0, 0, 0]
+            );
+        }
+        assert_eq!(three.outcome, RobustnessOutcome::Rejected);
+        assert_eq!(three.cause, ROBUSTNESS_CAUSE_LATE_TRACKING_EXCEEDED);
+        for ledger in &three_session.ledgers {
+            assert_eq!(ledger.median_late_tracking_ppm(), 100_000);
+        }
+    }
+
+    #[test]
+    fn a_late_departure_after_band_entry_is_rejected_while_the_residual_suffix_looks_fine() {
+        let departure = |tick: u32, steady: i32| {
+            if (640..656).contains(&tick) {
+                steady * 9 / 10
+            } else {
+                steady
+            }
+        };
+        let (terminal, session) =
+            drive_reverse_script(move |_, _, tick, steady| departure(tick, steady));
+
+        assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_LATE_TRACKING_EXCEEDED);
+        let expected = expected_late_ppm(|tick| departure(tick, STEADY_DELTA));
+        assert_eq!(expected, 100_000);
+        for ledger in &session.ledgers {
+            assert_eq!(ledger.median_late_tracking_ppm(), expected);
+            assert!(
+                i64::from(ledger.median_settled_residual_q()).abs()
+                    <= ROBUSTNESS_THRESHOLDS.r_max_q,
+                "the retired residual gate would not have caught it"
             );
         }
     }
