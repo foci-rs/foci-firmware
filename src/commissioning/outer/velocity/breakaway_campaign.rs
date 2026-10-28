@@ -1625,6 +1625,7 @@ fn discovery_safety_fault(
     safety: OuterSafetyFault,
     error: CommissionError,
 ) -> AdditiveDiscoveryStep {
+    defmt::warn!("discovery safety fault: {}", safety);
     AdditiveDiscoveryStep::Done(AdditiveDiscoveryOutcome::SafetyFault {
         error,
         safety: Some(safety),
