@@ -229,12 +229,13 @@ impl TmcControlRuntime {
             .map(CommissioningEngine::kind)
     }
 
-    /// Return trace-only cached state.
+    /// Return the trace tick counter and the command-rate and feedforward values cached for
+    /// trace sampling.
     pub const fn trace_state(&self) -> &TmcControlTraceState {
         &self.trace
     }
 
-    /// Mutably borrow trace-only cached state.
+    /// Mutably borrow the trace tick counter and cached trace-sampling values.
     pub fn trace_state_mut(&mut self) -> &mut TmcControlTraceState {
         &mut self.trace
     }
@@ -279,9 +280,7 @@ impl TmcControlRuntime {
         self.applied_torque_flux_offset = None;
         self.pid_error_clear_countdown_ms = 0;
         self.clear_homing_runtime();
-        {
-            self.trace = TmcControlTraceState::new();
-        }
+        self.trace = TmcControlTraceState::new();
     }
 
     /// Drop runtime-owned homing state without touching channel atomics.
@@ -557,12 +556,10 @@ impl TmcControlRuntime {
     }
 
     fn clear_accel_trace(&mut self) {
-        {
-            let trace = self.trace_state_mut();
-            trace.cached_accel_torque_offset = 0;
-            trace.cached_accel_gain_permille = 0;
-            trace.cached_accel_flags = 0;
-        }
+        let trace = self.trace_state_mut();
+        trace.cached_accel_torque_offset = 0;
+        trace.cached_accel_gain_permille = 0;
+        trace.cached_accel_flags = 0;
     }
 
     pub(super) fn publish_feedforward_surfaces_idle(&self, refs: TmcControlStateRefs<'_>) {
@@ -1046,9 +1043,7 @@ impl TmcControlRuntime {
             }
             Some(_) | None => 0,
         };
-        {
-            self.trace_state_mut().cached_velocity_reference = reference;
-        }
+        self.trace_state_mut().cached_velocity_reference = reference;
         reference
     }
 
@@ -1114,22 +1109,18 @@ impl TmcControlRuntime {
                     .await
                     .inspect(|_| self.applied_velocity_offset = Some(desired));
             }
-            {
-                let trace = self.trace_state_mut();
-                trace.cached_velocity_offset = offset;
-                trace.cached_velocity_clamped = clamp_engaged;
-            }
+            let trace = self.trace_state_mut();
+            trace.cached_velocity_offset = offset;
+            trace.cached_velocity_clamped = clamp_engaged;
         } else if self.feedforward_was_active {
             tmc_spi
                 .write_register(foci_tmc4671::registers::PID_VELOCITY_OFFSET, 0)
                 .await
                 .map_err(|_| ())?;
             self.applied_velocity_offset = Some(0);
-            {
-                let trace = self.trace_state_mut();
-                trace.cached_velocity_offset = 0;
-                trace.cached_velocity_clamped = false;
-            }
+            let trace = self.trace_state_mut();
+            trace.cached_velocity_offset = 0;
+            trace.cached_velocity_clamped = false;
         }
         self.feedforward_was_active = ff_active;
 
@@ -1180,28 +1171,25 @@ impl TmcControlRuntime {
                     torque_limit,
                 )
             };
-            {
-                let mut flags = if !offset_allowed {
-                    0
-                } else {
-                    crate::trace::stream::ACCEL_FF_FLAG_ENABLED
-                };
-                if offset != 0 {
-                    flags |= crate::trace::stream::ACCEL_FF_FLAG_NONZERO;
-                }
-                if offset != 0 && offset.unsigned_abs() as u32 >= torque_limit.min(i16::MAX as u32)
-                {
-                    flags |= crate::trace::stream::ACCEL_FF_FLAG_CLAMPED;
-                }
-                let trace = self.trace_state_mut();
-                trace.cached_accel_torque_offset = offset as i32;
-                trace.cached_accel_gain_permille = if !offset_allowed {
-                    0
-                } else {
-                    selected_gain_permille
-                };
-                trace.cached_accel_flags = flags;
+            let mut flags = if !offset_allowed {
+                0
+            } else {
+                crate::trace::stream::ACCEL_FF_FLAG_ENABLED
+            };
+            if offset != 0 {
+                flags |= crate::trace::stream::ACCEL_FF_FLAG_NONZERO;
             }
+            if offset != 0 && offset.unsigned_abs() as u32 >= torque_limit.min(i16::MAX as u32) {
+                flags |= crate::trace::stream::ACCEL_FF_FLAG_CLAMPED;
+            }
+            let trace = self.trace_state_mut();
+            trace.cached_accel_torque_offset = offset as i32;
+            trace.cached_accel_gain_permille = if !offset_allowed {
+                0
+            } else {
+                selected_gain_permille
+            };
+            trace.cached_accel_flags = flags;
             let offset_reg = u32::from(offset as u16) << 16;
             if self.applied_torque_flux_offset != Some(offset_reg) {
                 let _ = tmc_spi

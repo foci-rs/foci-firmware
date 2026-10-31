@@ -1466,24 +1466,18 @@ impl TerminalRestoreMachine {
                     defmt::info!("velocity-integral promotion: acceptance point installed");
                     dispatch.terminal.candidate_i = Some(point.selected_i);
                     retention.integral.install_acceptance_point(point);
-                    {
-                        promotion_installer_result = 1;
-                    }
+                    promotion_installer_result = 1;
                 }
                 Ok(integral::AcceptanceInstall::MissingTargetTerminus) => {
                     defmt::warn!("velocity-integral promotion: missing target terminus");
                     dispatch.terminal.cause = IntegralOutcomeCause::Dispatch(
                         integral::INTEGRAL_DISPATCH_CAUSE_NO_ACCEPTANCE_TERMINUS,
                     );
-                    {
-                        promotion_installer_result = 2;
-                    }
+                    promotion_installer_result = 2;
                 }
                 Ok(integral::AcceptanceInstall::NotAcceptanceTerminal) => {
                     defmt::info!("velocity-integral promotion: not an acceptance terminal");
-                    {
-                        promotion_installer_result = 3;
-                    }
+                    promotion_installer_result = 3;
                 }
                 Err(()) => {
                     defmt::warn!("velocity-integral promotion: evidence integrity fault");
@@ -1495,34 +1489,30 @@ impl TerminalRestoreMachine {
                     dispatch.terminal.safety_fault = None;
                     dispatch.reproduction = None;
                     dispatch.authority = None;
-                    {
-                        promotion_installer_result = 4;
-                    }
+                    promotion_installer_result = 4;
                 }
             }
         }
 
-        {
-            let (acceptance_source_code, phase_live) = promotion_source_diagnostic;
-            backend.record_velocity_sweep_trace_record(
-                crate::commissioning::outer::velocity::integral_reporting::encode_integral_promotion_diagnostic(
-                    crate::commissioning::outer::velocity::integral_reporting::IntegralPromotionDiagnostic {
-                        channel: self.channel,
-                        outcome: crate::commissioning::outer::velocity::integral_reporting::outcome_code(
-                            dispatch.terminal.outcome,
-                        ),
-                        acceptance_source_code,
-                        phase_live,
-                        breakaway_acceptance: dispatch.terminal.breakaway_acceptance,
-                        execution_plan_present: promotion_execution_plan_present,
-                        authority_present: promotion_authority_present,
-                        rest_boundary_rung_plus_one: dispatch.terminal.rest_boundary_rung_plus_one,
-                        rest_boundary_slot_plus_one: dispatch.terminal.rest_boundary_slot_plus_one,
-                        installer_result: promotion_installer_result,
-                    },
-                ),
-            );
-        }
+        let (acceptance_source_code, phase_live) = promotion_source_diagnostic;
+        backend.record_velocity_sweep_trace_record(
+            crate::commissioning::outer::velocity::integral_reporting::encode_integral_promotion_diagnostic(
+                crate::commissioning::outer::velocity::integral_reporting::IntegralPromotionDiagnostic {
+                    channel: self.channel,
+                    outcome: crate::commissioning::outer::velocity::integral_reporting::outcome_code(
+                        dispatch.terminal.outcome,
+                    ),
+                    acceptance_source_code,
+                    phase_live,
+                    breakaway_acceptance: dispatch.terminal.breakaway_acceptance,
+                    execution_plan_present: promotion_execution_plan_present,
+                    authority_present: promotion_authority_present,
+                    rest_boundary_rung_plus_one: dispatch.terminal.rest_boundary_rung_plus_one,
+                    rest_boundary_slot_plus_one: dispatch.terminal.rest_boundary_slot_plus_one,
+                    installer_result: promotion_installer_result,
+                },
+            ),
+        );
 
         self.terminal.payload = TerminalPayload::VelocityIntegral(dispatch.terminal);
         self.terminal.reproduction = dispatch.reproduction;

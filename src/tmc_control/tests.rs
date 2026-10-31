@@ -2932,9 +2932,7 @@ fn feedforward_tick_retries_failed_velocity_offset_clear() {
         let active_offset = active_writes[0].1 as i32;
         assert_ne!(active_offset, 0);
         assert!(runtime.feedforward_was_active());
-        {
-            assert_eq!(runtime.trace_state().cached_velocity_offset, active_offset);
-        }
+        assert_eq!(runtime.trace_state().cached_velocity_offset, active_offset);
 
         tmc_state.velocity_feedforward.store(false, Relaxed);
         let mut failed_tmc =
@@ -2953,9 +2951,7 @@ fn feedforward_tick_retries_failed_velocity_offset_clear() {
 
         assert_eq!(failed_tick, Err(()));
         assert!(runtime.feedforward_was_active());
-        {
-            assert_eq!(runtime.trace_state().cached_velocity_offset, active_offset);
-        }
+        assert_eq!(runtime.trace_state().cached_velocity_offset, active_offset);
 
         let mut retry_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         assert_eq!(
@@ -2976,9 +2972,7 @@ fn feedforward_tick_retries_failed_velocity_offset_clear() {
             std::vec![(PID_VELOCITY_OFFSET.addr(), 0)]
         );
         assert!(!runtime.feedforward_was_active());
-        {
-            assert_eq!(runtime.trace_state().cached_velocity_offset, 0);
-        }
+        assert_eq!(runtime.trace_state().cached_velocity_offset, 0);
 
         let mut inactive_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         assert_eq!(
@@ -3065,17 +3059,15 @@ fn feedforward_tick_retries_failed_torque_flux_offset_clear() {
 
         assert_eq!(failed_tick, Err(()));
         assert!(runtime.torque_flux_offset_was_active_for_test());
-        {
-            assert_eq!(
-                runtime.trace_state().cached_accel_torque_offset,
-                active_offset
-            );
-            assert_eq!(
-                runtime.trace_state().cached_accel_gain_permille,
-                active_gain
-            );
-            assert_eq!(runtime.trace_state().cached_accel_flags, active_flags);
-        }
+        assert_eq!(
+            runtime.trace_state().cached_accel_torque_offset,
+            active_offset
+        );
+        assert_eq!(
+            runtime.trace_state().cached_accel_gain_permille,
+            active_gain
+        );
+        assert_eq!(runtime.trace_state().cached_accel_flags, active_flags);
 
         let mut retry_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         assert_eq!(
@@ -3099,11 +3091,9 @@ fn feedforward_tick_retries_failed_torque_flux_offset_clear() {
             ]
         );
         assert!(!runtime.torque_flux_offset_was_active_for_test());
-        {
-            assert_eq!(runtime.trace_state().cached_accel_torque_offset, 0);
-            assert_eq!(runtime.trace_state().cached_accel_gain_permille, 0);
-            assert_eq!(runtime.trace_state().cached_accel_flags, 0);
-        }
+        assert_eq!(runtime.trace_state().cached_accel_torque_offset, 0);
+        assert_eq!(runtime.trace_state().cached_accel_gain_permille, 0);
+        assert_eq!(runtime.trace_state().cached_accel_flags, 0);
 
         let mut inactive_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         assert_eq!(

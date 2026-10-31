@@ -525,9 +525,7 @@ impl ChannelDriver {
                     actions,
                 }) => {
                     self.poll_driver = CommissionPollDriver::new();
-                    {
-                        self.commission_trace_phase = None;
-                    }
+                    self.commission_trace_phase = None;
                     UnitOutcome::CommissionTerminal { reply, actions }
                 }
                 other => {
@@ -554,9 +552,7 @@ impl ChannelDriver {
                 },
                 Some(ScheduledCommissionTickAction::Terminal { reply, actions }) => {
                     self.poll_driver = CommissionPollDriver::new();
-                    {
-                        self.commission_trace_phase = None;
-                    }
+                    self.commission_trace_phase = None;
                     UnitOutcome::CommissionTerminal { reply, actions }
                 }
                 Some(_) => {
