@@ -5,7 +5,6 @@ use crate::commissioning::types::EngineKind;
 use crate::trace::events::{CommissionTraceEvent, TraceEventLevel, pack_i16_pair, u32_arg};
 
 use super::OuterSafetyTimingAccumulator;
-#[cfg(any(test, feature = "trace"))]
 use super::OuterSafetyTimingSummary;
 
 #[derive(Debug, Clone, Copy, defmt::Format)]
@@ -28,7 +27,6 @@ impl TraceSummarySeqs {
         &mut self.storage
     }
 
-    #[cfg(any(test, feature = "trace"))]
     pub(crate) fn take_outer_safety_timing(&mut self) -> OuterSafetyTimingSummary {
         let summary = self.storage.summary();
         self.storage.clear();

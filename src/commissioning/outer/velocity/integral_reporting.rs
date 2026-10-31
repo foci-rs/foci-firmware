@@ -591,7 +591,6 @@ fn encode_rung(report: VelocityIntegralRungReport) -> VelocitySweepCanonicalReco
     record
 }
 
-#[cfg(feature = "trace")]
 pub(crate) struct IntegralPromotionDiagnostic {
     pub channel: u8,
     pub outcome: u8,
@@ -605,7 +604,6 @@ pub(crate) struct IntegralPromotionDiagnostic {
     pub installer_result: u8,
 }
 
-#[cfg(feature = "trace")]
 pub(crate) fn encode_integral_promotion_diagnostic(
     diagnostic: IntegralPromotionDiagnostic,
 ) -> VelocitySweepCanonicalRecord {

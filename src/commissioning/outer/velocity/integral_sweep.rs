@@ -64,7 +64,6 @@ use super::velocity_clamp::{
 };
 use super::{clear_velocity_error_sum, clear_velocity_offset};
 
-#[cfg(feature = "trace")]
 const SETTLE_TRACE_STROKE_MARKER: u16 = 1 << 15;
 const INTEGRAL_CAUSE_NONE: u8 = 0;
 const INTEGRAL_CAUSE_TOO_FEW_RUNGS: u8 = 1;
@@ -1452,7 +1451,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let Some(_stroke_index) = integral_stroke_index(data.rung_index, data.slot) else {
                 return fail_integral(phase, backend, CommissionError::RungIndexOutOfRange).await;
             };
-            #[cfg(feature = "trace")]
             backend.record_velocity_trace_observation(
                 crate::trace::stream::VelocityTraceObservation {
                     target_counts_per_ms: integral_slot_direction(data.plan.slot_order, data.slot)
@@ -1751,7 +1749,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let Some(_stroke_index) = integral_stroke_index(data.rung_index, data.slot) else {
                 return fail_integral(phase, backend, CommissionError::RungIndexOutOfRange).await;
             };
-            #[cfg(feature = "trace")]
             backend.record_velocity_trace_observation(
                 crate::trace::stream::VelocityTraceObservation {
                     target_counts_per_ms: 0,

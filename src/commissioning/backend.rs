@@ -290,7 +290,6 @@ pub trait CommissionTrace {
     ) {
     }
 
-    #[cfg(feature = "trace")]
     fn record_velocity_trace_observation(
         &mut self,
         _observation: crate::trace::stream::VelocityTraceObservation,
@@ -407,14 +406,12 @@ pub trait CommissionTraceAccess {
     ) {
     }
 
-    #[cfg(feature = "trace")]
     fn record_velocity_trace_observation_impl(
         &mut self,
         _observation: crate::trace::stream::VelocityTraceObservation,
     ) {
     }
 
-    #[cfg(feature = "trace")]
     fn record_velocity_sweep_trace_record_impl(
         &mut self,
         _record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
@@ -500,14 +497,12 @@ pub trait CommissionBackendHooks {
     ) {
     }
 
-    #[cfg(feature = "trace")]
     fn record_velocity_trace_observation(
         _channel: u8,
         _observation: crate::trace::stream::VelocityTraceObservation,
     ) {
     }
 
-    #[cfg(feature = "trace")]
     fn record_velocity_sweep_trace_record(
         _channel: u8,
         _record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
@@ -692,7 +687,6 @@ where
         Hooks::record_commission_trace_event(self.channel, event);
     }
 
-    #[cfg(feature = "trace")]
     fn record_velocity_trace_observation_impl(
         &mut self,
         observation: crate::trace::stream::VelocityTraceObservation,
@@ -700,7 +694,6 @@ where
         Hooks::record_velocity_trace_observation(self.channel, observation);
     }
 
-    #[cfg(feature = "trace")]
     fn record_velocity_sweep_trace_record_impl(
         &mut self,
         record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
@@ -974,7 +967,6 @@ where
         self.record_commission_trace_event_impl(event);
     }
 
-    #[cfg(feature = "trace")]
     fn record_velocity_trace_observation(
         &mut self,
         observation: crate::trace::stream::VelocityTraceObservation,
@@ -982,7 +974,6 @@ where
         self.record_velocity_trace_observation_impl(observation);
     }
 
-    #[cfg(feature = "trace")]
     fn record_velocity_sweep_trace_record(
         &mut self,
         record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
@@ -1073,7 +1064,6 @@ mod tests {
 
     use core::cell::RefCell;
     use core::convert::Infallible;
-    #[cfg(feature = "trace")]
     use core::sync::atomic::AtomicI32;
     use core::sync::atomic::{
         AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering::Relaxed,
@@ -1154,7 +1144,6 @@ mod tests {
     static LAST_DELAY_US: AtomicU32 = AtomicU32::new(0);
     static LAST_TRACE_CHANNEL: AtomicU8 = AtomicU8::new(u8::MAX);
     static LAST_TRACE_EVENT_ID: AtomicU16 = AtomicU16::new(0);
-    #[cfg(feature = "trace")]
     static LAST_VELOCITY_DELTA: AtomicI32 = AtomicI32::new(0);
     static STIMULUS_CALLS: BlockingMutex<
         CriticalSectionRawMutex,
@@ -1260,7 +1249,6 @@ mod tests {
             LAST_TRACE_EVENT_ID.store(event.event_id, Relaxed);
         }
 
-        #[cfg(feature = "trace")]
         fn record_velocity_trace_observation(
             channel: u8,
             observation: crate::trace::stream::VelocityTraceObservation,
@@ -1337,7 +1325,6 @@ mod tests {
         LAST_DELAY_US.store(0, Relaxed);
         LAST_TRACE_CHANNEL.store(u8::MAX, Relaxed);
         LAST_TRACE_EVENT_ID.store(0, Relaxed);
-        #[cfg(feature = "trace")]
         LAST_VELOCITY_DELTA.store(0, Relaxed);
         TEST_TMC_STATE.motor_sentinel.store(0, Relaxed);
         TEST_TMC_STATE.safe_state_incomplete.store(false, Relaxed);
@@ -1673,7 +1660,6 @@ mod tests {
         });
     }
 
-    #[cfg(feature = "trace")]
     #[test]
     fn shared_backend_forwards_velocity_trace_observations() {
         let _guard = TEST_LOCK

@@ -6,7 +6,6 @@ pub(crate) mod breakaway_excursion;
 pub mod breakaway_plan;
 pub(crate) mod breakaway_reporting;
 pub mod breakaway_search;
-#[cfg(feature = "trace")]
 pub(crate) mod breakaway_trace_reporting;
 pub mod integral_evidence;
 #[cfg(test)]
@@ -34,7 +33,6 @@ pub(crate) mod robustness_late_tracking;
 pub mod robustness_metrics;
 pub(crate) mod robustness_reporting;
 pub(crate) mod robustness_reversal;
-#[cfg(feature = "trace")]
 pub(crate) mod robustness_trace;
 mod sweep_analysis;
 pub mod sweep_consensus;

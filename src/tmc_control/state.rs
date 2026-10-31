@@ -150,7 +150,6 @@ pub struct TmcControlRuntime {
     stall_detector: Option<crate::tmc_control::stall_detector::StallDetector>,
     homing_state_1_retries: u8,
     homing_state_3_retries: u8,
-    #[cfg(feature = "trace")]
     trace: TmcControlTraceState,
 }
 
@@ -176,7 +175,6 @@ impl TmcControlRuntime {
             stall_detector: None,
             homing_state_1_retries: 0,
             homing_state_3_retries: 0,
-            #[cfg(feature = "trace")]
             trace: TmcControlTraceState::new(),
         }
     }
@@ -231,14 +229,12 @@ impl TmcControlRuntime {
             .map(CommissioningEngine::kind)
     }
 
-    /// Return trace-only cached state when trace support is enabled.
-    #[cfg(feature = "trace")]
+    /// Return trace-only cached state.
     pub const fn trace_state(&self) -> &TmcControlTraceState {
         &self.trace
     }
 
-    /// Mutably borrow trace-only cached state when trace support is enabled.
-    #[cfg(feature = "trace")]
+    /// Mutably borrow trace-only cached state.
     pub fn trace_state_mut(&mut self) -> &mut TmcControlTraceState {
         &mut self.trace
     }
@@ -283,7 +279,6 @@ impl TmcControlRuntime {
         self.applied_torque_flux_offset = None;
         self.pid_error_clear_countdown_ms = 0;
         self.clear_homing_runtime();
-        #[cfg(feature = "trace")]
         {
             self.trace = TmcControlTraceState::new();
         }
@@ -562,7 +557,6 @@ impl TmcControlRuntime {
     }
 
     fn clear_accel_trace(&mut self) {
-        #[cfg(feature = "trace")]
         {
             let trace = self.trace_state_mut();
             trace.cached_accel_torque_offset = 0;
@@ -1052,7 +1046,6 @@ impl TmcControlRuntime {
             }
             Some(_) | None => 0,
         };
-        #[cfg(feature = "trace")]
         {
             self.trace_state_mut().cached_velocity_reference = reference;
         }
@@ -1121,7 +1114,6 @@ impl TmcControlRuntime {
                     .await
                     .inspect(|_| self.applied_velocity_offset = Some(desired));
             }
-            #[cfg(feature = "trace")]
             {
                 let trace = self.trace_state_mut();
                 trace.cached_velocity_offset = offset;
@@ -1133,7 +1125,6 @@ impl TmcControlRuntime {
                 .await
                 .map_err(|_| ())?;
             self.applied_velocity_offset = Some(0);
-            #[cfg(feature = "trace")]
             {
                 let trace = self.trace_state_mut();
                 trace.cached_velocity_offset = 0;
@@ -1164,7 +1155,6 @@ impl TmcControlRuntime {
                 .interval_add
                 .load(Relaxed)
                 .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-            #[cfg(feature = "trace")]
             let selected_gain_permille = if interval_add < 0 {
                 accel_gain_permille
             } else if interval_add > 0 {
@@ -1190,7 +1180,6 @@ impl TmcControlRuntime {
                     torque_limit,
                 )
             };
-            #[cfg(feature = "trace")]
             {
                 let mut flags = if !offset_allowed {
                     0
@@ -1513,7 +1502,6 @@ impl TmcControlRuntime {
     }
 
     /// Advance the trace control tick for a board-local trace sample.
-    #[cfg(feature = "trace")]
     pub fn advance_trace_sample_tick(&mut self) -> u32 {
         let sample_tick = self.trace.control_tick;
         self.trace.control_tick = self.trace.control_tick.wrapping_add(1);
@@ -1521,7 +1509,6 @@ impl TmcControlRuntime {
     }
 
     /// Advance trace timing and return transport emission decisions.
-    #[cfg(feature = "trace")]
     pub fn advance_trace_tick(&mut self) -> TmcControlTraceTick {
         let sample_tick = self.advance_trace_sample_tick();
         let control_tick = self.trace.control_tick;
@@ -1680,7 +1667,7 @@ impl TmcControlRuntime {
         self.torque_flux_offset_was_active
     }
 
-    #[cfg(all(test, feature = "trace"))]
+    #[cfg(test)]
     pub(crate) fn set_trace_control_tick_for_test(&mut self, value: u32) {
         self.trace.control_tick = value;
     }

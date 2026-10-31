@@ -22,7 +22,6 @@ pub(crate) use safety::{
     OuterMotionBudget, OuterSafetyLimits, check_outer_safety, safety_error_for_phase,
 };
 pub(crate) use safety_timing::OuterSafetyTimingAccumulator;
-#[cfg(any(test, feature = "trace"))]
 pub(crate) use safety_timing::OuterSafetyTimingSummary;
 pub(crate) use safety_timing::{
     OuterSafetyTimingContext, OuterSafetyTimingPhase, OuterSafetyTimingStage,

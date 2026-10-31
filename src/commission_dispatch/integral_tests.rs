@@ -875,7 +875,6 @@ fn outer_safety_timing_terminal_order_integral_resume() {
         };
         assert_eq!(terminal.rest_boundary_rung_plus_one, 4);
         assert_eq!(terminal.rest_boundary_slot_plus_one, 6);
-        #[cfg(feature = "trace")]
         {
             assert_eq!(
                 backend

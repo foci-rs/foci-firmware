@@ -1683,7 +1683,6 @@ mod tests {
         arm_result: Result<(), CommissionError>,
         replies: std::vec::Vec<ReplyPayload>,
         reply_channels: std::vec::Vec<u8>,
-        #[cfg(feature = "trace")]
         velocity_sweep_records:
             std::vec::Vec<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord>,
         busy_diagnostic_requests: std::vec::Vec<TmcRequest>,
@@ -1719,7 +1718,6 @@ mod tests {
                 arm_result: Ok(()),
                 replies: std::vec::Vec::new(),
                 reply_channels: std::vec::Vec::new(),
-                #[cfg(feature = "trace")]
                 velocity_sweep_records: std::vec::Vec::new(),
                 busy_diagnostic_requests: std::vec::Vec::new(),
                 diagnostic_calls: 0,
@@ -1812,7 +1810,6 @@ mod tests {
             self.replies.push(payload);
         }
 
-        #[cfg(feature = "trace")]
         fn record_velocity_sweep_trace_record(
             &mut self,
             record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
@@ -3080,7 +3077,6 @@ mod tests {
             panic!("exact Integral plan must be disclosed before execution")
         };
         assert_eq!(disclosed, plan);
-        #[cfg(feature = "trace")]
         assert_eq!(board.velocity_sweep_records.len(), 3);
         assert!(runtime.is_commission_active());
         assert_eq!(

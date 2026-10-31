@@ -262,12 +262,9 @@ pub struct MockBackend {
     pub pid_velocity_actual_reads: usize,
     pub pid_velocity_actual_update_interim_on_read: Option<(usize, u32)>,
     pub trace_events: Vec<crate::trace::events::CommissionTraceEvent, 64>,
-    #[cfg(feature = "trace")]
     pub velocity_trace_observations: Vec<crate::trace::stream::VelocityTraceObservation, 2_048>,
-    #[cfg(feature = "trace")]
     pub velocity_sweep_trace_records:
         Vec<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord, 128>,
-    #[cfg(feature = "trace")]
     pub trace_emission_order: Vec<u16, 256>,
     pub enable_pin: bool,
     pub interlock_tripped: bool,
@@ -361,11 +358,8 @@ impl MockBackend {
             pid_velocity_actual_reads: 0,
             pid_velocity_actual_update_interim_on_read: None,
             trace_events: Vec::new(),
-            #[cfg(feature = "trace")]
             velocity_trace_observations: Vec::new(),
-            #[cfg(feature = "trace")]
             velocity_sweep_trace_records: Vec::new(),
-            #[cfg(feature = "trace")]
             trace_emission_order: Vec::new(),
             enable_pin: false,
             interlock_tripped: false,
@@ -988,12 +982,10 @@ impl CommissionBoardConfig for MockBackend {
 
 impl CommissionTrace for MockBackend {
     fn record_commission_trace_event(&mut self, event: crate::trace::events::CommissionTraceEvent) {
-        #[cfg(feature = "trace")]
         self.trace_emission_order.push(event.event_id).ok();
         self.trace_events.push(event).ok();
     }
 
-    #[cfg(feature = "trace")]
     fn record_velocity_trace_observation(
         &mut self,
         observation: crate::trace::stream::VelocityTraceObservation,
@@ -1001,7 +993,6 @@ impl CommissionTrace for MockBackend {
         self.velocity_trace_observations.push(observation).ok();
     }
 
-    #[cfg(feature = "trace")]
     fn record_velocity_sweep_trace_record(
         &mut self,
         record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,

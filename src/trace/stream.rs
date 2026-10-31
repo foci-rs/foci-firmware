@@ -2,8 +2,6 @@
 //!
 //! FTRC wire format; performs no I/O.
 
-#![cfg(feature = "trace")]
-
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
 /// Firmware trace protocol version.

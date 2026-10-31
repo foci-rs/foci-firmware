@@ -36,7 +36,6 @@ use crate::trace::events::{
     EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION, EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG,
     TraceEventLevel, u32_arg,
 };
-#[cfg(feature = "trace")]
 use crate::trace::events::{
     EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL, EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN,
     EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL, EVENT_COMMISSION_BREAKAWAY_DISCOVERY_MARGIN,
@@ -62,7 +61,6 @@ pub use crate::commissioning::types::{
 const PHASE_END_OK: u8 = 0;
 /// Promotion-diagnostic acceptance-source code for a breakaway-confirmed Integral plan.
 /// Code 2, the non-breakaway acceptance source, is reserved and must never be reused.
-#[cfg(feature = "trace")]
 const PROMOTION_SOURCE_BREAKAWAY: u8 = 1;
 
 /// Parameters for outer (mechanical) commissioning engine construction.
@@ -528,7 +526,6 @@ impl CommissioningEngine {
         Some(data.plan)
     }
 
-    #[cfg(feature = "trace")]
     pub(crate) fn integral_promotion_source_diagnostic(&self) -> (u8, bool) {
         let EngineMode::Outer {
             phase: OuterPhase::VelocityIntegral { .. },
@@ -827,7 +824,6 @@ impl CommissioningEngine {
         &mut self.trace_summary_seqs
     }
 
-    #[cfg(feature = "trace")]
     pub(crate) fn emit_outer_safety_timing_trace<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
@@ -852,7 +848,6 @@ impl CommissioningEngine {
         ));
     }
 
-    #[cfg(feature = "trace")]
     pub(crate) fn trace_velocity_run_sequence(&self) -> Option<u32> {
         match &self.engine_mode {
             EngineMode::Outer {
@@ -1079,7 +1074,6 @@ impl CommissioningEngine {
         }
     }
 
-    #[cfg(feature = "trace")]
     #[inline(never)]
     pub(crate) fn emit_integral_terminal_trace<B: CommissioningBackend>(
         &mut self,
@@ -1152,7 +1146,6 @@ impl CommissioningEngine {
                 }
             }
             StepResult::VelocityIntegralEvent(event) => {
-                #[cfg(feature = "trace")]
                 backend.record_velocity_sweep_trace_record(
                     crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_event(
                         *event,
@@ -1193,23 +1186,14 @@ impl CommissioningEngine {
                 });
             }
             StepResult::VelocityIntegralTerminal(_) => {}
-            #[cfg(not(feature = "trace"))]
-            StepResult::RobustnessReversalTerminal(_) => {}
-            #[cfg(feature = "trace")]
             StepResult::RobustnessReversalTerminal(terminal) => {
                 crate::commissioning::outer::velocity::robustness_trace::emit_late_tracking_records(
                     backend, terminal,
                 );
             }
-            #[cfg(not(feature = "trace"))]
-            StepResult::BreakawayCampaignEvent(_) => {}
-            #[cfg(not(feature = "trace"))]
-            StepResult::BreakawayIntegralPlanReady { .. } => {}
-            #[cfg(feature = "trace")]
             StepResult::BreakawayCampaignEvent(event) => {
                 self.emit_breakaway_campaign_trace(backend, *event);
             }
-            #[cfg(feature = "trace")]
             StepResult::BreakawayIntegralPlanReady { run_sequence, plan } => {
                 for record in
                     crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
@@ -1242,7 +1226,6 @@ impl CommissioningEngine {
         }
     }
 
-    #[cfg(feature = "trace")]
     fn emit_breakaway_campaign_trace<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
@@ -1310,7 +1293,6 @@ impl CommissioningEngine {
             }
         };
 
-        #[cfg(feature = "trace")]
         match event {
             BreakawayCampaignEvent::ProbePlanned(report) => {
                 backend.record_velocity_sweep_trace_record(encode_probe_planned(report));
@@ -1409,8 +1391,6 @@ impl CommissioningEngine {
                 backend.record_velocity_sweep_trace_record(encode_recovery_origin_mismatch(report));
             }
         }
-        #[cfg(not(feature = "trace"))]
-        let _ = event;
 
         backend.record_commission_trace_event(CommissionTraceEvent {
             level: TraceEventLevel::Info,
@@ -2361,7 +2341,6 @@ mod tests {
         assert_eq!(engine.velocity_operational_torque_limit(), Some(2_816));
     }
 
-    #[cfg(feature = "trace")]
     #[fixture_test]
     async fn a_live_campaign_emits_its_probe_plan_onto_the_ftrc_trace_stream() {
         use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
@@ -2550,7 +2529,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "trace")]
     #[test]
     fn complete_integral_uses_dedicated_terminal_and_complete_events() {
         use crate::commissioning::outer::velocity::integral_evidence::{
@@ -2614,7 +2592,6 @@ mod tests {
         assert!(engine.trace_run.terminal);
     }
 
-    #[cfg(feature = "trace")]
     fn integral_engine_at_rest_boundary_for_test() -> (
         CommissioningEngine,
         crate::commissioning::types::VelocityIntegralTerminal,
@@ -2810,7 +2787,6 @@ mod tests {
         (engine, terminal, boundary)
     }
 
-    #[cfg(feature = "trace")]
     #[fixture_test]
     async fn integral_terminal_digest_is_independent_of_emission_sink() {
         let (engine, mut terminal, boundary) = integral_engine_at_rest_boundary_for_test();

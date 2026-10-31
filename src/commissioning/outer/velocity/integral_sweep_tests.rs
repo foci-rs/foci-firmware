@@ -3195,7 +3195,6 @@ fn integral_stroke_ramps_up_and_down_and_capture_starts_at_the_ramp_end() {
     let capture_tick_us = capture_tick_us.expect("the stroke reached its capture");
     assert_eq!(capture_tick_us, 4_000);
     assert_eq!(settle_tick_us, Some(capture_tick_us + 512_000 + 4_000));
-    #[cfg(feature = "trace")]
     assert_eq!(stroke.backend.velocity_trace_observations.len(), 512);
 }
 

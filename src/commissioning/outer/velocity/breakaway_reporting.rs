@@ -1,7 +1,6 @@
 use foci_tmc4671::pid::PidPGain;
 
 use crate::autotune::velocity_measurement::{VelocityDirection, confidence_multiplier_95_df15};
-#[cfg(any(test, feature = "trace"))]
 use crate::commissioning::types::BandConfirmationObservation;
 use crate::commissioning::types::{
     AdditiveDiscoveryPlanned, AdditiveDiscoveryTerminal, BandConfirmationPlanned,
@@ -17,7 +16,6 @@ use super::band_confirmation::{
     CONFIRMATION_BAND_UPPER_PERCENT, CONFIRMATION_FAMILY_SIZE, ConfirmationDirectionalInput,
     DiscoveryRungNominationBounds, NominatedConfirmationCandidate, observation_statistic,
 };
-#[cfg(any(test, feature = "trace"))]
 use super::band_confirmation::{DiscoveryObservationAtom, observation_interval_percent};
 use super::breakaway_campaign::{
     AdditiveDiscoveryOutcome, BandConfirmationOutcome, BreakawayProbeOutcome, CollectedObservation,
@@ -619,7 +617,6 @@ pub(crate) fn confirmation_plan_report(
     }
 }
 
-#[cfg(any(test, feature = "trace"))]
 pub(crate) fn confirmation_observation_report(
     plan_digest: u64,
     slot_index: u8,

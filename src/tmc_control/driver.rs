@@ -162,7 +162,6 @@ pub struct ChannelDriver {
     #[cfg(test)]
     pub(crate) last_maintenance_homing_active: bool,
     /// Engine and phase currently sampled by the trace stream.
-    #[cfg(feature = "trace")]
     pub commission_trace_phase: Option<(EngineKind, crate::autotune::CommissionPhase)>,
 }
 
@@ -186,7 +185,6 @@ impl ChannelDriver {
             commission_trace_engine_seq: 0,
             #[cfg(test)]
             last_maintenance_homing_active: false,
-            #[cfg(feature = "trace")]
             commission_trace_phase: None,
         }
     }
@@ -527,7 +525,6 @@ impl ChannelDriver {
                     actions,
                 }) => {
                     self.poll_driver = CommissionPollDriver::new();
-                    #[cfg(feature = "trace")]
                     {
                         self.commission_trace_phase = None;
                     }
@@ -557,7 +554,6 @@ impl ChannelDriver {
                 },
                 Some(ScheduledCommissionTickAction::Terminal { reply, actions }) => {
                     self.poll_driver = CommissionPollDriver::new();
-                    #[cfg(feature = "trace")]
                     {
                         self.commission_trace_phase = None;
                     }
@@ -621,7 +617,6 @@ impl ChannelDriver {
                         *plan,
                     );
                 }
-                #[cfg(feature = "trace")]
                 CommissionEvent::PhaseChanged {
                     phase_id,
                     engine_kind,

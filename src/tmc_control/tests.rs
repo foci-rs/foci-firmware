@@ -71,10 +71,7 @@ fn runtime_starts_disarmed_and_uncalibrated() {
 
 #[test]
 fn channel_runtime_size_stays_bounded() {
-    #[cfg(feature = "trace")]
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_592);
-    #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_576);
 }
 
 #[test]
@@ -2935,7 +2932,6 @@ fn feedforward_tick_retries_failed_velocity_offset_clear() {
         let active_offset = active_writes[0].1 as i32;
         assert_ne!(active_offset, 0);
         assert!(runtime.feedforward_was_active());
-        #[cfg(feature = "trace")]
         {
             assert_eq!(runtime.trace_state().cached_velocity_offset, active_offset);
         }
@@ -2957,7 +2953,6 @@ fn feedforward_tick_retries_failed_velocity_offset_clear() {
 
         assert_eq!(failed_tick, Err(()));
         assert!(runtime.feedforward_was_active());
-        #[cfg(feature = "trace")]
         {
             assert_eq!(runtime.trace_state().cached_velocity_offset, active_offset);
         }
@@ -2981,7 +2976,6 @@ fn feedforward_tick_retries_failed_velocity_offset_clear() {
             std::vec![(PID_VELOCITY_OFFSET.addr(), 0)]
         );
         assert!(!runtime.feedforward_was_active());
-        #[cfg(feature = "trace")]
         {
             assert_eq!(runtime.trace_state().cached_velocity_offset, 0);
         }
@@ -3045,7 +3039,6 @@ fn feedforward_tick_retries_failed_torque_flux_offset_clear() {
         let active_offset = ((active_writes[1].1 >> 16) as u16) as i16 as i32;
         assert_ne!(active_offset, 0);
         assert!(runtime.torque_flux_offset_was_active_for_test());
-        #[cfg(feature = "trace")]
         let (active_gain, active_flags) = {
             let trace = runtime.trace_state();
             assert_eq!(trace.cached_accel_torque_offset, active_offset);
@@ -3072,7 +3065,6 @@ fn feedforward_tick_retries_failed_torque_flux_offset_clear() {
 
         assert_eq!(failed_tick, Err(()));
         assert!(runtime.torque_flux_offset_was_active_for_test());
-        #[cfg(feature = "trace")]
         {
             assert_eq!(
                 runtime.trace_state().cached_accel_torque_offset,
@@ -3107,7 +3099,6 @@ fn feedforward_tick_retries_failed_torque_flux_offset_clear() {
             ]
         );
         assert!(!runtime.torque_flux_offset_was_active_for_test());
-        #[cfg(feature = "trace")]
         {
             assert_eq!(runtime.trace_state().cached_accel_torque_offset, 0);
             assert_eq!(runtime.trace_state().cached_accel_gain_permille, 0);
@@ -3542,7 +3533,6 @@ fn planner_velocity_scale_accessors_round_trip() {
     );
 }
 
-#[cfg(feature = "trace")]
 #[test]
 fn trace_tick_returns_sample_before_incremented_control_tick() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
@@ -3555,7 +3545,6 @@ fn trace_tick_returns_sample_before_incremented_control_tick() {
     assert!(!tick.metadata_due);
 }
 
-#[cfg(feature = "trace")]
 #[test]
 fn trace_tick_marks_status_detail_due_at_100() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
@@ -3569,7 +3558,6 @@ fn trace_tick_marks_status_detail_due_at_100() {
     assert!(!tick.metadata_due);
 }
 
-#[cfg(feature = "trace")]
 #[test]
 fn trace_tick_marks_metadata_due_at_1000() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);

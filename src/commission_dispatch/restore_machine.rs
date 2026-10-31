@@ -789,7 +789,6 @@ impl TerminalRestoreMachine {
                 }
 
                 RestoreCursor::OuterFailedStagedTiming => {
-                    #[cfg(feature = "trace")]
                     if let Some(run_sequence) = engine
                         .as_ref()
                         .and_then(CommissioningEngine::trace_velocity_run_sequence)
@@ -1217,7 +1216,6 @@ impl TerminalRestoreMachine {
                                 self.terminal.authority = None;
                             }
                             self.terminal.payload = TerminalPayload::VelocityIntegral(terminal);
-                            #[cfg(feature = "trace")]
                             engine
                                 .as_mut()
                                 .expect("engine slot is None on VelocityIntegralTerminal")
@@ -1243,10 +1241,7 @@ impl TerminalRestoreMachine {
                             if let Some(record) = engine.as_ref().and_then(|engine| {
                                 engine.attach_integral_rest_boundary(&mut terminal)
                             }) {
-                                #[cfg(feature = "trace")]
                                 backend.record_velocity_sweep_trace_record(record);
-                                #[cfg(not(feature = "trace"))]
-                                let _ = record;
                             }
                             self.terminal.payload = TerminalPayload::VelocityIntegral(terminal);
                             VelocityDisarmStep::start(engine)
@@ -1437,12 +1432,8 @@ impl TerminalRestoreMachine {
             .as_ref()
             .and_then(|engine| engine.attach_integral_rest_boundary(&mut terminal))
         {
-            #[cfg(feature = "trace")]
             backend.record_velocity_sweep_trace_record(record);
-            #[cfg(not(feature = "trace"))]
-            let _ = record;
         }
-        #[cfg(feature = "trace")]
         let promotion_source_diagnostic = engine.as_ref().map_or(
             (0, false),
             CommissioningEngine::integral_promotion_source_diagnostic,
@@ -1450,13 +1441,10 @@ impl TerminalRestoreMachine {
         let breakaway_execution_plan = engine
             .as_ref()
             .and_then(CommissioningEngine::breakaway_integral_execution_plan);
-        #[cfg(feature = "trace")]
         let promotion_execution_plan_present = breakaway_execution_plan.is_some();
         let mut dispatch = integral::apply_integral_terminal(terminal, retention.integral);
-        #[cfg(feature = "trace")]
         let promotion_authority_present = dispatch.authority.is_some();
 
-        #[cfg(feature = "trace")]
         let mut promotion_installer_result: u8 = 0;
         defmt::info!(
             "velocity-integral promotion check: outcome={} execution_plan_present={} authority_present={}",
@@ -1478,7 +1466,6 @@ impl TerminalRestoreMachine {
                     defmt::info!("velocity-integral promotion: acceptance point installed");
                     dispatch.terminal.candidate_i = Some(point.selected_i);
                     retention.integral.install_acceptance_point(point);
-                    #[cfg(feature = "trace")]
                     {
                         promotion_installer_result = 1;
                     }
@@ -1488,14 +1475,12 @@ impl TerminalRestoreMachine {
                     dispatch.terminal.cause = IntegralOutcomeCause::Dispatch(
                         integral::INTEGRAL_DISPATCH_CAUSE_NO_ACCEPTANCE_TERMINUS,
                     );
-                    #[cfg(feature = "trace")]
                     {
                         promotion_installer_result = 2;
                     }
                 }
                 Ok(integral::AcceptanceInstall::NotAcceptanceTerminal) => {
                     defmt::info!("velocity-integral promotion: not an acceptance terminal");
-                    #[cfg(feature = "trace")]
                     {
                         promotion_installer_result = 3;
                     }
@@ -1510,7 +1495,6 @@ impl TerminalRestoreMachine {
                     dispatch.terminal.safety_fault = None;
                     dispatch.reproduction = None;
                     dispatch.authority = None;
-                    #[cfg(feature = "trace")]
                     {
                         promotion_installer_result = 4;
                     }
@@ -1518,7 +1502,6 @@ impl TerminalRestoreMachine {
             }
         }
 
-        #[cfg(feature = "trace")]
         {
             let (acceptance_source_code, phase_live) = promotion_source_diagnostic;
             backend.record_velocity_sweep_trace_record(
@@ -1540,8 +1523,6 @@ impl TerminalRestoreMachine {
                 ),
             );
         }
-        #[cfg(not(feature = "trace"))]
-        let _ = backend;
 
         self.terminal.payload = TerminalPayload::VelocityIntegral(dispatch.terminal);
         self.terminal.reproduction = dispatch.reproduction;

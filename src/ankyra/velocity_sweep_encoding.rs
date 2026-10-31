@@ -128,7 +128,6 @@ pub(crate) fn encode_rate_values(values: [i64; 5]) -> ([i32; 5], u8) {
 }
 
 /// Encode command-lifetime outer-safety timing outside stage evidence digests.
-#[cfg(feature = "trace")]
 pub(crate) fn encode_outer_safety_timing_record(
     engine_sequence: u32,
     run_sequence: u32,
@@ -184,7 +183,7 @@ pub(crate) fn encode_velocity_primitive_current_evidence(
     record
 }
 
-#[cfg(all(test, feature = "trace"))]
+#[cfg(test)]
 mod outer_safety_timing_record_tests {
     use super::encode_outer_safety_timing_record;
     use crate::commissioning::outer::{
