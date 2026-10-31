@@ -71,11 +71,12 @@ where
     B: SpiDevice<u8>,
 {
     use crate::state::tmc::{
-        PENDING_ACCEL_FEEDFORWARD, PENDING_CURRENT, PENDING_ENCODER_DIR, PENDING_FILTERS,
-        PENDING_INNER_GAINS, PENDING_OUTER_GAINS, PENDING_VELOCITY_FEEDFORWARD,
+        FILTER_TOUCHED_FLUX, FILTER_TOUCHED_POSITION, FILTER_TOUCHED_TORQUE,
+        FILTER_TOUCHED_VELOCITY, PENDING_ACCEL_FEEDFORWARD, PENDING_CURRENT, PENDING_ENCODER_DIR,
+        PENDING_FILTERS, PENDING_INNER_GAINS, PENDING_OUTER_GAINS, PENDING_VELOCITY_FEEDFORWARD,
         PENDING_VOLTAGE_LIMIT,
     };
-    use core::sync::atomic::Ordering::Relaxed;
+    use core::sync::atomic::Ordering::{AcqRel, Relaxed};
 
     let pending = tmc_state.config_apply_pending.load(Relaxed);
     if pending == 0 {
@@ -213,6 +214,7 @@ where
 
     if (pending & PENDING_FILTERS) != 0 {
         claim(tmc_state, PENDING_FILTERS);
+        let claimed = tmc_state.filters_touched.swap(0, AcqRel);
         for (target, filter_hz) in [
             (
                 BiquadFilterTarget::Velocity,
@@ -235,8 +237,19 @@ where
                 .await
                 .is_err()
             {
+                tmc_state.filters_touched.fetch_or(claimed, Relaxed);
                 release(tmc_state, PENDING_FILTERS);
                 return Err(PendingConfigItem::Filters);
+            }
+        }
+        for (bit, request) in [
+            (FILTER_TOUCHED_VELOCITY, AppliedRequest::VelocityFilter),
+            (FILTER_TOUCHED_TORQUE, AppliedRequest::TorqueFilter),
+            (FILTER_TOUCHED_POSITION, AppliedRequest::PositionFilter),
+            (FILTER_TOUCHED_FLUX, AppliedRequest::FluxFilter),
+        ] {
+            if (claimed & bit) != 0 {
+                tmc_state.control_state.record(request);
             }
         }
         handled |= PENDING_FILTERS;
@@ -996,6 +1009,147 @@ mod tests {
             assert_eq!(header.applied_request, AppliedRequest::AccelFeedforward);
             assert_eq!(header.change_sequence, before + 1);
             assert_eq!(tmc_state().config_apply_pending.load(Relaxed), 0);
+
+            tmc_state().control_state.clear_dirty();
+        });
+    }
+
+    fn set_filter_bits(touched: u8) {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        tmc_state().filters_touched.store(touched, Relaxed);
+        tmc_state()
+            .config_apply_pending
+            .store(crate::state::tmc::PENDING_FILTERS, Relaxed);
+    }
+
+    #[fixture_test]
+    fn drain_records_one_entry_per_touched_filter_in_fixed_order() {
+        use crate::trace::control_state::AppliedRequest;
+        use core::sync::atomic::Ordering::Relaxed;
+
+        pollster::block_on(async {
+            let before = tmc_state().control_state.snapshot().change_sequence;
+            tmc_state().torque_filter_hz.store(Some(2_000), Relaxed);
+            tmc_state().velocity_filter_hz.store(Some(100), Relaxed);
+            set_filter_bits(0b0011);
+
+            let (result, _) = drain_with(Default::default()).await;
+
+            assert_eq!(result, Ok(()));
+            let header = tmc_state().control_state.snapshot();
+            assert_eq!(header.change_sequence, before + 2);
+            assert_eq!(
+                header.applied_request,
+                AppliedRequest::TorqueFilter,
+                "velocity is recorded first, torque last"
+            );
+            assert_eq!(tmc_state().filters_touched.load(Relaxed), 0);
+
+            tmc_state().control_state.clear_dirty();
+        });
+    }
+
+    #[fixture_test]
+    fn failed_filter_write_restores_the_claimed_mask_and_the_retry_records_it() {
+        use crate::trace::control_state::AppliedRequest;
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::CONFIG_BIQUAD_V_A_1;
+
+        pollster::block_on(async {
+            let before = tmc_state().control_state.snapshot().change_sequence;
+            tmc_state().torque_filter_hz.store(Some(2_000), Relaxed);
+            set_filter_bits(0b0010);
+
+            let (result, _) = drain_with(
+                crate::tmc_control::test_spi::RuntimeMockSpi::default()
+                    .fail_writes_to(CONFIG_BIQUAD_V_A_1.data.addr()),
+            )
+            .await;
+
+            assert_eq!(result, Err(PendingConfigItem::Filters));
+            assert_eq!(tmc_state().filters_touched.load(Relaxed), 0b0010);
+            assert_eq!(tmc_state().control_state.snapshot().change_sequence, before);
+
+            let (result, _) = drain_with(Default::default()).await;
+
+            assert_eq!(result, Ok(()));
+            let header = tmc_state().control_state.snapshot();
+            assert_eq!(header.change_sequence, before + 1);
+            assert_eq!(header.applied_request, AppliedRequest::TorqueFilter);
+            assert_eq!(tmc_state().filters_touched.load(Relaxed), 0);
+
+            tmc_state().control_state.clear_dirty();
+        });
+    }
+
+    #[fixture_test]
+    fn filter_update_during_the_drain_survives_the_claim_and_is_recorded_next_drain() {
+        use core::sync::atomic::Ordering::{Relaxed, Release};
+        use foci_tmc4671::registers::CONFIG_BIQUAD_V_A_1;
+
+        pollster::block_on(async {
+            let before = tmc_state().control_state.snapshot().change_sequence;
+            tmc_state().velocity_filter_hz.store(Some(100), Relaxed);
+            set_filter_bits(0b0001);
+
+            let data_writes = std::rc::Rc::new(core::cell::Cell::new(0u32));
+            let counter = data_writes.clone();
+            let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
+                .race_pending_config_on_write(CONFIG_BIQUAD_V_A_1.data.addr(), move || {
+                    counter.set(counter.get() + 1);
+                    // The seventh data write is the torque filter's, after the velocity
+                    // filter's six writes and its cutoff store-back.
+                    if counter.get() == 7 {
+                        tmc_state().velocity_filter_hz.store(Some(200), Relaxed);
+                        tmc_state().filters_touched.fetch_or(0b0001, Release);
+                        tmc_state().torque_filter_hz.store(Some(2_000), Relaxed);
+                        tmc_state().filters_touched.fetch_or(0b0010, Release);
+                        tmc_state()
+                            .config_apply_pending
+                            .fetch_or(crate::state::tmc::PENDING_FILTERS, Release);
+                    }
+                });
+
+            let (result, _) = drain_with(spi).await;
+
+            assert_eq!(result, Ok(()));
+            assert!(data_writes.get() >= 7, "the race must have fired");
+            assert_eq!(
+                tmc_state().control_state.snapshot().change_sequence,
+                before + 1,
+                "only the claimed velocity filter is recorded by this drain"
+            );
+            assert_eq!(tmc_state().filters_touched.load(Relaxed), 0b0011);
+            assert_ne!(
+                tmc_state().config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_FILTERS,
+                0
+            );
+
+            let (result, spi) = drain_with(Default::default()).await;
+
+            assert_eq!(result, Ok(()));
+            assert_eq!(
+                tmc_state().control_state.snapshot().change_sequence,
+                before + 3
+            );
+            assert_eq!(tmc_state().filters_touched.load(Relaxed), 0);
+            let newer = crate::biquad::butterworth_lowpass(
+                200,
+                4095,
+                crate::tmc_control::filters::cutoff_ceiling_hz(BiquadFilterTarget::Velocity),
+            )
+            .expect("200 Hz is a valid velocity cutoff");
+            let velocity_a_1 = spi
+                .writes
+                .iter()
+                .position(|&(addr, value)| {
+                    addr == CONFIG_BIQUAD_V_A_1.addr.addr()
+                        && value == u32::from(CONFIG_BIQUAD_V_A_1.sub_addr)
+                })
+                .expect("the retry writes the velocity filter");
+            assert_eq!(spi.writes[velocity_a_1 + 1].1, newer.a_1 as u32);
+            assert_eq!(tmc_state().velocity_filter_hz.load(Relaxed), Some(200));
 
             tmc_state().control_state.clear_dirty();
         });

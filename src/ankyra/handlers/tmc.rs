@@ -198,6 +198,10 @@ pub fn tmc_set_velocity_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u
     state
         .velocity_filter_hz
         .store(Some(filter_hz), Ordering::Relaxed);
+    state.filters_touched.fetch_or(
+        crate::state::tmc::FILTER_TOUCHED_VELOCITY,
+        Ordering::Relaxed,
+    );
     state
         .config_apply_pending
         .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Release);
@@ -213,6 +217,9 @@ pub fn tmc_set_torque_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16
         .torque_filter_hz
         .store(Some(filter_hz), Ordering::Relaxed);
     state
+        .filters_touched
+        .fetch_or(crate::state::tmc::FILTER_TOUCHED_TORQUE, Ordering::Relaxed);
+    state
         .config_apply_pending
         .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Release);
 }
@@ -226,6 +233,10 @@ pub fn tmc_set_position_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u
     state
         .position_filter_hz
         .store(Some(filter_hz), Ordering::Relaxed);
+    state.filters_touched.fetch_or(
+        crate::state::tmc::FILTER_TOUCHED_POSITION,
+        Ordering::Relaxed,
+    );
     state
         .config_apply_pending
         .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Release);
@@ -240,6 +251,9 @@ pub fn tmc_set_flux_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) 
     state
         .flux_filter_hz
         .store(Some(filter_hz), Ordering::Relaxed);
+    state
+        .filters_touched
+        .fetch_or(crate::state::tmc::FILTER_TOUCHED_FLUX, Ordering::Relaxed);
     state
         .config_apply_pending
         .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Release);
@@ -1695,6 +1709,27 @@ mod tests {
             2
         );
         assert!(!source.contains("crate::ankyra::handlers::tmc::tmc_set_velocity_feedforward,"));
+    }
+
+    #[test]
+    fn each_filter_handler_sets_its_own_touched_bit() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.reset();
+
+        tmc_set_torque_filter(&mut ctx, &mut sender, 10, 2_000);
+        tmc_set_flux_filter(&mut ctx, &mut sender, 10, 2_000);
+
+        assert_eq!(tmc_state.filters_touched.load(Relaxed), 0b1010);
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_FILTERS,
+            0
+        );
+
+        tmc_state.reset();
     }
 
     #[test]

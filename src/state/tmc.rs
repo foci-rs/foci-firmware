@@ -36,6 +36,15 @@ pub const PENDING_VELOCITY_FEEDFORWARD: u8 = 1 << 6;
 /// Bitmask constant for pending acceleration feedforward configuration.
 pub const PENDING_ACCEL_FEEDFORWARD: u8 = 1 << 7;
 
+/// `filters_touched` bit for the velocity filter.
+pub const FILTER_TOUCHED_VELOCITY: u8 = 1 << 0;
+/// `filters_touched` bit for the torque filter.
+pub const FILTER_TOUCHED_TORQUE: u8 = 1 << 1;
+/// `filters_touched` bit for the position filter.
+pub const FILTER_TOUCHED_POSITION: u8 = 1 << 2;
+/// `filters_touched` bit for the flux filter.
+pub const FILTER_TOUCHED_FLUX: u8 = 1 << 3;
+
 /// Worst-case TMC request queue slots a connect-time config handler may occupy per channel;
 /// each board asserts at compile time that `TMC_CHANNEL_SIZE` covers this times the channel count.
 pub const CONNECT_TIME_QUEUE_SLOTS_PER_CHANNEL: usize = 1;
@@ -189,6 +198,9 @@ pub struct TmcChannelState {
     pub torque_filter_hz: AtomicOptionalFilterHz,
     pub position_filter_hz: AtomicOptionalFilterHz,
     pub flux_filter_hz: AtomicOptionalFilterHz,
+    /// `FILTER_TOUCHED_*` bits for the filters a host request changed since the last applied
+    /// `PENDING_FILTERS` drain; the drain records one application per bit.
+    pub filters_touched: AtomicU8,
     pub velocity_feedforward: AtomicBool,
     /// Runtime gain in permille applied to the RPM-domain velocity feedforward
     /// offset (1000 = unity).
@@ -319,6 +331,7 @@ impl TmcChannelState {
             torque_filter_hz: AtomicOptionalFilterHz::new(None),
             position_filter_hz: AtomicOptionalFilterHz::new(None),
             flux_filter_hz: AtomicOptionalFilterHz::new(None),
+            filters_touched: AtomicU8::new(0),
             velocity_feedforward: AtomicBool::new(false),
             velocity_feedforward_gain_permille: AtomicU16::new(1_000),
             accel_feedforward: AtomicBool::new(false),
@@ -410,6 +423,7 @@ impl TmcChannelState {
         self.torque_filter_hz.store(None, Relaxed);
         self.position_filter_hz.store(None, Relaxed);
         self.flux_filter_hz.store(None, Relaxed);
+        self.filters_touched.store(0, Relaxed);
         self.velocity_feedforward.store(false, Relaxed);
         self.velocity_feedforward_gain_permille
             .store(1_000, Relaxed);
