@@ -414,10 +414,12 @@ async fn predict<B: CommissioningBackend>(
     let step_timer_hz = backend.stimulus_step_timer_hz();
     let request =
         |speed_mrev_s: u32| stroke_request(speed_mrev_s, &budget, steps_per_rev, step_timer_hz);
-    let homing = plan_leg(&request(budget.homing_speed_mrev_s))
-        .map_err(|_| PositionTuneOutcome::ConfigurationInvalid)?;
-    let motion = plan_leg(&request(budget.machine_velocity_ceiling_mrev_s))
-        .map_err(|_| PositionTuneOutcome::ConfigurationInvalid)?;
+    let homing = request(budget.homing_speed_mrev_s)
+        .and_then(|request| plan_leg(&request).ok())
+        .ok_or(PositionTuneOutcome::ConfigurationInvalid)?;
+    let motion = request(budget.machine_velocity_ceiling_mrev_s)
+        .and_then(|request| plan_leg(&request).ok())
+        .ok_or(PositionTuneOutcome::ConfigurationInvalid)?;
     state.predicted_start = bounds::start_rung(
         homing.speed_mrev_s,
         motion.speed_mrev_s,
@@ -452,13 +454,15 @@ async fn predict<B: CommissioningBackend>(
 
 /// Build the `StrokeRequest` for a leg at `speed_mrev_s` from `budget`, `steps_per_rev`, and
 /// `step_timer_hz`, with the excursion fitted to the primitive duration cap.
+///
+/// Returns `None` when no excursion at this speed plans inside the cap.
 pub(crate) fn stroke_request(
     speed_mrev_s: u32,
     budget: &OuterMotionBudget,
     steps_per_rev: u32,
     step_timer_hz: u32,
-) -> StrokeRequest {
-    StrokeRequest {
+) -> Option<StrokeRequest> {
+    Some(StrokeRequest {
         speed_mrev_s,
         accel_mrev_s2: budget.max_accel_mrev_s2,
         excursion_mrev: duration_fit_excursion_mrev(
@@ -466,11 +470,11 @@ pub(crate) fn stroke_request(
             budget,
             steps_per_rev,
             step_timer_hz,
-        ),
+        )?,
         steps_per_rev,
         step_timer_hz,
         min_cruise_us: MIN_CRUISE_US,
-    }
+    })
 }
 
 /// Longest leg excursion, in mrev, whose full stroke (both legs with their ramps) stays
@@ -481,21 +485,20 @@ pub(crate) fn stroke_request(
 /// too low to cover that distance in time. The sweep judges following error during
 /// cruise, so a shorter stroke at the planned speed keeps the evidence meaningful where
 /// the full distance would run into the outer safety duration fault: at a 40 mm/s
-/// homing speed a 60 mm leg already takes the whole 3 s cap before the lead-in. When no
-/// excursion plans at all the budget value is returned unchanged so the caller reports
-/// the planner's own error.
+/// homing speed a 60 mm leg already takes the whole 3 s cap before the lead-in. Returns
+/// `None` when no positive excursion plans inside the cap.
 pub(crate) fn duration_fit_excursion_mrev(
     speed_mrev_s: u32,
     budget: &OuterMotionBudget,
     steps_per_rev: u32,
     step_timer_hz: u32,
-) -> u32 {
+) -> Option<u32> {
     let budget_excursion_mrev = budget.max_stroke_travel_mrev / 2;
     let allowed_stroke_us = (u64::from(budget.max_duration_ms) * 1_000)
         .saturating_sub(u64::from(STROKE_LEAD_US))
         .saturating_sub(u64::from(STROKE_DURATION_MARGIN_US));
     if budget_excursion_mrev == 0 || allowed_stroke_us == 0 {
-        return budget_excursion_mrev;
+        return None;
     }
     // Judge the exact profile the stroke will run, not the leg estimate: the quantized
     // ramp runs take longer than the ideal ramp time.
@@ -511,7 +514,7 @@ pub(crate) fn duration_fit_excursion_mrev(
         .is_ok_and(|profile| u64::from(profile.stroke_us()) <= allowed_stroke_us)
     };
     if stroke_fits(budget_excursion_mrev) {
-        return budget_excursion_mrev;
+        return Some(budget_excursion_mrev);
     }
     let (mut fits, mut fails) = (0_u32, budget_excursion_mrev);
     while fails - fits > 1 {
@@ -522,11 +525,7 @@ pub(crate) fn duration_fit_excursion_mrev(
             fails = mid;
         }
     }
-    if fits == 0 {
-        budget_excursion_mrev
-    } else {
-        fits
-    }
+    (fits > 0).then_some(fits)
 }
 
 async fn arm_stroke<B: CommissioningBackend>(
@@ -589,7 +588,8 @@ async fn arm_stroke<B: CommissioningBackend>(
         &safety.budget,
         steps_per_rev,
         backend.stimulus_step_timer_hz(),
-    );
+    )
+    .ok_or(PositionTuneOutcome::StimulusRejected)?;
     let profile = plan_stroke(&request).map_err(|_| PositionTuneOutcome::StimulusRejected)?;
     if profile.segments.len() > backend.stimulus_queue_free() {
         defmt::warn!(
@@ -2193,13 +2193,15 @@ mod tests {
         let overhead_us = u64::from(STROKE_LEAD_US) + u64::from(STROKE_DURATION_MARGIN_US);
 
         // A fast motion leg covers the full budget excursion well inside the cap.
-        let fast = stroke_request(12_500, &budget, steps_per_rev, step_timer_hz);
+        let fast = stroke_request(12_500, &budget, steps_per_rev, step_timer_hz)
+            .expect("the fast stroke fits the cap");
         assert_eq!(fast.excursion_mrev, 1_500);
 
         // 40 mm/s over 60 mm is 1.5 s per leg: the bare stroke alone fills the cap, which
         // is what tripped the outer safety duration fault on hardware. The fitted leg
         // must leave room for the lead-in and the margin.
-        let slow = stroke_request(1_000, &budget, steps_per_rev, step_timer_hz);
+        let slow = stroke_request(1_000, &budget, steps_per_rev, step_timer_hz)
+            .expect("the homing stroke fits the cap");
         assert!(slow.excursion_mrev < 1_500, "{}", slow.excursion_mrev);
         let slow_profile = plan_stroke(&slow).expect("the fitted homing stroke plans");
         assert!(u64::from(slow_profile.stroke_us()) + overhead_us <= cap_us);
@@ -2210,10 +2212,25 @@ mod tests {
         );
 
         // Klipper's default 5 mm/s homing speed must plan too.
-        let crawl = stroke_request(125, &budget, steps_per_rev, step_timer_hz);
+        let crawl = stroke_request(125, &budget, steps_per_rev, step_timer_hz)
+            .expect("the crawl stroke fits the cap");
         let crawl_profile = plan_stroke(&crawl).expect("the fitted crawl stroke plans");
         assert!(u64::from(crawl_profile.stroke_us()) + overhead_us <= cap_us);
         assert!(crawl_profile.leg.cruise_us >= MIN_CRUISE_US);
+
+        // A cap that leaves no room after the lead-in and margin, and one that leaves less
+        // than the minimum cruise, admit no stroke at all.
+        for max_duration_ms in [120, 150] {
+            let short_cap = OuterMotionBudget {
+                max_duration_ms,
+                ..budget
+            };
+            assert_eq!(
+                stroke_request(1_000, &short_cap, steps_per_rev, step_timer_hz),
+                None,
+                "a {max_duration_ms} ms cap must refuse the stroke before motion"
+            );
+        }
     }
 
     #[test]

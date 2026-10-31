@@ -33,7 +33,7 @@ fn per_rung_duration_ms(
         budget,
         steps_per_rev,
         step_timer_hz,
-    ))
+    )?)
     .ok()?
     .stroke_us();
     let motion_stroke_us = plan_stroke(&stroke_request(
@@ -41,7 +41,7 @@ fn per_rung_duration_ms(
         budget,
         steps_per_rev,
         step_timer_hz,
-    ))
+    )?)
     .ok()?
     .stroke_us();
 
@@ -102,20 +102,26 @@ mod tests {
     #[test]
     fn per_rung_duration_covers_both_stroke_speeds_and_every_standstill_capture() {
         let budget = OuterMotionBudget::firmware_caps();
-        let homing_us = plan_stroke(&stroke_request(
-            budget.homing_speed_mrev_s,
-            &budget,
-            TEST_STEPS_PER_REV,
-            TEST_STEP_TIMER_HZ,
-        ))
+        let homing_us = plan_stroke(
+            &stroke_request(
+                budget.homing_speed_mrev_s,
+                &budget,
+                TEST_STEPS_PER_REV,
+                TEST_STEP_TIMER_HZ,
+            )
+            .expect("the stroke fits the firmware-cap duration"),
+        )
         .expect("firmware-cap homing speed plans a stroke")
         .stroke_us();
-        let motion_us = plan_stroke(&stroke_request(
-            budget.machine_velocity_ceiling_mrev_s,
-            &budget,
-            TEST_STEPS_PER_REV,
-            TEST_STEP_TIMER_HZ,
-        ))
+        let motion_us = plan_stroke(
+            &stroke_request(
+                budget.machine_velocity_ceiling_mrev_s,
+                &budget,
+                TEST_STEPS_PER_REV,
+                TEST_STEP_TIMER_HZ,
+            )
+            .expect("the stroke fits the firmware-cap duration"),
+        )
         .expect("firmware-cap motion speed plans a stroke")
         .stroke_us();
         let repeats = u64::from(u32::from(RAMPED_STROKE_REPEATS));
