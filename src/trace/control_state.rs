@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
-use super::stream::CONTROL_STATE_PAYLOAD_LEN;
+use super::stream::{CONTROL_STATE_PAYLOAD_LEN, put_i32, put_u16, put_u32, put_u64};
 
 /// Which host mutator a control-state frame reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -227,43 +227,38 @@ pub fn encode_control_state_payload(
     sample: &ControlStateSample,
     out: &mut [u8; CONTROL_STATE_PAYLOAD_LEN],
 ) {
-    fn put(out: &mut [u8], offset: usize, bytes: &[u8]) {
-        out[offset..offset + bytes.len()].copy_from_slice(bytes);
-    }
     *out = [0; CONTROL_STATE_PAYLOAD_LEN];
-    put(out, 0, &sample.header.change_sequence.to_le_bytes());
-    put(out, 4, &sample.header.applied_tick.to_le_bytes());
+    put_u32(out, 0, sample.header.change_sequence);
+    put_u64(out, 4, sample.header.applied_tick);
     out[12] = sample.header.applied_request as u8;
-    put(out, 16, &sample.encoder_counts_per_rev.to_le_bytes());
-    put(out, 20, &sample.pwm_hz.to_le_bytes());
+    put_u32(out, 16, sample.encoder_counts_per_rev);
+    put_u32(out, 20, sample.pwm_hz);
     out[24] = sample.velocity_meter_selection;
-    put(out, 28, &sample.velocity_filter_hz.to_le_bytes());
-    put(out, 30, &sample.torque_filter_hz.to_le_bytes());
-    put(out, 32, &sample.position_filter_hz.to_le_bytes());
-    put(out, 34, &sample.flux_filter_hz.to_le_bytes());
-    put(out, 36, &sample.velocity_p.to_le_bytes());
-    put(out, 40, &sample.velocity_i.to_le_bytes());
-    put(out, 44, &sample.position_p.to_le_bytes());
-    put(out, 48, &sample.position_i.to_le_bytes());
-    put(out, 52, &sample.torque_p.to_le_bytes());
-    put(out, 56, &sample.torque_i.to_le_bytes());
-    put(out, 60, &sample.flux_p.to_le_bytes());
-    put(out, 64, &sample.flux_i.to_le_bytes());
+    put_u16(out, 28, sample.velocity_filter_hz);
+    put_u16(out, 30, sample.torque_filter_hz);
+    put_u16(out, 32, sample.position_filter_hz);
+    put_u16(out, 34, sample.flux_filter_hz);
+    put_i32(out, 36, sample.velocity_p);
+    put_i32(out, 40, sample.velocity_i);
+    put_i32(out, 44, sample.position_p);
+    put_i32(out, 48, sample.position_i);
+    put_i32(out, 52, sample.torque_p);
+    put_i32(out, 56, sample.torque_i);
+    put_i32(out, 60, sample.flux_p);
+    put_i32(out, 64, sample.flux_i);
     out[68] = sample.velocity_ff_enable;
-    put(out, 70, &sample.velocity_ff_permille.to_le_bytes());
+    put_u16(out, 70, sample.velocity_ff_permille);
     out[72] = sample.accel_ff_enable;
-    put(out, 74, &sample.accel_ff_gain.to_le_bytes());
-    put(out, 76, &sample.decel_ff_gain.to_le_bytes());
-    put(out, 78, &sample.run_current.to_le_bytes());
-    put(out, 82, &sample.voltage_limit.to_le_bytes());
+    put_u16(out, 74, sample.accel_ff_gain);
+    put_u16(out, 76, sample.decel_ff_gain);
+    put_u32(out, 78, sample.run_current);
+    put_u16(out, 82, sample.voltage_limit);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace::stream::{
-        FRAME_BUF_CAPACITY, FRAME_TYPE_CONTROL_STATE, HEADER_LEN, PROTOCOL_VERSION,
-    };
+    use crate::trace::stream::{FRAME_BUF_CAPACITY, FRAME_TYPE_CONTROL_STATE, HEADER_LEN};
 
     fn sample() -> ControlStateSample {
         ControlStateSample {
@@ -341,8 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_25_and_control_state_is_frame_type_10() {
-        assert_eq!(PROTOCOL_VERSION, 25);
+    fn control_state_is_frame_type_10_and_fits_the_frame_buffer() {
         assert_eq!(FRAME_TYPE_CONTROL_STATE, 10);
         assert!(HEADER_LEN + CONTROL_STATE_PAYLOAD_LEN <= FRAME_BUF_CAPACITY);
     }

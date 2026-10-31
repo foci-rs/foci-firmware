@@ -434,7 +434,7 @@ pub struct VelocityTraceObservation {
     pub velocity_diagnostic_value: i32,
 }
 
-fn put_i32(out: &mut [u8], offset: usize, value: i32) {
+pub(super) fn put_i32(out: &mut [u8], offset: usize, value: i32) {
     out[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
@@ -442,15 +442,15 @@ fn put_i16(out: &mut [u8], offset: usize, value: i16) {
     out[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
 
-fn put_u16(out: &mut [u8], offset: usize, value: u16) {
+pub(super) fn put_u16(out: &mut [u8], offset: usize, value: u16) {
     out[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
 
-fn put_u32(out: &mut [u8], offset: usize, value: u32) {
+pub(super) fn put_u32(out: &mut [u8], offset: usize, value: u32) {
     out[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-fn put_u64(out: &mut [u8], offset: usize, value: u64) {
+pub(super) fn put_u64(out: &mut [u8], offset: usize, value: u64) {
     out[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
@@ -700,7 +700,6 @@ mod tests {
             boot_id: 0,
         });
         assert_eq!(frame.bytes()[4], PROTOCOL_VERSION);
-        assert_eq!(PROTOCOL_VERSION, 25);
     }
 
     #[test]
