@@ -163,10 +163,7 @@ pub enum AutotuneAction {
     /// Run the breakaway probe, additive discovery, held-out confirmation, and
     /// the existing velocity-integral continuation as one bounded command.
     ///
-    /// This is the production `Tune` path: a non-trace build routes the request
-    /// through the breakaway/velocity-integral engine just like a trace build. The
-    /// `trace` feature adds only the raw evidence emission on top of the same
-    /// campaign, not the campaign itself.
+    /// This is the production `Tune` path.
     BreakawaySeeded = 7,
     /// Re-run the velocity-integral response ladder against retained firmware
     /// authority.
