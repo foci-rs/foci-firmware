@@ -98,7 +98,6 @@ impl Default for ControlStateRecord {
 // slot() needs 2^32 to be a multiple of the capacity so the index survives u32 wraparound.
 const _: () = assert!(CONTROL_STATE_FIFO_CAPACITY.is_power_of_two());
 
-/// Wraps with the `u32` sequence because the capacity divides 2^32.
 const fn slot(sequence: u32) -> usize {
     (sequence.wrapping_sub(1) as usize) % CONTROL_STATE_FIFO_CAPACITY
 }
