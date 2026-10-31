@@ -1400,6 +1400,14 @@ pub struct FociOuterSafetyFault {
     pub duration_cap_us: u32,
 }
 
+/// Live device-wide trace mode, sent after a `foci_set_trace_mode` request resolves.
+#[klipper_reply]
+pub struct FociTraceModeState {
+    pub oid: u8,
+    /// Wire byte of the live `TraceMode`.
+    pub mode: u8,
+}
+
 /// Outcome of the most recent homing mode.
 #[klipper_reply]
 pub struct FociStallResult {

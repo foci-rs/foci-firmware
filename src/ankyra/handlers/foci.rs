@@ -300,6 +300,23 @@ pub fn foci_stall_query(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     );
 }
 
+/// Set the device-wide trace mode. Rejects bytes outside 0..=2 without changing the mode.
+#[klipper_command]
+pub fn foci_set_trace_mode(ctx: &mut dyn FociRuntimeHost, oid: u8, mode: u8) {
+    let Some((_channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    let queued = crate::trace::sampling::TraceMode::from_wire(mode)
+        .is_some_and(|requested| ctx.set_trace_mode(requested, oid).is_ok());
+    if !queued {
+        ::ankyra::klipper_reply!(
+            crate::ankyra::replies::FociTraceModeState,
+            oid: u8 = oid,
+            mode: u8 = ctx.trace_mode()
+        );
+    }
+}
+
 /// Composite bound for runtime FOCI handlers: they enqueue TMC requests
 /// and enter shutdown when an OID has no configured stepper channel.
 pub trait FociRuntimeHost: ShutdownRecovery + TmcHost {}
@@ -347,6 +364,9 @@ mod tests {
         last_shutdown: Option<ShutdownReason>,
         motion_quiescent: bool,
         max_run_current_ma: u32,
+        trace_mode: u8,
+        trace_queue_full: bool,
+        queued_trace_mode: Option<(crate::trace::sampling::TraceMode, u8)>,
     }
 
     impl MockCtx {
@@ -358,6 +378,9 @@ mod tests {
                 last_shutdown: None,
                 motion_quiescent: true,
                 max_run_current_ma: 10_000,
+                trace_mode: 0,
+                trace_queue_full: false,
+                queued_trace_mode: None,
             }
         }
     }
@@ -433,6 +456,22 @@ mod tests {
             _rejection: crate::motion_scale::MotionScaleRejection,
         ) {
         }
+
+        fn set_trace_mode(
+            &mut self,
+            mode: crate::trace::sampling::TraceMode,
+            oid: u8,
+        ) -> Result<(), QueueFull> {
+            if self.trace_queue_full {
+                return Err(QueueFull);
+            }
+            self.queued_trace_mode = Some((mode, oid));
+            Ok(())
+        }
+
+        fn trace_mode(&self) -> u8 {
+            self.trace_mode
+        }
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -456,6 +495,7 @@ mod tests {
         last_boot_diagnostics: std::vec::Vec<crate::ankyra::replies::FociLastBootDiagnostic>,
         stack_watermark_payloads: std::vec::Vec<crate::ankyra::replies::FociStackWatermarkResult>,
         stall_results: std::vec::Vec<crate::ankyra::replies::FociStallResult>,
+        trace_mode_states: std::vec::Vec<crate::ankyra::replies::FociTraceModeState>,
     }
 
     struct EmptySender;
@@ -467,6 +507,7 @@ mod tests {
                 last_boot_diagnostics: std::vec::Vec::new(),
                 stack_watermark_payloads: std::vec::Vec::new(),
                 stall_results: std::vec::Vec::new(),
+                trace_mode_states: std::vec::Vec::new(),
             }
         }
     }
@@ -497,6 +538,12 @@ mod tests {
     impl ::ankyra::SendReply<crate::ankyra::replies::FociStallResult> for MockSender {
         fn send(&mut self, payload: crate::ankyra::replies::FociStallResult) {
             self.stall_results.push(payload);
+        }
+    }
+
+    impl ::ankyra::SendReply<crate::ankyra::replies::FociTraceModeState> for MockSender {
+        fn send(&mut self, payload: crate::ankyra::replies::FociTraceModeState) {
+            self.trace_mode_states.push(payload);
         }
     }
 
@@ -840,6 +887,67 @@ mod tests {
         assert_eq!(reply.clamp_active, 1);
         assert_eq!(reply.trigger_path, 2);
         assert_eq!(reply.peak_margin_delta_units, 45);
+    }
+
+    #[test]
+    fn foci_set_trace_mode_queues_a_valid_mode_and_sends_no_reply_itself() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = MockSender::new();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        foci_set_trace_mode(&mut ctx, &mut sender, 10, 2);
+
+        assert_eq!(
+            ctx.queued_trace_mode,
+            Some((crate::trace::sampling::TraceMode::Diagnostic, 10))
+        );
+        assert_eq!(ctx.trace_mode(), 0);
+        assert!(sender.trace_mode_states.is_empty());
+    }
+
+    #[test]
+    fn foci_set_trace_mode_rejects_an_invalid_byte_and_replies_with_the_live_mode() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = MockSender::new();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        ctx.trace_mode = 1;
+
+        foci_set_trace_mode(&mut ctx, &mut sender, 10, 7);
+
+        assert_eq!(ctx.queued_trace_mode, None);
+        assert_eq!(sender.trace_mode_states.len(), 1);
+        assert_eq!(sender.trace_mode_states[0].oid, 10);
+        assert_eq!(sender.trace_mode_states[0].mode, 1);
+    }
+
+    #[test]
+    fn foci_set_trace_mode_replies_with_the_live_mode_when_the_ring_is_full() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = MockSender::new();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        ctx.trace_queue_full = true;
+
+        foci_set_trace_mode(&mut ctx, &mut sender, 10, 1);
+
+        assert_eq!(ctx.queued_trace_mode, None);
+        assert_eq!(sender.trace_mode_states.len(), 1);
+        assert_eq!(sender.trace_mode_states[0].mode, 0);
+    }
+
+    #[test]
+    fn foci_set_trace_mode_with_an_unknown_oid_shuts_down_like_other_handlers() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = MockSender::new();
+
+        foci_set_trace_mode(&mut ctx, &mut sender, 99, 1);
+
+        assert_eq!(ctx.last_shutdown, Some(ShutdownReason::InvalidTmcChannel));
+        assert_eq!(ctx.queued_trace_mode, None);
+        assert!(sender.trace_mode_states.is_empty());
     }
 
     #[test]

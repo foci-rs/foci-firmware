@@ -823,6 +823,18 @@ mod tests {
         ) {
             self.motion_scale_rejections.push(rejection);
         }
+
+        fn set_trace_mode(
+            &mut self,
+            _mode: crate::trace::sampling::TraceMode,
+            _oid: u8,
+        ) -> Result<(), QueueFull> {
+            Ok(())
+        }
+
+        fn trace_mode(&self) -> u8 {
+            0
+        }
     }
 
     #[test]

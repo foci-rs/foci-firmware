@@ -25,6 +25,18 @@ pub trait TmcHost: StateAccess {
         oid: u8,
         rejection: crate::motion_scale::MotionScaleRejection,
     );
+
+    /// Queue a device-wide trace mode request for the control task, which applies it, emits
+    /// metadata and sends the `foci_trace_mode_state` reply for `oid`. `Err(QueueFull)` when
+    /// the request ring is full; nothing is changed then.
+    fn set_trace_mode(
+        &mut self,
+        mode: crate::trace::sampling::TraceMode,
+        oid: u8,
+    ) -> Result<(), QueueFull>;
+
+    /// The live trace mode as a wire byte.
+    fn trace_mode(&self) -> u8;
 }
 
 /// Board hook for the RTIC TMC request sender.
