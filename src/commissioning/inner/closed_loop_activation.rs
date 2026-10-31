@@ -20,7 +20,9 @@ use crate::tmc_register_values::{
 };
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
-const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0009;
+/// `VELOCITY_SELECTION` value written by closed-loop activation: velocity from the ABN
+/// mechanical angle (selector 9) measured by the standard velocity meter (meter select 0).
+pub const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0009;
 pub(crate) const STANDARD_VELOCITY_METER_COUNTS_PER_MINUTE: u32 = 262_144;
 pub(crate) const CLOSED_LOOP_POSITION_SELECTION: u32 = 9;
 const CLOSED_LOOP_PHI_E_SELECTION: u32 = 3;
