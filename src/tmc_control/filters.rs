@@ -5,7 +5,7 @@ use foci_tmc4671::registers::SubRegister;
 use foci_tmc4671::spi::{SpiError, Tmc4671Spi};
 
 use crate::commissioning::types::CommissioningBackend;
-use crate::state::tmc::TmcChannelState;
+use crate::state::tmc::{AtomicOptionalFilterHz, TmcChannelState};
 
 /// TMC4671 biquad feedback filter selected by a live filter request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,18 +80,12 @@ pub(crate) fn cutoff_ceiling_hz(target: BiquadFilterTarget) -> u16 {
     }
 }
 
-fn store_filter_hz(tmc_state: &TmcChannelState, target: BiquadFilterTarget, filter_hz: u16) {
-    use core::sync::atomic::Ordering::Relaxed;
-
+fn filter_slot(tmc_state: &TmcChannelState, target: BiquadFilterTarget) -> &AtomicOptionalFilterHz {
     match target {
-        BiquadFilterTarget::Velocity => {
-            tmc_state.velocity_filter_hz.store(Some(filter_hz), Relaxed)
-        }
-        BiquadFilterTarget::Torque => tmc_state.torque_filter_hz.store(Some(filter_hz), Relaxed),
-        BiquadFilterTarget::Position => {
-            tmc_state.position_filter_hz.store(Some(filter_hz), Relaxed)
-        }
-        BiquadFilterTarget::Flux => tmc_state.flux_filter_hz.store(Some(filter_hz), Relaxed),
+        BiquadFilterTarget::Velocity => &tmc_state.velocity_filter_hz,
+        BiquadFilterTarget::Torque => &tmc_state.torque_filter_hz,
+        BiquadFilterTarget::Position => &tmc_state.position_filter_hz,
+        BiquadFilterTarget::Flux => &tmc_state.flux_filter_hz,
     }
 }
 
@@ -114,13 +108,51 @@ pub(crate) async fn apply_live_filter<B>(
 where
     B: SpiDevice<u8>,
 {
+    write_live_filter(tmc, target, filter_hz, pwm_maxcnt).await?;
+    filter_slot(tmc_state, target).store(Some(filter_hz), core::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+/// Apply the cutoff a pending-config drain loaded from the cached filter slot.
+///
+/// An unset slot applies as disabled. The applied cutoff is stored back only if the slot
+/// still holds `loaded`: a host update that landed during the SPI writes keeps its newer
+/// value, and its still-pending touched bit makes the next drain apply it.
+///
+/// # Errors
+///
+/// Returns `Err(())` if the cutoff is invalid or if any SPI write fails.
+pub(crate) async fn apply_drained_filter<B>(
+    tmc: &mut Tmc4671Spi<B>,
+    tmc_state: &TmcChannelState,
+    target: BiquadFilterTarget,
+    loaded: Option<u16>,
+    pwm_maxcnt: u16,
+) -> Result<(), ()>
+where
+    B: SpiDevice<u8>,
+{
+    use core::sync::atomic::Ordering::Relaxed;
+
+    let filter_hz = loaded.unwrap_or(0);
+    write_live_filter(tmc, target, filter_hz, pwm_maxcnt).await?;
+    let _ =
+        filter_slot(tmc_state, target).compare_exchange(loaded, Some(filter_hz), Relaxed, Relaxed);
+    Ok(())
+}
+
+async fn write_live_filter<B>(
+    tmc: &mut Tmc4671Spi<B>,
+    target: BiquadFilterTarget,
+    filter_hz: u16,
+    pwm_maxcnt: u16,
+) -> Result<(), ()>
+where
+    B: SpiDevice<u8>,
+{
     let regs = biquad_filter_regs(target);
     if filter_hz == 0 {
-        tmc.write_sub_register(regs.enable, 0)
-            .await
-            .map_err(|_| ())?;
-        store_filter_hz(tmc_state, target, 0);
-        return Ok(());
+        return tmc.write_sub_register(regs.enable, 0).await.map_err(|_| ());
     }
 
     let Some(coeffs) =
@@ -145,11 +177,7 @@ where
     tmc.write_sub_register(regs.b_2, coeffs.b_2 as u32)
         .await
         .map_err(|_| ())?;
-    tmc.write_sub_register(regs.enable, 1)
-        .await
-        .map_err(|_| ())?;
-    store_filter_hz(tmc_state, target, filter_hz);
-    Ok(())
+    tmc.write_sub_register(regs.enable, 1).await.map_err(|_| ())
 }
 
 /// Force the velocity and position biquad filters disabled, writing `enable=0` even where a

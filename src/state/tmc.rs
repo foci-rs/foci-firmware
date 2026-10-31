@@ -68,10 +68,7 @@ impl AtomicOptionalFilterHz {
 
     /// Load the optional cutoff value.
     pub fn load(&self, ordering: Ordering) -> Option<u16> {
-        match self.raw.load(ordering) {
-            OPTIONAL_FILTER_HZ_UNSET => None,
-            raw => Some(raw as u16),
-        }
+        Self::decode(self.raw.load(ordering))
     }
 
     /// Load the cutoff value, treating an unset filter as disabled.
@@ -82,6 +79,32 @@ impl AtomicOptionalFilterHz {
     /// Store the optional cutoff value.
     pub fn store(&self, filter_hz: Option<u16>, ordering: Ordering) {
         self.raw.store(Self::encode(filter_hz), ordering);
+    }
+
+    /// Store `new` only if the slot still holds `current`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the value actually held when it differs from `current`; the slot is left
+    /// unchanged.
+    pub fn compare_exchange(
+        &self,
+        current: Option<u16>,
+        new: Option<u16>,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<Option<u16>, Option<u16>> {
+        self.raw
+            .compare_exchange(Self::encode(current), Self::encode(new), success, failure)
+            .map(Self::decode)
+            .map_err(Self::decode)
+    }
+
+    const fn decode(raw: u32) -> Option<u16> {
+        match raw {
+            OPTIONAL_FILTER_HZ_UNSET => None,
+            raw => Some(raw as u16),
+        }
     }
 
     const fn encode(filter_hz: Option<u16>) -> u32 {

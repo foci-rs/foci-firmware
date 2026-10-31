@@ -8,7 +8,7 @@ use foci_tmc4671::spi::Tmc4671Spi;
 
 use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
-use crate::tmc_control::filters::{BiquadFilterTarget, apply_live_filter};
+use crate::tmc_control::filters::{BiquadFilterTarget, apply_drained_filter};
 use crate::trace::control_state::AppliedRequest;
 
 /// Where the pending-config drain publishes state that must only be updated
@@ -215,25 +215,25 @@ where
     if (pending & PENDING_FILTERS) != 0 {
         claim(tmc_state, PENDING_FILTERS);
         let claimed = tmc_state.filters_touched.swap(0, AcqRel);
-        for (target, filter_hz) in [
+        for (target, loaded) in [
             (
                 BiquadFilterTarget::Velocity,
-                tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
+                tmc_state.velocity_filter_hz.load(Relaxed),
             ),
             (
                 BiquadFilterTarget::Torque,
-                tmc_state.torque_filter_hz.load_or_zero(Relaxed),
+                tmc_state.torque_filter_hz.load(Relaxed),
             ),
             (
                 BiquadFilterTarget::Position,
-                tmc_state.position_filter_hz.load_or_zero(Relaxed),
+                tmc_state.position_filter_hz.load(Relaxed),
             ),
             (
                 BiquadFilterTarget::Flux,
-                tmc_state.flux_filter_hz.load_or_zero(Relaxed),
+                tmc_state.flux_filter_hz.load(Relaxed),
             ),
         ] {
-            if apply_live_filter(tmc, tmc_state, target, filter_hz, tmc_config.pwm_maxcnt)
+            if apply_drained_filter(tmc, tmc_state, target, loaded, tmc_config.pwm_maxcnt)
                 .await
                 .is_err()
             {
@@ -1084,7 +1084,7 @@ mod tests {
     }
 
     #[fixture_test]
-    fn filter_update_during_the_drain_survives_the_claim_and_is_recorded_next_drain() {
+    fn filter_update_inside_its_own_apply_window_is_kept_and_applied_next_drain() {
         use core::sync::atomic::Ordering::{Relaxed, Release};
         use foci_tmc4671::registers::CONFIG_BIQUAD_V_A_1;
 
@@ -1093,18 +1093,15 @@ mod tests {
             tmc_state().velocity_filter_hz.store(Some(100), Relaxed);
             set_filter_bits(0b0001);
 
-            let data_writes = std::rc::Rc::new(core::cell::Cell::new(0u32));
-            let counter = data_writes.clone();
+            let raced = std::rc::Rc::new(core::cell::Cell::new(false));
+            let flag = raced.clone();
             let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
                 .race_pending_config_on_write(CONFIG_BIQUAD_V_A_1.data.addr(), move || {
-                    counter.set(counter.get() + 1);
-                    // The seventh data write is the torque filter's, after the velocity
-                    // filter's six writes and its cutoff store-back.
-                    if counter.get() == 7 {
+                    // The first biquad data write is the velocity filter's, so this handler
+                    // lands before that filter's cutoff store-back.
+                    if !flag.replace(true) {
                         tmc_state().velocity_filter_hz.store(Some(200), Relaxed);
                         tmc_state().filters_touched.fetch_or(0b0001, Release);
-                        tmc_state().torque_filter_hz.store(Some(2_000), Relaxed);
-                        tmc_state().filters_touched.fetch_or(0b0010, Release);
                         tmc_state()
                             .config_apply_pending
                             .fetch_or(crate::state::tmc::PENDING_FILTERS, Release);
@@ -1114,13 +1111,13 @@ mod tests {
             let (result, _) = drain_with(spi).await;
 
             assert_eq!(result, Ok(()));
-            assert!(data_writes.get() >= 7, "the race must have fired");
+            assert!(raced.get(), "the race must have fired");
+            assert_eq!(tmc_state().velocity_filter_hz.load(Relaxed), Some(200));
             assert_eq!(
                 tmc_state().control_state.snapshot().change_sequence,
-                before + 1,
-                "only the claimed velocity filter is recorded by this drain"
+                before + 1
             );
-            assert_eq!(tmc_state().filters_touched.load(Relaxed), 0b0011);
+            assert_eq!(tmc_state().filters_touched.load(Relaxed), 0b0001);
             assert_ne!(
                 tmc_state().config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_FILTERS,
                 0
@@ -1131,9 +1128,13 @@ mod tests {
             assert_eq!(result, Ok(()));
             assert_eq!(
                 tmc_state().control_state.snapshot().change_sequence,
-                before + 3
+                before + 2
             );
             assert_eq!(tmc_state().filters_touched.load(Relaxed), 0);
+            assert_eq!(
+                tmc_state().config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_FILTERS,
+                0
+            );
             let newer = crate::biquad::butterworth_lowpass(
                 200,
                 4095,
@@ -1147,7 +1148,7 @@ mod tests {
                     addr == CONFIG_BIQUAD_V_A_1.addr.addr()
                         && value == u32::from(CONFIG_BIQUAD_V_A_1.sub_addr)
                 })
-                .expect("the retry writes the velocity filter");
+                .expect("the second drain writes the velocity filter");
             assert_eq!(spi.writes[velocity_a_1 + 1].1, newer.a_1 as u32);
             assert_eq!(tmc_state().velocity_filter_hz.load(Relaxed), Some(200));
 
