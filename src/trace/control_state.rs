@@ -53,29 +53,39 @@ impl AppliedRequest {
 /// Application record carried at the head of a control-state frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ControlStateHeader {
-    /// Count of applied mutator requests on this channel since boot.
+    /// Since-boot sequence of the reported request on this channel; for a metadata
+    /// re-emission, the count of requests applied so far.
     pub change_sequence: u32,
-    /// Frame-domain tick of the control tick that applied the latest request; 0 for a
+    /// Frame-domain tick of the control tick that applied the reported request; 0 for a
     /// metadata re-emission.
     pub applied_tick: u64,
-    /// Kind of the latest applied request.
+    /// Kind of the reported request.
     pub applied_request: AppliedRequest,
 }
 
-/// Per-channel record of the latest applied host mutator. Lives in `TmcChannelState`.
+/// Unframed applications a channel holds before the oldest is dropped.
+pub const CONTROL_STATE_FIFO_CAPACITY: usize = 16;
+
+/// Per-channel FIFO of applied host mutators awaiting their control-state frame. Lives in
+/// `TmcChannelState`.
+///
+/// Entry `n` (1-based, since boot) sits in slot `(n - 1) % CONTROL_STATE_FIFO_CAPACITY`, so
+/// an entry's sequence is implied by its position and `change_sequence` doubles as the
+/// tail. When the FIFO is full a new record drops the oldest entry; the emitted frames
+/// then show a sequence jump, the only loss the decoder is allowed to see.
 ///
 /// The tick is split into two words because the Cortex-M targets have no 64-bit atomics.
 ///
-/// All methods must be called from the priority-1 control-task context: the tick is two
-/// separate words and `clear_dirty` is not atomic with `snapshot`, so cross-context use
-/// is unsupported.
+/// All methods must be called from the priority-1 control-task context: an entry spans
+/// several words and `pop_pending` is not atomic with `pending_header`, so cross-context
+/// use is unsupported.
 pub struct ControlStateRecord {
     change_sequence: AtomicU32,
-    applied_request: AtomicU8,
-    applied_tick_low: AtomicU32,
-    applied_tick_high: AtomicU32,
-    dirty: AtomicBool,
-    tick_pending: AtomicBool,
+    framed_sequence: AtomicU32,
+    stamped_sequence: AtomicU32,
+    kinds: [AtomicU8; CONTROL_STATE_FIFO_CAPACITY],
+    ticks_low: [AtomicU32; CONTROL_STATE_FIFO_CAPACITY],
+    ticks_high: [AtomicU32; CONTROL_STATE_FIFO_CAPACITY],
     snapshot_pending: AtomicBool,
 }
 
@@ -85,46 +95,66 @@ impl Default for ControlStateRecord {
     }
 }
 
+/// Wraps with the `u32` sequence because the capacity divides 2^32.
+const fn slot(sequence: u32) -> usize {
+    (sequence.wrapping_sub(1) as usize) % CONTROL_STATE_FIFO_CAPACITY
+}
+
 impl ControlStateRecord {
     /// Create an empty record: sequence 0, nothing pending.
     pub const fn new() -> Self {
         Self {
             change_sequence: AtomicU32::new(0),
-            applied_request: AtomicU8::new(AppliedRequest::None as u8),
-            applied_tick_low: AtomicU32::new(0),
-            applied_tick_high: AtomicU32::new(0),
-            dirty: AtomicBool::new(false),
-            tick_pending: AtomicBool::new(false),
+            framed_sequence: AtomicU32::new(0),
+            stamped_sequence: AtomicU32::new(0),
+            kinds: [const { AtomicU8::new(AppliedRequest::None as u8) };
+                CONTROL_STATE_FIFO_CAPACITY],
+            ticks_low: [const { AtomicU32::new(0) }; CONTROL_STATE_FIFO_CAPACITY],
+            ticks_high: [const { AtomicU32::new(0) }; CONTROL_STATE_FIFO_CAPACITY],
             snapshot_pending: AtomicBool::new(false),
         }
     }
 
     /// Called by the control task on the tick that applied `request`.
     ///
-    /// Increments the sequence, stores the kind, marks dirty and tick-pending.
+    /// Appends an entry with its tick pending and advances the sequence by one. A full
+    /// FIFO drops its oldest entry first.
     pub fn record(&self, request: AppliedRequest) {
-        self.change_sequence.fetch_add(1, Ordering::Relaxed);
-        self.applied_request.store(request as u8, Ordering::Relaxed);
-        self.tick_pending.store(true, Ordering::Release);
-        self.dirty.store(true, Ordering::Release);
+        let sequence = self.change_sequence.load(Ordering::Relaxed).wrapping_add(1);
+        let index = slot(sequence);
+        self.kinds[index].store(request as u8, Ordering::Relaxed);
+        self.ticks_low[index].store(0, Ordering::Relaxed);
+        self.ticks_high[index].store(0, Ordering::Relaxed);
+        self.change_sequence.store(sequence, Ordering::Relaxed);
+        let framed = self.framed_sequence.load(Ordering::Relaxed);
+        if sequence.wrapping_sub(framed) as usize > CONTROL_STATE_FIFO_CAPACITY {
+            self.framed_sequence.store(
+                sequence.wrapping_sub(CONTROL_STATE_FIFO_CAPACITY as u32),
+                Ordering::Relaxed,
+            );
+        }
     }
 
     /// Called by the board on the same tick with the frame-domain timestamp.
     ///
-    /// No-op unless a record is waiting for its tick.
+    /// Assigns `applied_tick` to every unframed entry recorded since the previous stamp;
+    /// a no-op when none is waiting.
     pub fn stamp(&self, applied_tick: u64) {
-        if !self.tick_pending.swap(false, Ordering::AcqRel) {
-            return;
+        let tail = self.change_sequence.load(Ordering::Relaxed);
+        let stamped = self.stamped_sequence.load(Ordering::Relaxed);
+        let framed = self.framed_sequence.load(Ordering::Relaxed);
+        let unstamped = tail.wrapping_sub(stamped).min(tail.wrapping_sub(framed));
+        for offset in 0..unstamped {
+            let index = slot(tail.wrapping_sub(offset));
+            self.ticks_low[index].store(applied_tick as u32, Ordering::Relaxed);
+            self.ticks_high[index].store((applied_tick >> 32) as u32, Ordering::Relaxed);
         }
-        self.applied_tick_low
-            .store(applied_tick as u32, Ordering::Relaxed);
-        self.applied_tick_high
-            .store((applied_tick >> 32) as u32, Ordering::Relaxed);
+        self.stamped_sequence.store(tail, Ordering::Relaxed);
     }
 
     /// Mark that a metadata emission needs its own `AppliedRequest::None` frame.
     ///
-    /// Independent of the mutator record, so a pending mutator frame is never overwritten.
+    /// Independent of the mutator FIFO, so pending mutator entries are never overwritten.
     pub fn mark_snapshot(&self) {
         self.snapshot_pending.store(true, Ordering::Release);
     }
@@ -148,32 +178,44 @@ impl ControlStateRecord {
         self.snapshot_pending.store(false, Ordering::Release);
     }
 
-    /// Header for the mutator frame. Does not clear dirty.
-    pub fn snapshot(&self) -> ControlStateHeader {
-        let low = u64::from(self.applied_tick_low.load(Ordering::Relaxed));
-        let high = u64::from(self.applied_tick_high.load(Ordering::Relaxed));
-        ControlStateHeader {
-            change_sequence: self.change_sequence.load(Ordering::Relaxed),
-            applied_tick: (high << 32) | low,
-            applied_request: AppliedRequest::from_u8(self.applied_request.load(Ordering::Relaxed)),
-        }
-    }
-
-    /// Return whether a mutator frame is still owed.
+    /// Return whether any mutator entry still awaits its frame.
     pub fn is_dirty(&self) -> bool {
-        self.dirty.load(Ordering::Acquire)
+        self.framed_sequence.load(Ordering::Relaxed) != self.change_sequence.load(Ordering::Relaxed)
     }
 
-    /// Clear dirty once the mutator frame was queued.
-    pub fn clear_dirty(&self) {
-        self.dirty.store(false, Ordering::Release);
+    /// Header for the oldest unframed entry, or `None` when the FIFO is empty. Does not pop.
+    ///
+    /// An entry recorded after the latest `stamp` reports tick 0.
+    pub fn pending_header(&self) -> Option<ControlStateHeader> {
+        if !self.is_dirty() {
+            return None;
+        }
+        let sequence = self.framed_sequence.load(Ordering::Relaxed).wrapping_add(1);
+        let index = slot(sequence);
+        let low = u64::from(self.ticks_low[index].load(Ordering::Relaxed));
+        let high = u64::from(self.ticks_high[index].load(Ordering::Relaxed));
+        Some(ControlStateHeader {
+            change_sequence: sequence,
+            applied_tick: (high << 32) | low,
+            applied_request: AppliedRequest::from_u8(self.kinds[index].load(Ordering::Relaxed)),
+        })
+    }
+
+    /// Drop the oldest unframed entry once its frame was queued; a no-op when empty.
+    pub fn pop_pending(&self) {
+        if self.is_dirty() {
+            self.framed_sequence.store(
+                self.framed_sequence.load(Ordering::Relaxed).wrapping_add(1),
+                Ordering::Relaxed,
+            );
+        }
     }
 }
 
 /// Payload of a control-state frame. Little-endian, fixed offsets; see the field comments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ControlStateSample {
-    /// Sequence, tick and kind of the latest applied request (offsets 0..13, pad to 16).
+    /// Sequence, tick and kind of the reported request (offsets 0..13, pad to 16).
     pub header: ControlStateHeader,
     /// Encoder counts per revolution (offset 16).
     pub encoder_counts_per_rev: u32,
@@ -341,36 +383,128 @@ mod tests {
         assert!(HEADER_LEN + CONTROL_STATE_PAYLOAD_LEN <= FRAME_BUF_CAPACITY);
     }
 
+    fn drain(r: &ControlStateRecord) -> std::vec::Vec<ControlStateHeader> {
+        let mut out = std::vec::Vec::new();
+        while let Some(h) = r.pending_header() {
+            out.push(h);
+            r.pop_pending();
+        }
+        out
+    }
+
     #[test]
-    fn record_increments_sequence_and_sets_dirty_and_tick_pending() {
+    fn record_queues_an_entry_that_the_next_stamp_ticks() {
         let r = ControlStateRecord::new();
         assert!(!r.is_dirty());
+        assert_eq!(r.pending_header(), None);
         r.record(AppliedRequest::OuterGains);
-        let h = r.snapshot();
-        assert_eq!(h.change_sequence, 1);
-        assert_eq!(h.applied_request, AppliedRequest::OuterGains);
         assert!(r.is_dirty());
         r.stamp(0x1_0000_0002);
-        assert_eq!(r.snapshot().applied_tick, 0x1_0000_0002);
+        assert_eq!(
+            r.pending_header(),
+            Some(ControlStateHeader {
+                change_sequence: 1,
+                applied_tick: 0x1_0000_0002,
+                applied_request: AppliedRequest::OuterGains,
+            })
+        );
+        r.pop_pending();
+        assert!(!r.is_dirty());
+        assert_eq!(r.pending_header(), None);
     }
 
     #[test]
     fn stamp_without_pending_record_is_ignored() {
         let r = ControlStateRecord::new();
         r.stamp(99);
-        assert_eq!(r.snapshot().applied_tick, 0);
+        r.record(AppliedRequest::RunCurrent);
+        assert_eq!(r.pending_header().map(|h| h.applied_tick), Some(0));
     }
 
     #[test]
-    fn two_records_before_a_stamp_coalesce_with_sequence_advanced_by_two() {
+    fn four_records_before_a_stamp_yield_four_headers_in_request_order() {
+        let r = ControlStateRecord::new();
+        r.record(AppliedRequest::RunCurrent);
+        r.stamp(100);
+        r.pop_pending();
+        let kinds = [
+            AppliedRequest::VelocityFilter,
+            AppliedRequest::TorqueFilter,
+            AppliedRequest::PositionFilter,
+            AppliedRequest::FluxFilter,
+        ];
+        for kind in kinds {
+            r.record(kind);
+        }
+        r.stamp(500);
+        let headers = drain(&r);
+        let expected: std::vec::Vec<_> = kinds
+            .iter()
+            .zip(2u32..)
+            .map(|(&applied_request, change_sequence)| ControlStateHeader {
+                change_sequence,
+                applied_tick: 500,
+                applied_request,
+            })
+            .collect();
+        assert_eq!(headers, expected);
+        assert!(!r.is_dirty());
+    }
+
+    #[test]
+    fn stamp_ticks_only_entries_recorded_before_it() {
         let r = ControlStateRecord::new();
         r.record(AppliedRequest::VelocityFilter);
+        r.stamp(10);
         r.record(AppliedRequest::TorqueFilter);
-        r.stamp(500);
-        let h = r.snapshot();
-        assert_eq!(h.change_sequence, 2);
+        r.pop_pending();
+        let h = r.pending_header().expect("torque entry pending");
         assert_eq!(h.applied_request, AppliedRequest::TorqueFilter);
-        assert_eq!(h.applied_tick, 500);
+        assert_eq!(h.applied_tick, 0, "not stamped yet");
+        r.stamp(20);
+        assert_eq!(r.pending_header().map(|h| h.applied_tick), Some(20));
+        r.stamp(30);
+        assert_eq!(
+            r.pending_header().map(|h| h.applied_tick),
+            Some(20),
+            "a stamped entry keeps its tick"
+        );
+    }
+
+    #[test]
+    fn overflow_drops_the_oldest_entries_and_the_sequence_jump_shows_the_loss() {
+        let r = ControlStateRecord::new();
+        for _ in 0..CONTROL_STATE_FIFO_CAPACITY + 2 {
+            r.record(AppliedRequest::InnerGains);
+        }
+        r.stamp(9);
+        let headers = drain(&r);
+        assert_eq!(headers.len(), CONTROL_STATE_FIFO_CAPACITY);
+        assert_eq!(headers[0].change_sequence, 3);
+        let sequences: std::vec::Vec<u32> = headers.iter().map(|h| h.change_sequence).collect();
+        let expected: std::vec::Vec<u32> = (3..=18).collect();
+        assert_eq!(sequences, expected);
+        assert!(headers.iter().all(|h| h.applied_tick == 9));
+        assert_eq!(r.snapshot_header().change_sequence, 18);
+    }
+
+    #[test]
+    fn overflow_keeps_the_tick_of_surviving_stamped_entries() {
+        let r = ControlStateRecord::new();
+        for _ in 0..CONTROL_STATE_FIFO_CAPACITY {
+            r.record(AppliedRequest::OuterGains);
+        }
+        r.stamp(5);
+        r.record(AppliedRequest::RunCurrent);
+        r.stamp(6);
+        let headers = drain(&r);
+        assert_eq!(headers.len(), CONTROL_STATE_FIFO_CAPACITY);
+        assert_eq!(headers[0].change_sequence, 2);
+        assert_eq!(headers[0].applied_tick, 5);
+        let last = headers.last().expect("non-empty");
+        assert_eq!(last.change_sequence, 17);
+        assert_eq!(last.applied_tick, 6);
+        assert_eq!(last.applied_request, AppliedRequest::RunCurrent);
     }
 
     #[test]
@@ -378,7 +512,7 @@ mod tests {
         let r = ControlStateRecord::new();
         r.record(AppliedRequest::RunCurrent);
         r.stamp(1);
-        r.clear_dirty();
+        r.pop_pending();
         r.mark_snapshot();
         assert!(r.is_snapshot_pending());
         assert!(!r.is_dirty());
@@ -386,19 +520,36 @@ mod tests {
         assert_eq!(h.change_sequence, 1);
         assert_eq!(h.applied_tick, 0);
         assert_eq!(h.applied_request, AppliedRequest::None);
+        r.clear_snapshot_pending();
+        assert!(!r.is_snapshot_pending());
     }
 
     #[test]
-    fn mark_snapshot_leaves_an_unemitted_mutator_record_intact() {
+    fn mark_snapshot_leaves_unemitted_mutator_entries_intact() {
         let r = ControlStateRecord::new();
         r.record(AppliedRequest::OuterGains);
+        r.record(AppliedRequest::InnerGains);
         r.stamp(7);
         r.mark_snapshot();
         assert!(r.is_snapshot_pending());
         assert!(r.is_dirty());
-        let h = r.snapshot();
-        assert_eq!(h.applied_request, AppliedRequest::OuterGains);
-        assert_eq!(h.applied_tick, 7);
-        assert_eq!(h.change_sequence, 1);
+        assert_eq!(r.snapshot_header().change_sequence, 2);
+        let headers = drain(&r);
+        assert_eq!(
+            headers,
+            [
+                ControlStateHeader {
+                    change_sequence: 1,
+                    applied_tick: 7,
+                    applied_request: AppliedRequest::OuterGains,
+                },
+                ControlStateHeader {
+                    change_sequence: 2,
+                    applied_tick: 7,
+                    applied_request: AppliedRequest::InnerGains,
+                },
+            ]
+        );
+        assert!(r.is_snapshot_pending());
     }
 }

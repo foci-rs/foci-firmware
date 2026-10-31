@@ -247,7 +247,7 @@ pub struct TmcChannelState {
     pub pending_accel_feedforward_accel_gain_permille: AtomicU16,
     /// Host-requested deceleration-phase gain in permille, applied on the control tick.
     pub pending_accel_feedforward_decel_gain_permille: AtomicU16,
-    /// Record of the latest host mutator the control tick applied on this channel. Counts
+    /// Host mutators the control tick applied on this channel, queued for their frames. Counts
     /// since boot, so [`TmcChannelState::reset`] leaves it alone.
     pub control_state: ControlStateRecord,
     /// One-tick feedforward reset request after direction changes.
@@ -918,7 +918,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 176);
+        assert_eq!(size_of::<TmcChannelState>(), 320);
     }
 
     #[test]

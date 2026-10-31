@@ -937,13 +937,35 @@ mod tests {
         (result, tmc.into_inner())
     }
 
+    fn drain_control_state() -> std::vec::Vec<crate::trace::control_state::ControlStateHeader> {
+        let record = &tmc_state().control_state;
+        let mut headers = std::vec::Vec::new();
+        while let Some(header) = record.pending_header() {
+            headers.push(header);
+            record.pop_pending();
+        }
+        headers
+    }
+
+    fn control_state_sequence() -> u32 {
+        tmc_state().control_state.snapshot_header().change_sequence
+    }
+
+    fn applied_kinds_and_sequences() -> std::vec::Vec<(AppliedRequest, u32)> {
+        drain_control_state()
+            .iter()
+            .map(|h| (h.applied_request, h.change_sequence))
+            .collect()
+    }
+
     #[fixture_test]
     fn drain_applies_pending_velocity_feedforward_and_records_it() {
         use crate::trace::control_state::AppliedRequest;
         use core::sync::atomic::Ordering::Relaxed;
 
         pollster::block_on(async {
-            let before = tmc_state().control_state.snapshot().change_sequence;
+            drain_control_state();
+            let before = control_state_sequence();
             tmc_state()
                 .pending_velocity_feedforward
                 .store(true, Relaxed);
@@ -962,12 +984,11 @@ mod tests {
                 tmc_state().velocity_feedforward_gain_permille.load(Relaxed),
                 1_300
             );
-            let header = tmc_state().control_state.snapshot();
-            assert_eq!(header.applied_request, AppliedRequest::VelocityFeedforward);
-            assert_eq!(header.change_sequence, before + 1);
+            assert_eq!(
+                applied_kinds_and_sequences(),
+                [(AppliedRequest::VelocityFeedforward, before + 1)]
+            );
             assert_eq!(tmc_state().config_apply_pending.load(Relaxed), 0);
-
-            tmc_state().control_state.clear_dirty();
         });
     }
 
@@ -977,7 +998,8 @@ mod tests {
         use core::sync::atomic::Ordering::Relaxed;
 
         pollster::block_on(async {
-            let before = tmc_state().control_state.snapshot().change_sequence;
+            drain_control_state();
+            let before = control_state_sequence();
             tmc_state().pending_accel_feedforward.store(true, Relaxed);
             tmc_state()
                 .pending_accel_feedforward_accel_gain_permille
@@ -1005,12 +1027,11 @@ mod tests {
                     .load(Relaxed),
                 300
             );
-            let header = tmc_state().control_state.snapshot();
-            assert_eq!(header.applied_request, AppliedRequest::AccelFeedforward);
-            assert_eq!(header.change_sequence, before + 1);
+            assert_eq!(
+                applied_kinds_and_sequences(),
+                [(AppliedRequest::AccelFeedforward, before + 1)]
+            );
             assert_eq!(tmc_state().config_apply_pending.load(Relaxed), 0);
-
-            tmc_state().control_state.clear_dirty();
         });
     }
 
@@ -1029,24 +1050,28 @@ mod tests {
         use core::sync::atomic::Ordering::Relaxed;
 
         pollster::block_on(async {
-            let before = tmc_state().control_state.snapshot().change_sequence;
+            drain_control_state();
+            let before = control_state_sequence();
+            tmc_state().flux_filter_hz.store(Some(500), Relaxed);
+            tmc_state().position_filter_hz.store(Some(50), Relaxed);
             tmc_state().torque_filter_hz.store(Some(2_000), Relaxed);
             tmc_state().velocity_filter_hz.store(Some(100), Relaxed);
-            set_filter_bits(0b0011);
+            set_filter_bits(0b1111);
 
             let (result, _) = drain_with(Default::default()).await;
 
             assert_eq!(result, Ok(()));
-            let header = tmc_state().control_state.snapshot();
-            assert_eq!(header.change_sequence, before + 2);
             assert_eq!(
-                header.applied_request,
-                AppliedRequest::TorqueFilter,
-                "velocity is recorded first, torque last"
+                applied_kinds_and_sequences(),
+                [
+                    (AppliedRequest::VelocityFilter, before + 1),
+                    (AppliedRequest::TorqueFilter, before + 2),
+                    (AppliedRequest::PositionFilter, before + 3),
+                    (AppliedRequest::FluxFilter, before + 4),
+                ],
+                "one entry per filter, velocity first and flux last"
             );
             assert_eq!(tmc_state().filters_touched.load(Relaxed), 0);
-
-            tmc_state().control_state.clear_dirty();
         });
     }
 
@@ -1057,7 +1082,8 @@ mod tests {
         use foci_tmc4671::registers::CONFIG_BIQUAD_V_A_1;
 
         pollster::block_on(async {
-            let before = tmc_state().control_state.snapshot().change_sequence;
+            drain_control_state();
+            let before = control_state_sequence();
             tmc_state().torque_filter_hz.store(Some(2_000), Relaxed);
             set_filter_bits(0b0010);
 
@@ -1069,17 +1095,17 @@ mod tests {
 
             assert_eq!(result, Err(PendingConfigItem::Filters));
             assert_eq!(tmc_state().filters_touched.load(Relaxed), 0b0010);
-            assert_eq!(tmc_state().control_state.snapshot().change_sequence, before);
+            assert_eq!(control_state_sequence(), before);
+            assert_eq!(drain_control_state(), []);
 
             let (result, _) = drain_with(Default::default()).await;
 
             assert_eq!(result, Ok(()));
-            let header = tmc_state().control_state.snapshot();
-            assert_eq!(header.change_sequence, before + 1);
-            assert_eq!(header.applied_request, AppliedRequest::TorqueFilter);
+            assert_eq!(
+                applied_kinds_and_sequences(),
+                [(AppliedRequest::TorqueFilter, before + 1)]
+            );
             assert_eq!(tmc_state().filters_touched.load(Relaxed), 0);
-
-            tmc_state().control_state.clear_dirty();
         });
     }
 
@@ -1089,7 +1115,8 @@ mod tests {
         use foci_tmc4671::registers::CONFIG_BIQUAD_V_A_1;
 
         pollster::block_on(async {
-            let before = tmc_state().control_state.snapshot().change_sequence;
+            drain_control_state();
+            let before = control_state_sequence();
             tmc_state().velocity_filter_hz.store(Some(100), Relaxed);
             set_filter_bits(0b0001);
 
@@ -1114,8 +1141,8 @@ mod tests {
             assert!(raced.get(), "the race must have fired");
             assert_eq!(tmc_state().velocity_filter_hz.load(Relaxed), Some(200));
             assert_eq!(
-                tmc_state().control_state.snapshot().change_sequence,
-                before + 1
+                applied_kinds_and_sequences(),
+                [(AppliedRequest::VelocityFilter, before + 1)]
             );
             assert_eq!(tmc_state().filters_touched.load(Relaxed), 0b0001);
             assert_ne!(
@@ -1127,8 +1154,8 @@ mod tests {
 
             assert_eq!(result, Ok(()));
             assert_eq!(
-                tmc_state().control_state.snapshot().change_sequence,
-                before + 2
+                applied_kinds_and_sequences(),
+                [(AppliedRequest::VelocityFilter, before + 2)]
             );
             assert_eq!(tmc_state().filters_touched.load(Relaxed), 0);
             assert_eq!(
@@ -1151,8 +1178,6 @@ mod tests {
                 .expect("the second drain writes the velocity filter");
             assert_eq!(spi.writes[velocity_a_1 + 1].1, newer.a_1 as u32);
             assert_eq!(tmc_state().velocity_filter_hz.load(Relaxed), Some(200));
-
-            tmc_state().control_state.clear_dirty();
         });
     }
 
@@ -1162,8 +1187,8 @@ mod tests {
         use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
 
         pollster::block_on(async {
-            tmc_state().control_state.clear_dirty();
-            let before = tmc_state().control_state.snapshot().change_sequence;
+            drain_control_state();
+            let before = control_state_sequence();
             tmc_state().voltage_limit_cfg.store(8_000, Relaxed);
             tmc_state()
                 .config_apply_pending
@@ -1176,7 +1201,7 @@ mod tests {
             .await;
 
             assert_eq!(result, Err(PendingConfigItem::VoltageLimit));
-            assert_eq!(tmc_state().control_state.snapshot().change_sequence, before);
+            assert_eq!(control_state_sequence(), before);
             assert!(!tmc_state().control_state.is_dirty());
 
             tmc_state().config_apply_pending.store(0, Relaxed);
