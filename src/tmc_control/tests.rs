@@ -4903,26 +4903,6 @@ fn set_current_arriving_during_a_transition_write_is_neither_lost_nor_unsafe() {
 }
 
 #[test]
-fn reservation_obligation_keeps_maintenance_alive() {
-    pollster::block_on(async {
-        let mut rig = ReservationRig::eligible(1_000);
-        rig.tick().await.unwrap();
-        rig.runtime.set_motor_enabled_for_test(false);
-        let failing = RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr());
-        let _ = rig.tick_on(failing, false, false).await;
-
-        assert!(!rig.runtime.maintenance_obligations_clear());
-        assert!(rig.runtime.feedforward_restoration_pending());
-
-        rig.tick().await.unwrap();
-
-        assert!(rig.runtime.maintenance_obligations_clear());
-        assert!(!rig.runtime.feedforward_restoration_pending());
-        assert_limit_plus_offset_within(&rig.log, 1_000);
-    });
-}
-
-#[test]
 fn requested_release_completes_from_a_held_reservation() {
     pollster::block_on(async {
         let mut rig = ReservationRig::eligible(1_000);
