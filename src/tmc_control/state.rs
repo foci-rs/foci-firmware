@@ -184,6 +184,18 @@ impl TmcControlRuntime {
         self.channel
     }
 
+    pub(super) const fn maintenance_obligations_clear(&self) -> bool {
+        !self.motor_enabled
+            && self.commission_engine.is_none()
+            && self.restore_machine.is_none()
+            && !self.feedforward_was_active
+            && !self.torque_flux_offset_was_active
+            && matches!(self.offset_headroom, OffsetHeadroomPhase::Released)
+            && self.stall_detector.is_none()
+            && self.homing_state_1_retries == 0
+            && self.homing_state_3_retries == 0
+    }
+
     /// Return whether the motor is currently electrically enabled.
     pub const fn is_motor_enabled(&self) -> bool {
         self.motor_enabled
@@ -1560,6 +1572,16 @@ impl TmcControlRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_torque_flux_offset_was_active_for_test(&mut self, value: bool) {
+        self.torque_flux_offset_was_active = value;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_homing_state_1_retries_for_test(&mut self, value: u8) {
+        self.homing_state_1_retries = value;
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_homing_state_3_retries_for_test(&mut self, value: u8) {
         self.homing_state_3_retries = value;
     }
@@ -1567,6 +1589,16 @@ impl TmcControlRuntime {
     #[cfg(test)]
     pub(crate) const fn homing_retry_counts_for_test(&self) -> (u8, u8) {
         (self.homing_state_1_retries, self.homing_state_3_retries)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_applied_velocity_offset_for_test(&mut self, value: Option<u32>) {
+        self.applied_velocity_offset = value;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_applied_torque_flux_offset_for_test(&mut self, value: Option<u32>) {
+        self.applied_torque_flux_offset = value;
     }
 
     #[cfg(test)]
