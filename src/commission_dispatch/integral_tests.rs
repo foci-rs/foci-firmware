@@ -875,31 +875,29 @@ fn outer_safety_timing_terminal_order_integral_resume() {
         };
         assert_eq!(terminal.rest_boundary_rung_plus_one, 4);
         assert_eq!(terminal.rest_boundary_slot_plus_one, 6);
-        {
-            assert_eq!(
-                backend
-                    .velocity_sweep_trace_records
-                    .iter()
-                    .filter(|record| record.as_bytes()[0] == 5)
-                    .count(),
-                1
-            );
-            let terminal_record = backend
+        assert_eq!(
+            backend
                 .velocity_sweep_trace_records
                 .iter()
-                .find(|record| record.as_bytes()[0] == 4)
-                .unwrap();
-            assert_eq!(
-                &terminal_record.as_bytes()[15..23],
-                terminal.digest.to_le_bytes()
-            );
-            assert!(
-                backend
-                    .trace_emission_order
-                    .windows(3)
-                    .any(|window| window == [30, 144, 4])
-            );
-        }
+                .filter(|record| record.as_bytes()[0] == 5)
+                .count(),
+            1
+        );
+        let terminal_record = backend
+            .velocity_sweep_trace_records
+            .iter()
+            .find(|record| record.as_bytes()[0] == 4)
+            .unwrap();
+        assert_eq!(
+            &terminal_record.as_bytes()[15..23],
+            terminal.digest.to_le_bytes()
+        );
+        assert!(
+            backend
+                .trace_emission_order
+                .windows(3)
+                .any(|window| window == [30, 144, 4])
+        );
     });
 }
 
