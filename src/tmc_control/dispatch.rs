@@ -114,7 +114,6 @@ where
             .map_err(|_| RegisterRequestError::Other)?;
             Ok(SharedTmcDispatch::Handled)
         }
-        TmcRequestKind::SetAccelFeedforward { .. } => Ok(SharedTmcDispatch::Handled),
         _ => Ok(SharedTmcDispatch::Unhandled),
     }
 }

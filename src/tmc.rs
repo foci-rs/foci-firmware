@@ -192,13 +192,6 @@ pub enum TmcRequestKind {
         velocity_p: foci_tmc4671::pid::PidPGain,
         velocity_i: foci_tmc4671::pid::PidIGain,
     },
-    SetAccelFeedforward {
-        enable: bool,
-        /// Gain in permille applied while step intervals shrink.
-        accel_gain_permille: u16,
-        /// Gain in permille applied while step intervals grow.
-        decel_gain_permille: u16,
-    },
     /// Set operational PIDOUT_UQ_UD_LIMITS for authority diagnostics.
     SetVoltageLimit {
         voltage_limit: u32,
@@ -503,23 +496,6 @@ pub fn tmc_set_position_gains(
             position_i,
             velocity_p,
             velocity_i,
-        },
-    )
-}
-
-/// Build a `SetAccelFeedforward` request.
-pub fn tmc_set_accel_feedforward(
-    channel: u8,
-    enable: bool,
-    accel_gain_permille: u16,
-    decel_gain_permille: u16,
-) -> TmcRequest {
-    TmcRequest::new(
-        channel,
-        TmcRequestKind::SetAccelFeedforward {
-            enable,
-            accel_gain_permille,
-            decel_gain_permille,
         },
     )
 }

@@ -562,23 +562,6 @@ where
             );
         }
         TmcRequest {
-            kind:
-                TmcRequestKind::SetAccelFeedforward {
-                    enable,
-                    accel_gain_permille,
-                    decel_gain_permille,
-                },
-            ..
-        } => {
-            defmt::info!(
-                "Acceleration feedforward: {} accel_gain_permille={} \
-                decel_gain_permille={} (via queue)",
-                enable,
-                accel_gain_permille,
-                decel_gain_permille
-            );
-        }
-        TmcRequest {
             kind: TmcRequestKind::Commission { oid, profile },
             ..
         } => {
