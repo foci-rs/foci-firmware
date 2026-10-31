@@ -113,16 +113,7 @@ where
     Ok(())
 }
 
-/// Apply the cutoff a pending-config drain loaded from the cached filter slot.
-///
-/// An unset slot applies as disabled. The applied cutoff is stored back only if the slot
-/// still holds `loaded`: a host update that landed during the SPI writes keeps its newer
-/// value, and its still-pending touched bit makes the next drain apply it.
-///
-/// # Errors
-///
-/// Returns `Err(())` if the cutoff is invalid or if any SPI write fails.
-pub(crate) async fn apply_drained_filter<B>(
+pub(crate) async fn apply_drained_filter_keeping_newer_update<B>(
     tmc: &mut Tmc4671Spi<B>,
     tmc_state: &TmcChannelState,
     target: BiquadFilterTarget,

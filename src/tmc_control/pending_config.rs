@@ -8,7 +8,7 @@ use foci_tmc4671::spi::Tmc4671Spi;
 
 use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
-use crate::tmc_control::filters::{BiquadFilterTarget, apply_drained_filter};
+use crate::tmc_control::filters::{BiquadFilterTarget, apply_drained_filter_keeping_newer_update};
 use crate::trace::control_state::AppliedRequest;
 
 /// Where the pending-config drain publishes state that must only be updated
@@ -233,9 +233,15 @@ where
                 tmc_state.flux_filter_hz.load(Relaxed),
             ),
         ] {
-            if apply_drained_filter(tmc, tmc_state, target, loaded, tmc_config.pwm_maxcnt)
-                .await
-                .is_err()
+            if apply_drained_filter_keeping_newer_update(
+                tmc,
+                tmc_state,
+                target,
+                loaded,
+                tmc_config.pwm_maxcnt,
+            )
+            .await
+            .is_err()
             {
                 tmc_state.filters_touched.fetch_or(claimed, Relaxed);
                 release(tmc_state, PENDING_FILTERS);
@@ -1124,8 +1130,6 @@ mod tests {
             let flag = raced.clone();
             let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
                 .race_pending_config_on_write(CONFIG_BIQUAD_V_A_1.data.addr(), move || {
-                    // The first biquad data write is the velocity filter's, so this handler
-                    // lands before that filter's cutoff store-back.
                     if !flag.replace(true) {
                         tmc_state().velocity_filter_hz.store(Some(200), Relaxed);
                         tmc_state().filters_touched.fetch_or(0b0001, Release);

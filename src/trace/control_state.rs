@@ -69,9 +69,7 @@ pub const CONTROL_STATE_FIFO_CAPACITY: usize = 16;
 /// Per-channel FIFO of applied host mutators awaiting their control-state frame. Lives in
 /// `TmcChannelState`.
 ///
-/// Entry `n` (1-based, since boot) sits in slot `(n - 1) % CONTROL_STATE_FIFO_CAPACITY`, so
-/// an entry's sequence is implied by its position and `change_sequence` doubles as the
-/// tail. When the FIFO is full a new record drops the oldest entry; the emitted frames
+/// When the FIFO is full a new record drops the oldest entry; the emitted frames
 /// then show a sequence jump, the only loss the decoder is allowed to see.
 ///
 /// The tick is split into two words because the Cortex-M targets have no 64-bit atomics.
@@ -95,11 +93,10 @@ impl Default for ControlStateRecord {
     }
 }
 
-// slot() needs 2^32 to be a multiple of the capacity so the index survives u32 wraparound.
 const _: () = assert!(CONTROL_STATE_FIFO_CAPACITY.is_power_of_two());
 
 const fn slot(sequence: u32) -> usize {
-    (sequence.wrapping_sub(1) as usize) % CONTROL_STATE_FIFO_CAPACITY
+    (sequence.wrapping_sub(1) as usize) & (CONTROL_STATE_FIFO_CAPACITY - 1)
 }
 
 impl ControlStateRecord {
