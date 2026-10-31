@@ -9,6 +9,7 @@ use foci_tmc4671::spi::Tmc4671Spi;
 use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
 use crate::tmc_control::filters::{BiquadFilterTarget, apply_live_filter};
+use crate::trace::control_state::AppliedRequest;
 
 /// Where the pending-config drain publishes state that must only be updated
 /// after a confirmed successful write.
@@ -70,8 +71,9 @@ where
     B: SpiDevice<u8>,
 {
     use crate::state::tmc::{
-        PENDING_CURRENT, PENDING_ENCODER_DIR, PENDING_FILTERS, PENDING_INNER_GAINS,
-        PENDING_OUTER_GAINS, PENDING_VOLTAGE_LIMIT,
+        PENDING_ACCEL_FEEDFORWARD, PENDING_CURRENT, PENDING_ENCODER_DIR, PENDING_FILTERS,
+        PENDING_INNER_GAINS, PENDING_OUTER_GAINS, PENDING_VELOCITY_FEEDFORWARD,
+        PENDING_VOLTAGE_LIMIT,
     };
     use core::sync::atomic::Ordering::Relaxed;
 
@@ -95,6 +97,7 @@ where
             release(tmc_state, PENDING_VOLTAGE_LIMIT);
             return Err(PendingConfigItem::VoltageLimit);
         }
+        tmc_state.control_state.record(AppliedRequest::VoltageLimit);
         handled |= PENDING_VOLTAGE_LIMIT;
     }
 
@@ -113,6 +116,7 @@ where
             release(tmc_state, PENDING_CURRENT);
             return Err(PendingConfigItem::Current);
         }
+        tmc_state.control_state.record(AppliedRequest::RunCurrent);
         handled |= PENDING_CURRENT;
     }
 
@@ -146,6 +150,7 @@ where
             release(tmc_state, PENDING_INNER_GAINS);
             return Err(PendingConfigItem::InnerGains);
         }
+        tmc_state.control_state.record(AppliedRequest::InnerGains);
         handled |= PENDING_INNER_GAINS;
     }
 
@@ -161,7 +166,49 @@ where
             release(tmc_state, PENDING_OUTER_GAINS);
             return Err(PendingConfigItem::OuterGains);
         }
+        tmc_state.control_state.record(AppliedRequest::OuterGains);
         handled |= PENDING_OUTER_GAINS;
+    }
+
+    if (pending & PENDING_VELOCITY_FEEDFORWARD) != 0 {
+        claim(tmc_state, PENDING_VELOCITY_FEEDFORWARD);
+        tmc_state.velocity_feedforward.store(
+            tmc_state.pending_velocity_feedforward.load(Relaxed),
+            Relaxed,
+        );
+        tmc_state.velocity_feedforward_gain_permille.store(
+            tmc_state
+                .pending_velocity_feedforward_gain_permille
+                .load(Relaxed),
+            Relaxed,
+        );
+        tmc_state
+            .control_state
+            .record(AppliedRequest::VelocityFeedforward);
+        handled |= PENDING_VELOCITY_FEEDFORWARD;
+    }
+
+    if (pending & PENDING_ACCEL_FEEDFORWARD) != 0 {
+        claim(tmc_state, PENDING_ACCEL_FEEDFORWARD);
+        tmc_state
+            .accel_feedforward
+            .store(tmc_state.pending_accel_feedforward.load(Relaxed), Relaxed);
+        tmc_state.accel_feedforward_accel_gain_permille.store(
+            tmc_state
+                .pending_accel_feedforward_accel_gain_permille
+                .load(Relaxed),
+            Relaxed,
+        );
+        tmc_state.accel_feedforward_decel_gain_permille.store(
+            tmc_state
+                .pending_accel_feedforward_decel_gain_permille
+                .load(Relaxed),
+            Relaxed,
+        );
+        tmc_state
+            .control_state
+            .record(AppliedRequest::AccelFeedforward);
+        handled |= PENDING_ACCEL_FEEDFORWARD;
     }
 
     if (pending & PENDING_FILTERS) != 0 {
@@ -851,6 +898,132 @@ mod tests {
             tmc_state().torque_filter_hz.store(None, Relaxed);
             tmc_state().position_filter_hz.store(None, Relaxed);
             tmc_state().flux_filter_hz.store(None, Relaxed);
+            tmc_state().config_apply_pending.store(0, Relaxed);
+        });
+    }
+
+    async fn drain_with(
+        spi: crate::tmc_control::test_spi::RuntimeMockSpi,
+    ) -> (
+        Result<(), PendingConfigItem>,
+        crate::tmc_control::test_spi::RuntimeMockSpi,
+    ) {
+        let mut tmc = Tmc4671Spi::new(spi);
+        let mut config = crate::config::TmcConfig::default_for_test();
+        config.pwm_maxcnt = 4095;
+        let mut stored_inner_gains = None;
+        let result = drain_pending_config(
+            &mut tmc,
+            tmc_state(),
+            config,
+            PendingConfigSink {
+                stored_inner_gains: &mut stored_inner_gains,
+            },
+        )
+        .await;
+        (result, tmc.into_inner())
+    }
+
+    #[fixture_test]
+    fn drain_applies_pending_velocity_feedforward_and_records_it() {
+        use crate::trace::control_state::AppliedRequest;
+        use core::sync::atomic::Ordering::Relaxed;
+
+        pollster::block_on(async {
+            let before = tmc_state().control_state.snapshot().change_sequence;
+            tmc_state()
+                .pending_velocity_feedforward
+                .store(true, Relaxed);
+            tmc_state()
+                .pending_velocity_feedforward_gain_permille
+                .store(1_300, Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_VELOCITY_FEEDFORWARD, Relaxed);
+
+            let (result, _) = drain_with(Default::default()).await;
+
+            assert_eq!(result, Ok(()));
+            assert!(tmc_state().velocity_feedforward.load(Relaxed));
+            assert_eq!(
+                tmc_state().velocity_feedforward_gain_permille.load(Relaxed),
+                1_300
+            );
+            let header = tmc_state().control_state.snapshot();
+            assert_eq!(header.applied_request, AppliedRequest::VelocityFeedforward);
+            assert_eq!(header.change_sequence, before + 1);
+            assert_eq!(tmc_state().config_apply_pending.load(Relaxed), 0);
+
+            tmc_state().control_state.clear_dirty();
+        });
+    }
+
+    #[fixture_test]
+    fn drain_applies_pending_accel_feedforward_and_records_it() {
+        use crate::trace::control_state::AppliedRequest;
+        use core::sync::atomic::Ordering::Relaxed;
+
+        pollster::block_on(async {
+            let before = tmc_state().control_state.snapshot().change_sequence;
+            tmc_state().pending_accel_feedforward.store(true, Relaxed);
+            tmc_state()
+                .pending_accel_feedforward_accel_gain_permille
+                .store(700, Relaxed);
+            tmc_state()
+                .pending_accel_feedforward_decel_gain_permille
+                .store(300, Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_ACCEL_FEEDFORWARD, Relaxed);
+
+            let (result, _) = drain_with(Default::default()).await;
+
+            assert_eq!(result, Ok(()));
+            assert!(tmc_state().accel_feedforward.load(Relaxed));
+            assert_eq!(
+                tmc_state()
+                    .accel_feedforward_accel_gain_permille
+                    .load(Relaxed),
+                700
+            );
+            assert_eq!(
+                tmc_state()
+                    .accel_feedforward_decel_gain_permille
+                    .load(Relaxed),
+                300
+            );
+            let header = tmc_state().control_state.snapshot();
+            assert_eq!(header.applied_request, AppliedRequest::AccelFeedforward);
+            assert_eq!(header.change_sequence, before + 1);
+            assert_eq!(tmc_state().config_apply_pending.load(Relaxed), 0);
+
+            tmc_state().control_state.clear_dirty();
+        });
+    }
+
+    #[fixture_test]
+    fn drain_failure_records_nothing_for_the_failed_item() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
+
+        pollster::block_on(async {
+            tmc_state().control_state.clear_dirty();
+            let before = tmc_state().control_state.snapshot().change_sequence;
+            tmc_state().voltage_limit_cfg.store(8_000, Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_VOLTAGE_LIMIT, Relaxed);
+
+            let (result, _) = drain_with(
+                crate::tmc_control::test_spi::RuntimeMockSpi::default()
+                    .fail_writes_to(PIDOUT_UQ_UD_LIMITS.addr()),
+            )
+            .await;
+
+            assert_eq!(result, Err(PendingConfigItem::VoltageLimit));
+            assert_eq!(tmc_state().control_state.snapshot().change_sequence, before);
+            assert!(!tmc_state().control_state.is_dirty());
+
             tmc_state().config_apply_pending.store(0, Relaxed);
         });
     }

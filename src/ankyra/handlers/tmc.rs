@@ -293,11 +293,15 @@ pub fn tmc_set_velocity_feedforward_rpm(
         return;
     };
     state
-        .velocity_feedforward
+        .pending_velocity_feedforward
         .store(enable != 0, Ordering::Relaxed);
     state
-        .velocity_feedforward_gain_permille
+        .pending_velocity_feedforward_gain_permille
         .store(gain_permille, Ordering::Relaxed);
+    state.config_apply_pending.fetch_or(
+        crate::state::tmc::PENDING_VELOCITY_FEEDFORWARD,
+        Ordering::Release,
+    );
     defmt::info!(
         "Velocity feedforward: {} gain_permille={}",
         enable != 0,
@@ -318,14 +322,18 @@ pub fn tmc_set_accel_feedforward(
         return;
     };
     state
-        .accel_feedforward
+        .pending_accel_feedforward
         .store(enable != 0, Ordering::Relaxed);
     state
-        .accel_feedforward_accel_gain_permille
+        .pending_accel_feedforward_accel_gain_permille
         .store(accel_gain_permille, Ordering::Relaxed);
     state
-        .accel_feedforward_decel_gain_permille
+        .pending_accel_feedforward_decel_gain_permille
         .store(decel_gain_permille, Ordering::Relaxed);
+    state.config_apply_pending.fetch_or(
+        crate::state::tmc::PENDING_ACCEL_FEEDFORWARD,
+        Ordering::Release,
+    );
     defmt::info!(
         "Acceleration feedforward: {} accel_gain_permille={} decel_gain_permille={}",
         enable != 0,
@@ -1598,28 +1606,82 @@ mod tests {
     }
 
     #[test]
-    fn tmc_set_velocity_feedforward_rpm_stores_gain_permille() {
+    fn tmc_set_velocity_feedforward_rpm_stages_values_and_sets_the_pending_bit() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut ctx = MockCtx::new(2);
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.reset();
 
-        tmc_set_velocity_feedforward_rpm(&mut ctx, &mut sender, 10, 1, 1_450);
+        tmc_set_velocity_feedforward_rpm(&mut ctx, &mut sender, 10, 1, 1_300);
 
-        assert!(tmc_state.velocity_feedforward.load(Relaxed));
+        assert!(tmc_state.pending_velocity_feedforward.load(Relaxed));
         assert_eq!(
-            tmc_state.velocity_feedforward_gain_permille.load(Relaxed),
-            1_450
+            tmc_state
+                .pending_velocity_feedforward_gain_permille
+                .load(Relaxed),
+            1_300
         );
-
-        tmc_set_velocity_feedforward_rpm(&mut ctx, &mut sender, 10, 0, 1_000);
-
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed)
+                & crate::state::tmc::PENDING_VELOCITY_FEEDFORWARD,
+            0
+        );
         assert!(!tmc_state.velocity_feedforward.load(Relaxed));
         assert_eq!(
             tmc_state.velocity_feedforward_gain_permille.load(Relaxed),
+            1_000,
+            "the live gain changes only when the control tick applies it"
+        );
+
+        tmc_state.reset();
+    }
+
+    #[test]
+    fn tmc_set_accel_feedforward_stages_values_and_sets_the_pending_bit() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.reset();
+
+        tmc_set_accel_feedforward(&mut ctx, &mut sender, 10, 1, 700, 300);
+
+        assert!(tmc_state.pending_accel_feedforward.load(Relaxed));
+        assert_eq!(
+            tmc_state
+                .pending_accel_feedforward_accel_gain_permille
+                .load(Relaxed),
+            700
+        );
+        assert_eq!(
+            tmc_state
+                .pending_accel_feedforward_decel_gain_permille
+                .load(Relaxed),
+            300
+        );
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed)
+                & crate::state::tmc::PENDING_ACCEL_FEEDFORWARD,
+            0
+        );
+        assert!(!tmc_state.accel_feedforward.load(Relaxed));
+        assert_eq!(
+            tmc_state
+                .accel_feedforward_accel_gain_permille
+                .load(Relaxed),
             1_000
         );
+        assert_eq!(
+            tmc_state
+                .accel_feedforward_decel_gain_permille
+                .load(Relaxed),
+            1_000
+        );
+
+        tmc_state.reset();
     }
 
     #[test]
@@ -1718,7 +1780,7 @@ mod tests {
 
         assert_eq!(
             raises.len(),
-            9,
+            11,
             "expected one pending-bit raise per connect-time config handler"
         );
         for statement in raises {

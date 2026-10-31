@@ -8,6 +8,7 @@ use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainOutOfRange, PidIGain, PidPGain};
 
 use crate::pid::{InnerLoopGains, OuterLoopGains};
+use crate::trace::control_state::ControlStateRecord;
 
 /// Maximum number of board-local TMC4671 channels supported by shared firmware.
 pub const MAX_TMC_CHANNELS: usize = 2;
@@ -30,6 +31,10 @@ pub const PENDING_ENCODER_DIR: u8 = 1 << 3;
 pub const PENDING_INNER_GAINS: u8 = 1 << 4;
 /// Bitmask constant for pending outer gains configuration.
 pub const PENDING_OUTER_GAINS: u8 = 1 << 5;
+/// Bitmask constant for pending velocity feedforward configuration.
+pub const PENDING_VELOCITY_FEEDFORWARD: u8 = 1 << 6;
+/// Bitmask constant for pending acceleration feedforward configuration.
+pub const PENDING_ACCEL_FEEDFORWARD: u8 = 1 << 7;
 
 /// Worst-case TMC request queue slots a connect-time config handler may occupy per channel;
 /// each board asserts at compile time that `TMC_CHANNEL_SIZE` covers this times the channel count.
@@ -197,6 +202,19 @@ pub struct TmcChannelState {
     pub accel_feedforward_accel_gain_permille: AtomicU16,
     /// Runtime gain in permille while step intervals grow.
     pub accel_feedforward_decel_gain_permille: AtomicU16,
+    /// Host-requested velocity feedforward enable, applied on the control tick.
+    pub pending_velocity_feedforward: AtomicBool,
+    /// Host-requested velocity feedforward gain in permille, applied on the control tick.
+    pub pending_velocity_feedforward_gain_permille: AtomicU16,
+    /// Host-requested acceleration feedforward enable, applied on the control tick.
+    pub pending_accel_feedforward: AtomicBool,
+    /// Host-requested acceleration-phase gain in permille, applied on the control tick.
+    pub pending_accel_feedforward_accel_gain_permille: AtomicU16,
+    /// Host-requested deceleration-phase gain in permille, applied on the control tick.
+    pub pending_accel_feedforward_decel_gain_permille: AtomicU16,
+    /// Record of the latest host mutator the control tick applied on this channel. Counts
+    /// since boot, so [`TmcChannelState::reset`] leaves it alone.
+    pub control_state: ControlStateRecord,
     /// One-tick feedforward reset request after direction changes.
     pub feedforward_reset: AtomicBool,
     /// PID error-sum clear request after motion drains.
@@ -306,6 +324,12 @@ impl TmcChannelState {
             accel_feedforward: AtomicBool::new(false),
             accel_feedforward_accel_gain_permille: AtomicU16::new(1000),
             accel_feedforward_decel_gain_permille: AtomicU16::new(1000),
+            pending_velocity_feedforward: AtomicBool::new(false),
+            pending_velocity_feedforward_gain_permille: AtomicU16::new(1_000),
+            pending_accel_feedforward: AtomicBool::new(false),
+            pending_accel_feedforward_accel_gain_permille: AtomicU16::new(1000),
+            pending_accel_feedforward_decel_gain_permille: AtomicU16::new(1000),
+            control_state: ControlStateRecord::new(),
             feedforward_reset: AtomicBool::new(false),
             pid_error_sums_clear: AtomicBool::new(false),
             velocity_limit_cfg: AtomicU32::new(500_000),
@@ -393,6 +417,14 @@ impl TmcChannelState {
         self.accel_feedforward_accel_gain_permille
             .store(1000, Relaxed);
         self.accel_feedforward_decel_gain_permille
+            .store(1000, Relaxed);
+        self.pending_velocity_feedforward.store(false, Relaxed);
+        self.pending_velocity_feedforward_gain_permille
+            .store(1_000, Relaxed);
+        self.pending_accel_feedforward.store(false, Relaxed);
+        self.pending_accel_feedforward_accel_gain_permille
+            .store(1000, Relaxed);
+        self.pending_accel_feedforward_decel_gain_permille
             .store(1000, Relaxed);
         self.feedforward_reset.store(false, Relaxed);
         self.pid_error_sums_clear.store(false, Relaxed);
@@ -849,7 +881,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 152);
+        assert_eq!(size_of::<TmcChannelState>(), 176);
     }
 
     #[test]

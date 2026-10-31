@@ -1,6 +1,7 @@
 //! Shared USB trace protocol, events, pressure state, and transport helpers.
 
 pub mod commissioning;
+pub mod control_state;
 pub mod events;
 pub mod sampling;
 
