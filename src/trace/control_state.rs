@@ -2,6 +2,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
+use super::stream::CONTROL_STATE_PAYLOAD_LEN;
+
 /// Which host mutator a control-state frame reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
@@ -63,6 +65,10 @@ pub struct ControlStateHeader {
 /// Per-channel record of the latest applied host mutator. Lives in `TmcChannelState`.
 ///
 /// The tick is split into two words because the Cortex-M targets have no 64-bit atomics.
+///
+/// All methods must be called from the priority-1 control-task context: the tick is two
+/// separate words and `clear_dirty` is not atomic with `snapshot`, so cross-context use
+/// is unsupported.
 pub struct ControlStateRecord {
     change_sequence: AtomicU32,
     applied_request: AtomicU8,
@@ -164,9 +170,182 @@ impl ControlStateRecord {
     }
 }
 
+/// Payload of a control-state frame. Little-endian, fixed offsets; see the field comments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ControlStateSample {
+    /// Sequence, tick and kind of the latest applied request (offsets 0..13, pad to 16).
+    pub header: ControlStateHeader,
+    /// Encoder counts per revolution (offset 16).
+    pub encoder_counts_per_rev: u32,
+    /// PWM frequency in Hz (offset 20).
+    pub pwm_hz: u32,
+    /// Velocity meter selection (offset 24, pad to 28).
+    pub velocity_meter_selection: u8,
+    /// Velocity filter corner in Hz (offset 28).
+    pub velocity_filter_hz: u16,
+    /// Torque filter corner in Hz (offset 30).
+    pub torque_filter_hz: u16,
+    /// Position filter corner in Hz (offset 32).
+    pub position_filter_hz: u16,
+    /// Flux filter corner in Hz (offset 34).
+    pub flux_filter_hz: u16,
+    /// Velocity P gain (offset 36).
+    pub velocity_p: i32,
+    /// Velocity I gain (offset 40).
+    pub velocity_i: i32,
+    /// Position P gain (offset 44).
+    pub position_p: i32,
+    /// Position I gain (offset 48).
+    pub position_i: i32,
+    /// Torque P gain (offset 52).
+    pub torque_p: i32,
+    /// Torque I gain (offset 56).
+    pub torque_i: i32,
+    /// Flux P gain (offset 60).
+    pub flux_p: i32,
+    /// Flux I gain (offset 64).
+    pub flux_i: i32,
+    /// Velocity feedforward enable (offset 68, pad to 70).
+    pub velocity_ff_enable: u8,
+    /// Velocity feedforward gain in permille (offset 70).
+    pub velocity_ff_permille: u16,
+    /// Acceleration feedforward enable (offset 72, pad to 74).
+    pub accel_ff_enable: u8,
+    /// Acceleration feedforward gain (offset 74).
+    pub accel_ff_gain: u16,
+    /// Deceleration feedforward gain (offset 76).
+    pub decel_ff_gain: u16,
+    /// Run current (offset 78, deliberately unaligned).
+    pub run_current: u32,
+    /// `PIDOUT_UQ_UD_LIMITS` voltage limit (offset 82); bytes 84..88 are reserved zero.
+    pub voltage_limit: u16,
+}
+
+/// Encode a control-state payload into an exact 88-byte buffer; padding and reserved bytes
+/// are written as zero.
+pub fn encode_control_state_payload(
+    sample: &ControlStateSample,
+    out: &mut [u8; CONTROL_STATE_PAYLOAD_LEN],
+) {
+    fn put(out: &mut [u8], offset: usize, bytes: &[u8]) {
+        out[offset..offset + bytes.len()].copy_from_slice(bytes);
+    }
+    *out = [0; CONTROL_STATE_PAYLOAD_LEN];
+    put(out, 0, &sample.header.change_sequence.to_le_bytes());
+    put(out, 4, &sample.header.applied_tick.to_le_bytes());
+    out[12] = sample.header.applied_request as u8;
+    put(out, 16, &sample.encoder_counts_per_rev.to_le_bytes());
+    put(out, 20, &sample.pwm_hz.to_le_bytes());
+    out[24] = sample.velocity_meter_selection;
+    put(out, 28, &sample.velocity_filter_hz.to_le_bytes());
+    put(out, 30, &sample.torque_filter_hz.to_le_bytes());
+    put(out, 32, &sample.position_filter_hz.to_le_bytes());
+    put(out, 34, &sample.flux_filter_hz.to_le_bytes());
+    put(out, 36, &sample.velocity_p.to_le_bytes());
+    put(out, 40, &sample.velocity_i.to_le_bytes());
+    put(out, 44, &sample.position_p.to_le_bytes());
+    put(out, 48, &sample.position_i.to_le_bytes());
+    put(out, 52, &sample.torque_p.to_le_bytes());
+    put(out, 56, &sample.torque_i.to_le_bytes());
+    put(out, 60, &sample.flux_p.to_le_bytes());
+    put(out, 64, &sample.flux_i.to_le_bytes());
+    out[68] = sample.velocity_ff_enable;
+    put(out, 70, &sample.velocity_ff_permille.to_le_bytes());
+    out[72] = sample.accel_ff_enable;
+    put(out, 74, &sample.accel_ff_gain.to_le_bytes());
+    put(out, 76, &sample.decel_ff_gain.to_le_bytes());
+    put(out, 78, &sample.run_current.to_le_bytes());
+    put(out, 82, &sample.voltage_limit.to_le_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trace::stream::{
+        FRAME_BUF_CAPACITY, FRAME_TYPE_CONTROL_STATE, HEADER_LEN, PROTOCOL_VERSION,
+    };
+
+    fn sample() -> ControlStateSample {
+        ControlStateSample {
+            header: ControlStateHeader {
+                change_sequence: 0x0102_0304,
+                applied_tick: 0x1112_1314_1516_1718,
+                applied_request: AppliedRequest::VoltageLimit,
+            },
+            encoder_counts_per_rev: 0x2122_2324,
+            pwm_hz: 0x3132_3334,
+            velocity_meter_selection: 0x41,
+            velocity_filter_hz: 0x5152,
+            torque_filter_hz: 0x6162,
+            position_filter_hz: 0x7172,
+            flux_filter_hz: 0x8182,
+            velocity_p: 0x0A01_0203,
+            velocity_i: -0x0A01_0204,
+            position_p: 0x0B01_0203,
+            position_i: -0x0B01_0204,
+            torque_p: 0x0C01_0203,
+            torque_i: -0x0C01_0204,
+            flux_p: 0x0D01_0203,
+            flux_i: -0x0D01_0204,
+            velocity_ff_enable: 0x91,
+            velocity_ff_permille: 0x9293,
+            accel_ff_enable: 0xA1,
+            accel_ff_gain: 0xA2A3,
+            decel_ff_gain: 0xB2B3,
+            run_current: 0xC1C2_C3C4,
+            voltage_limit: 0xD1D2,
+        }
+    }
+
+    #[test]
+    fn control_state_payload_layout_matches_the_wire_table() {
+        let s = sample();
+        let mut out = [0xFFu8; CONTROL_STATE_PAYLOAD_LEN];
+        encode_control_state_payload(&s, &mut out);
+        let u16_at = |o: usize| u16::from_le_bytes(out[o..o + 2].try_into().unwrap());
+        let u32_at = |o: usize| u32::from_le_bytes(out[o..o + 4].try_into().unwrap());
+        let i32_at = |o: usize| i32::from_le_bytes(out[o..o + 4].try_into().unwrap());
+        assert_eq!(u32_at(0), s.header.change_sequence);
+        assert_eq!(
+            u64::from_le_bytes(out[4..12].try_into().unwrap()),
+            s.header.applied_tick
+        );
+        assert_eq!(out[12], s.header.applied_request as u8);
+        assert_eq!(&out[13..16], &[0, 0, 0]);
+        assert_eq!(u32_at(16), s.encoder_counts_per_rev);
+        assert_eq!(u32_at(20), s.pwm_hz);
+        assert_eq!(out[24], s.velocity_meter_selection);
+        assert_eq!(&out[25..28], &[0, 0, 0]);
+        assert_eq!(u16_at(28), s.velocity_filter_hz);
+        assert_eq!(u16_at(30), s.torque_filter_hz);
+        assert_eq!(u16_at(32), s.position_filter_hz);
+        assert_eq!(u16_at(34), s.flux_filter_hz);
+        assert_eq!(i32_at(36), s.velocity_p);
+        assert_eq!(i32_at(40), s.velocity_i);
+        assert_eq!(i32_at(44), s.position_p);
+        assert_eq!(i32_at(48), s.position_i);
+        assert_eq!(i32_at(52), s.torque_p);
+        assert_eq!(i32_at(56), s.torque_i);
+        assert_eq!(i32_at(60), s.flux_p);
+        assert_eq!(i32_at(64), s.flux_i);
+        assert_eq!(out[68], s.velocity_ff_enable);
+        assert_eq!(out[69], 0);
+        assert_eq!(u16_at(70), s.velocity_ff_permille);
+        assert_eq!(out[72], s.accel_ff_enable);
+        assert_eq!(out[73], 0);
+        assert_eq!(u16_at(74), s.accel_ff_gain);
+        assert_eq!(u16_at(76), s.decel_ff_gain);
+        assert_eq!(u32_at(78), s.run_current);
+        assert_eq!(u16_at(82), s.voltage_limit);
+        assert_eq!(&out[84..88], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn protocol_version_is_25_and_control_state_is_frame_type_10() {
+        assert_eq!(PROTOCOL_VERSION, 25);
+        assert_eq!(FRAME_TYPE_CONTROL_STATE, 10);
+        assert!(HEADER_LEN + CONTROL_STATE_PAYLOAD_LEN <= FRAME_BUF_CAPACITY);
+    }
 
     #[test]
     fn record_increments_sequence_and_sets_dirty_and_tick_pending() {

@@ -5,7 +5,7 @@
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
 /// Firmware trace protocol version.
-pub const PROTOCOL_VERSION: u8 = 24;
+pub const PROTOCOL_VERSION: u8 = 25;
 /// Fixed envelope length in bytes.
 pub const HEADER_LEN: usize = 32;
 /// Maximum critical frame transport budget in bytes.
@@ -31,6 +31,8 @@ pub const FRAME_TYPE_PHASE_ADVANCE: u8 = 7;
 pub const FRAME_TYPE_VELOCITY_OBSERVATION: u8 = 8;
 /// Canonical velocity-sweep logical evidence frame type.
 pub const FRAME_TYPE_VELOCITY_SWEEP_EVIDENCE: u8 = 9;
+/// Per-channel control-state frame type.
+pub const FRAME_TYPE_CONTROL_STATE: u8 = 10;
 
 /// Board-level source kind.
 pub const SOURCE_KIND_BOARD: u8 = 0;
@@ -88,6 +90,8 @@ pub const CONTROL_DETAIL_PAYLOAD_LEN: usize = 28;
 pub const STATUS_PAYLOAD_LEN: usize = 48;
 /// Version-1 event payload length.
 pub const EVENT_PAYLOAD_LEN: usize = 24;
+/// Version-25 control-state payload length.
+pub const CONTROL_STATE_PAYLOAD_LEN: usize = 88;
 /// Characterization velocity-observation payload length.
 pub const VELOCITY_OBSERVATION_PAYLOAD_LEN: usize = 22;
 /// Velocity observation met the existing torque-saturation threshold.
@@ -654,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn critical_payload_reserves_bytes_84_to_88_as_zero_under_protocol_24() {
+    fn critical_payload_reserves_bytes_84_to_88_as_zero() {
         let sample = CriticalSample {
             step_position: -1,
             tmc_position_actual: 2,
@@ -696,7 +700,7 @@ mod tests {
             boot_id: 0,
         });
         assert_eq!(frame.bytes()[4], PROTOCOL_VERSION);
-        assert_eq!(PROTOCOL_VERSION, 24);
+        assert_eq!(PROTOCOL_VERSION, 25);
     }
 
     #[test]
@@ -739,7 +743,7 @@ mod tests {
 
     #[test]
     fn fixed_payload_lengths_match_spec() {
-        assert_eq!(PROTOCOL_VERSION, 24);
+        assert_eq!(PROTOCOL_VERSION, 25);
         assert_eq!(CRITICAL_PAYLOAD_LEN, 88);
         assert_eq!(CURRENT_PATH_PAYLOAD_LEN, 16);
         assert_eq!(PHASE_ADVANCE_PAYLOAD_LEN, 12);
