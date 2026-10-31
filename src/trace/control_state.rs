@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn control_state_is_frame_type_10_and_fits_the_frame_buffer() {
         assert_eq!(FRAME_TYPE_CONTROL_STATE, 10);
-        assert!(HEADER_LEN + CONTROL_STATE_PAYLOAD_LEN <= FRAME_BUF_CAPACITY);
+        const { assert!(HEADER_LEN + CONTROL_STATE_PAYLOAD_LEN <= FRAME_BUF_CAPACITY) };
     }
 
     fn drain(r: &ControlStateRecord) -> std::vec::Vec<ControlStateHeader> {
