@@ -110,13 +110,6 @@ pub trait UsbPumpBackend {
     async fn yield_now(&mut self);
     fn final_poll(&mut self);
     /// Take the USB driver's pending-notify flag (`foci_usb_stm32::check_wake`).
-    ///
-    /// The driver re-arms its level-triggered RX interrupt only when a poll finds
-    /// nothing to read, and it signals "poll me again" with a flag rather than
-    /// through the board wake. If that flag is still set when a quantum ends, the
-    /// pump must run again before sleeping, or the task can park with an unread
-    /// packet in the FIFO and the interrupt masked (Klipper's scheduler re-runs a
-    /// task that woke itself; this hook restores that guarantee).
     fn driver_wake_pending(&mut self) -> bool;
     /// Board hook at the head of a drain quantum (trace/configured detection).
     fn on_wake(&mut self);
@@ -164,9 +157,6 @@ pub async fn run_once<B: UsbPumpBackend>(backend: &mut B, counters: &UsbPumpCoun
 
     backend.final_poll();
     if backend.driver_wake_pending() {
-        // A notify no poll has serviced yet: re-run instead of sleeping so the
-        // next poll either makes progress or ends in a NotReady that re-arms
-        // the hardware interrupt.
         backend.wake();
     }
     backend.on_drain_complete();
@@ -334,8 +324,6 @@ mod loop_tests {
     #[test]
     fn pending_driver_notify_rewakes_before_sleeping() {
         let c = UsbPumpCounters::new();
-        // An incomplete frame the protocol cannot consume, plus a driver notify
-        // raised by a successful read during the quantum.
         let mut b = FakeBackend::with_plan(std::vec![0u8; 20], &[0]);
         b.driver_wake.set(true);
         block_on(run_once(&mut b, &c));

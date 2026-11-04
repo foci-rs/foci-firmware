@@ -1,22 +1,3 @@
-//! Regression test: the USB pump must never park with an unread packet in the
-//! OTG RX FIFO while the RXFLVL interrupt is masked.
-//!
-//! Real code under test: `foci_firmware::usb_pump::run_once` and
-//! `ankyra::transport::Transport::receive`. Modelled after the board and
-//! `foci-usb-stm32` code: the CDC RX buffer (`cdc::bulk_out_task` /
-//! `rx_consume` semantics), the OTG RX FIFO with its level-triggered RXFLVL
-//! interrupt and the RXFLVLM mask that the ISR clears and only a NotReady read
-//! re-arms, the board `USB_WAKE` signal, a bulk OUT endpoint that NAKs until
-//! re-enabled, a lossy cable, and a Klippy-like host (serialqueue.c) that acks,
-//! naks and retransmits SYNC + every unacked frame as one write that the host
-//! controller splits into 64-byte packets.
-//!
-//! Before the pump re-ran on a pending driver notify, a retransmit burst with a
-//! dropped packet could leave the task asleep with data in the RX buffer, a
-//! packet in the FIFO and the interrupt masked; the host then saw no acks until
-//! an unrelated transmit woke the task, which Klippy reports as "Lost
-//! communication with MCU".
-
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::string::String;
@@ -44,7 +25,6 @@ struct Out;
 impl TransportOutput for Out {
     type Output = ScratchOutput;
     fn output(&self, f: impl FnOnce(&mut Self::Output)) {
-        // Mirrors foci_firmware::transport::AnkyraUsbTransport: write, then wake.
         let mut s = ScratchOutput::new();
         f(&mut s);
         DEV_TX.with(|t| t.borrow_mut().extend_from_slice(s.result()));
@@ -62,14 +42,10 @@ impl Config for Cfg {
     type TransportOutput = Out;
     type Context<'c> = Ctx;
     fn dispatch(cmd: u16, frame: &mut &[u8], _ctx: &mut Ctx) -> Result<(), ReadError> {
-        // Every test command carries a 4-byte payload after the VLQ id,
-        // except the padding command, which carries a length byte and that
-        // many bytes so a frame can be padded to any exact size.
         if frame.len() < 2 {
             return Err(ReadError);
         }
         if cmd == PAD_CMD {
-            // Padding: a length byte followed by that many bytes.
             let k = frame[0] as usize;
             if frame.len() < 1 + k {
                 return Err(ReadError);
@@ -105,7 +81,6 @@ fn crc16(buf: &[u8]) -> u16 {
     crc
 }
 
-/// Build a Klipper frame: len, seq, payload (repeated cmd id + 4 byte arg), crc, sync.
 fn frame(seq: u8, cmds: &[(u16, u32)]) -> Vec<u8> {
     let mut v = vec![0u8, (seq & SEQ_MASK) | DEST];
     for (id, arg) in cmds {
@@ -122,19 +97,16 @@ fn frame(seq: u8, cmds: &[(u16, u32)]) -> Vec<u8> {
     v
 }
 
-/// Padding command id; ignored by the dispatch recorder.
 const PAD_CMD: u16 = 63;
 
-/// Re-encode `f` (len, seq, cmds.., crc, sync) as an exact `target`-byte frame
-/// by appending one variable-length padding command. Returns `None` when the
-/// frame is already at least `target` bytes or the gap is too small to hold
-/// the two-byte padding header.
-fn pad_frame_to(f: &[u8], target: usize) -> Option<Vec<u8>> {
+fn pad_to_packet(f: &[u8]) -> Vec<u8> {
+    assert!(
+        f.len() + 2 <= PKT,
+        "a {}-byte frame leaves no room for the padding command",
+        f.len()
+    );
+    let needed = PKT - f.len();
     let payload = &f[2..f.len() - 3];
-    let needed = target.saturating_sub(f.len());
-    if needed < 2 {
-        return None;
-    }
     let seq = f[1];
     let mut v = vec![0u8, seq];
     v.extend_from_slice(payload);
@@ -146,8 +118,8 @@ fn pad_frame_to(f: &[u8], target: usize) -> Option<Vec<u8>> {
     v.push((c >> 8) as u8);
     v.push(c as u8);
     v.push(SYNC);
-    debug_assert_eq!(v.len(), target);
-    Some(v)
+    debug_assert_eq!(v.len(), PKT);
+    v
 }
 
 enum Entry {
@@ -171,7 +143,6 @@ impl Rng {
     }
 }
 
-/// Device-side model: OTG RX FIFO + CDC RX buffer.
 struct Dev {
     fifo: VecDeque<Entry>,
     rxflvlm: bool,
@@ -202,7 +173,6 @@ impl Dev {
             driver_wake: false,
         }
     }
-    /// Hardware: accept one offered packet if the endpoint is enabled.
     fn deliver(&mut self) {
         if self.ep_enabled
             && let Some(p) = self.inflight.pop_front()
@@ -226,9 +196,7 @@ impl Dev {
             USB_WAKE.with(|w| w.set(true));
         }
     }
-    /// otg::usb_read_bulk_out() under usb_irq_disable/enable.
     fn usb_read_bulk_out(&mut self) -> Option<Vec<u8>> {
-        // peek_rx_queue: pop informational entries
         let pkt = loop {
             match self.fifo.front() {
                 None => {
@@ -257,11 +225,9 @@ impl Dev {
             &pkt[..pkt.len().min(6)]
         ));
         self.deliver();
-        // usb_irq_enable
         self.isr();
         Some(pkt)
     }
-    /// cdc::bulk_out_task()
     fn bulk_out_task(&mut self) -> bool {
         let woke = std::mem::replace(&mut self.bulk_out_wake, false);
         if !woke {
@@ -269,8 +235,6 @@ impl Dev {
         }
         if self.rpos + PKT <= RX_BUF {
             if let Some(p) = self.usb_read_bulk_out() {
-                // cdc::bulk_out_task re-notifies after every successful read,
-                // including a zero-length packet, so the next poll re-arms RXFLVL.
                 self.rx[self.rpos..self.rpos + p.len()].copy_from_slice(&p);
                 self.rpos += p.len();
                 self.bulk_out_wake = true;
@@ -282,7 +246,6 @@ impl Dev {
         }
         self.rpos > 0
     }
-    /// cdc::rx_consume()
     fn rx_consume(&mut self, len: usize) {
         if len >= self.rpos {
             self.rpos = 0;
@@ -291,8 +254,6 @@ impl Dev {
         let need = self.rpos - len;
         self.rx.copy_within(len..self.rpos, 0);
         self.rpos = need;
-        // Proposed fix 2 (matches Klipper usb_bulk_out_task): only self-notify
-        // when a block was actually consumed and bytes remain.
         if len > 0 && need > 0 {
             self.bulk_out_wake = true;
             self.driver_wake = true;
@@ -301,7 +262,7 @@ impl Dev {
 }
 
 struct Backend<'a> {
-    dev: &'a RefCell<Dev>,
+    dev: Dev,
     host_steps_during_yield: u32,
     transport: &'a Transport<Cfg>,
 }
@@ -312,15 +273,13 @@ impl UsbPumpBackend for Backend<'_> {
         USB_WAKE.with(|w| w.set(false));
     }
     fn poll(&mut self) -> bool {
-        self.dev.borrow_mut().bulk_out_task()
+        self.dev.bulk_out_task()
     }
     fn rx_data(&self) -> &[u8] {
-        // Safety-free trick: leak a copy for the borrow; the pump copies immediately anyway.
-        let d = self.dev.borrow();
-        Box::leak(d.rx[..d.rpos].to_vec().into_boxed_slice())
+        &self.dev.rx[..self.dev.rpos]
     }
     fn rx_consume(&mut self, n: usize) {
-        self.dev.borrow_mut().rx_consume(n);
+        self.dev.rx_consume(n);
     }
     fn dispatch(&mut self, chunk: &[u8]) -> usize {
         let mut input = SliceInputBuffer::new(chunk);
@@ -338,56 +297,36 @@ impl UsbPumpBackend for Backend<'_> {
         consumed
     }
     fn report_pending(&self) -> bool {
-        self.dev.borrow().report_pending
+        self.dev.report_pending
     }
     fn wake(&mut self) {
         USB_WAKE.with(|w| w.set(true));
     }
     async fn yield_now(&mut self) {
-        // Other tasks run; the host may land packets meanwhile.
         for _ in 0..self.host_steps_during_yield {
-            let mut d = self.dev.borrow_mut();
-            d.deliver();
-            d.isr();
+            self.dev.deliver();
+            self.dev.isr();
         }
     }
     fn final_poll(&mut self) {
         tr("final_poll".into());
-        self.dev.borrow_mut().bulk_out_task();
+        self.dev.bulk_out_task();
         tr(format!(
             "run_once ends: rpos={} usb_wake={}",
-            self.dev.borrow().rpos,
+            self.dev.rpos,
             USB_WAKE.with(|w| w.get())
         ));
     }
     fn driver_wake_pending(&mut self) -> bool {
-        std::mem::replace(&mut self.dev.borrow_mut().driver_wake, false)
+        std::mem::replace(&mut self.dev.driver_wake, false)
     }
     fn on_wake(&mut self) {}
     fn on_drain_complete(&mut self) {}
 }
 
-fn block_on<F: std::future::Future>(mut fut: F) -> F::Output {
-    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-    fn noop(_: *const ()) {}
-    fn clone(_: *const ()) -> RawWaker {
-        RawWaker::new(std::ptr::null(), &VT)
-    }
-    static VT: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
-    let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VT)) };
-    let mut cx = Context::from_waker(&waker);
-    let mut fut = unsafe { std::pin::Pin::new_unchecked(&mut fut) };
-    loop {
-        if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
-            return v;
-        }
-    }
-}
-
-/// Klippy-like host.
 struct Host {
-    send_seq: u64,    // next sequence to assign
-    receive_seq: u64, // highest ack seen (1-based like serialqueue)
+    send_seq: u64,
+    receive_seq: u64,
     sent: VecDeque<(u64, Vec<u8>)>,
     ignore_nak_seq: u64,
     retransmit_seq: u64,
@@ -424,8 +363,6 @@ impl Host {
         }
     }
     fn write(&self, dev: &mut Dev, rng: &mut Rng, buf: &[u8], drop_p: f64) {
-        // cdc_acm: one write -> one URB -> max-size packets. A lost packet
-        // fails the whole URB; the remainder of that write is discarded.
         for chunk in buf.chunks(PKT) {
             if rng.chance(drop_p) {
                 return;
@@ -442,7 +379,7 @@ impl Host {
         if self.sent.len() >= MAX_PENDING_BLOCKS {
             return;
         }
-        let ncmd = 1 + rng.below(8) as usize; // 1..8 commands of 5 bytes => 10..45 byte frames
+        let ncmd = 1 + rng.below(8) as usize;
         let mut cmds = Vec::new();
         for _ in 0..ncmd {
             let id = (self.next_cmd_arg % 50) as u16 + 1;
@@ -452,11 +389,8 @@ impl Host {
         self.frames
             .push((self.send_seq, cmds.iter().map(|c| c.0).collect()));
         let mut f = frame(self.send_seq as u8, &cmds);
-        if self.zero_length_packets
-            && rng.chance(0.3)
-            && let Some(padded) = pad_frame_to(&f, PKT)
-        {
-            f = padded;
+        if self.zero_length_packets && rng.chance(0.3) {
+            f = pad_to_packet(&f);
             self.padded_frames += 1;
         }
         self.sent.push_back((self.send_seq, f.clone()));
@@ -479,7 +413,6 @@ impl Host {
         }
         self.retransmit_seq = self.send_seq;
     }
-    /// Parse device->host stream; returns true if a NAK asks for fast retransmit.
     fn process_rx(&mut self) -> bool {
         let mut want_retransmit = false;
         loop {
@@ -506,14 +439,11 @@ impl Host {
             if rseq != self.receive_seq {
                 if rseq > self.send_seq && self.receive_seq != 1 {
                     continue;
-                } // bytes_invalid
-                // update_receive_seq (serialqueue.c): pop sent messages until the
-                // one matching rseq; an ack for a message never sent re-syncs send_seq.
+                }
                 let mut sent_seq = self.receive_seq;
                 let mut popped = Vec::new();
                 loop {
                     if self.sent.is_empty() {
-                        // Connection-init quirk: these frames are silently lost.
                         self.send_seq = rseq;
                         for sq in popped.drain(..) {
                             self.lost_frames.push(sq);
@@ -561,14 +491,13 @@ fn run(
     TRACE.with(|t| t.borrow_mut().clear());
     DISPATCHED.with(|d| d.borrow_mut().clear());
     USB_WAKE.with(|w| w.set(false));
-    let dev = RefCell::new(Dev::new());
     let mut host = Host::new();
     host.zero_length_packets = zlp;
     let mut rng = Rng(seed | 1);
     let counters = UsbPumpCounters::new();
     let transport: Transport<Cfg> = Transport::new(&CFG, Out);
     let mut backend = Backend {
-        dev: &dev,
+        dev: Dev::new(),
         host_steps_during_yield: 1,
         transport: &transport,
     };
@@ -576,27 +505,20 @@ fn run(
     let mut last_progress = 0u64;
 
     for tick in 0..iterations {
-        // Host side: generate traffic, deliver, let the ISR fire.
         if rng.chance(0.8) {
-            host.send_new(&mut dev.borrow_mut(), &mut rng, drop_p);
+            host.send_new(&mut backend.dev, &mut rng, drop_p);
         }
-        {
-            let mut d = dev.borrow_mut();
-            if host_latency == 0 || tick % host_latency == 0 {
-                d.deliver();
-            }
-            d.report_pending = rng.chance(report_p);
-            d.isr();
+        let d = &mut backend.dev;
+        if host_latency == 0 || tick % host_latency == 0 {
+            d.deliver();
         }
-        // Device side: run the pump while there is a wake.
+        d.report_pending = rng.chance(report_p);
+        d.isr();
         let mut guard = 0;
         while USB_WAKE.with(|w| w.get()) {
-            block_on(run_once(&mut backend, &counters));
-            {
-                let mut d = dev.borrow_mut();
-                d.deliver();
-                d.isr();
-            }
+            pollster::block_on(run_once(&mut backend, &counters));
+            backend.dev.deliver();
+            backend.dev.isr();
             guard += 1;
             if guard > 10_000 {
                 return Outcome {
@@ -608,24 +530,20 @@ fn run(
                 };
             }
         }
-        // Host reads device output.
         DEV_TX.with(|t| host.rx.extend(t.borrow_mut().drain(..)));
         if host.process_rx() {
-            host.retransmit(&mut dev.borrow_mut(), &mut rng, drop_p, true);
+            host.retransmit(&mut backend.dev, &mut rng, drop_p, true);
         }
-        // RTO: no progress for a while -> retransmit.
         if !host.sent.is_empty() {
             host.idle_ticks += 1;
         } else {
             host.idle_ticks = 0;
         }
         if host.idle_ticks > 20 {
-            host.retransmit(&mut dev.borrow_mut(), &mut rng, drop_p, false);
+            host.retransmit(&mut backend.dev, &mut rng, drop_p, false);
             host.idle_ticks = 0;
         }
-        // Wedge detection: the host has unacked frames and keeps retransmitting
-        // but the ack sequence makes no progress for a long time.
-        let d = dev.borrow();
+        let d = &backend.dev;
         if host.progress == last_progress && !host.sent.is_empty() {
             wedge_ticks += 1;
         } else {
@@ -661,7 +579,6 @@ fn run(
             };
         }
     }
-    // Verify that the dispatched command stream is a prefix-consistent, loss-free, duplicate-free sequence.
     let got = DISPATCHED.with(|d| d.borrow().clone());
     let expected: Vec<u16> = host
         .frames
@@ -695,10 +612,10 @@ fn run(
             got.len(),
             host.retransmits,
             host.bytes_retransmit,
-            dev.borrow().deliveries
+            backend.dev.deliveries
         ),
         padded_frames: host.padded_frames,
-        zlps_delivered: dev.borrow().zlps_delivered,
+        zlps_delivered: backend.dev.zlps_delivered,
         dispatched: got.len(),
     }
 }
@@ -707,7 +624,6 @@ fn sweep(drop_p: f64, latency: u32, report_p: f64, seeds: u64) {
     sweep_with(drop_p, latency, report_p, false, seeds);
 }
 
-/// Aggregate counters over a sweep: (padded frames, zero-length packets, dispatched commands).
 fn sweep_with(
     drop_p: f64,
     latency: u32,
@@ -737,8 +653,6 @@ fn lossless_link_streams_without_loss_or_duplication() {
 
 #[test]
 fn retransmit_bursts_with_lost_packets_never_park_the_pump() {
-    // The reported field failure: a poor cable, Klippy retransmits, the next
-    // packet lands while the task is still draining the previous one.
     sweep(0.2, 3, 0.0, 60);
 }
 
@@ -749,11 +663,6 @@ fn heavy_loss_with_report_preemption_still_makes_progress() {
 
 #[test]
 fn zero_length_packets_do_not_strand_the_following_frame() {
-    // A host that terminates 64-byte-multiple writes with a zero-length packet
-    // (URB_ZERO_PACKET semantics): the empty read must still lead to a poll
-    // that re-arms RXFLVL, or the next frame sits in the FIFO unread. Assert
-    // the scenario really occurred: exact-64-byte frames were generated and
-    // zero-length packets were delivered, on a lossless link.
     let (padded, zlps, dispatched) = sweep_with(0.0, 3, 0.0, true, 40);
     assert!(padded > 0, "no frame was padded to a full packet");
     assert!(zlps > 0, "no zero-length packet was delivered");
@@ -766,36 +675,29 @@ fn a_zero_length_packet_followed_by_a_frame_is_dispatched() {
     DEV_TX.with(|t| t.borrow_mut().clear());
     DISPATCHED.with(|d| d.borrow_mut().clear());
     USB_WAKE.with(|w| w.set(false));
-    let dev = RefCell::new(Dev::new());
     let transport: Transport<Cfg> = Transport::new(&CFG, Out);
     let mut backend = Backend {
-        dev: &dev,
+        dev: Dev::new(),
         host_steps_during_yield: 1,
         transport: &transport,
     };
     let counters = UsbPumpCounters::new();
-    {
-        // The host offers an empty packet, then a valid frame carrying the
-        // sequence the device expects first.
-        let mut d = dev.borrow_mut();
-        d.inflight.push_back(Vec::new());
-        d.inflight.push_back(frame(0, &[(7, 1), (8, 2)]));
-        d.deliver();
-        d.isr();
-    }
+    backend.dev.inflight.push_back(Vec::new());
+    backend.dev.inflight.push_back(frame(0, &[(7, 1), (8, 2)]));
+    backend.dev.deliver();
+    backend.dev.isr();
     let mut guard = 0;
     while USB_WAKE.with(|w| w.get()) {
-        block_on(run_once(&mut backend, &counters));
-        let mut d = dev.borrow_mut();
-        d.deliver();
-        d.isr();
+        pollster::block_on(run_once(&mut backend, &counters));
+        backend.dev.deliver();
+        backend.dev.isr();
         guard += 1;
         assert!(guard < 100, "pump did not settle");
     }
-    assert_eq!(dev.borrow().zlps_delivered, 1);
+    assert_eq!(backend.dev.zlps_delivered, 1);
     assert_eq!(DISPATCHED.with(|d| d.borrow().clone()), vec![7, 8]);
     assert!(
-        dev.borrow().rxflvlm,
+        backend.dev.rxflvlm,
         "RXFLVL must be re-armed before the task sleeps"
     );
 }
