@@ -66,9 +66,9 @@ impl Config for Cfg {
         if frame.len() < 4 {
             return Err(ReadError);
         }
-        let n = u32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]);
-        DISPATCHED.with(|d| d.borrow_mut().push(cmd));
-        let _ = n;
+        if cmd != PAD_CMD {
+            DISPATCHED.with(|d| d.borrow_mut().push(cmd));
+        }
         *frame = &frame[4..];
         Ok(())
     }
@@ -104,6 +104,32 @@ fn frame(seq: u8, cmds: &[(u16, u32)]) -> Vec<u8> {
         assert!(*id < 64);
         v.push(*id as u8);
         v.extend_from_slice(&arg.to_le_bytes());
+    }
+    v[0] = (v.len() + 3) as u8;
+    let c = crc16(&v);
+    v.push((c >> 8) as u8);
+    v.push(c as u8);
+    v.push(SYNC);
+    v
+}
+
+/// Padding command id; ignored by the dispatch recorder.
+const PAD_CMD: u16 = 63;
+
+/// Re-encode `f` (len, seq, cmds.., crc, sync) as an exact `target`-byte frame
+/// by appending padding commands, when the sizes allow it.
+fn pad_frame_to(f: Vec<u8>, target: usize) -> Vec<u8> {
+    let payload = &f[2..f.len() - 3];
+    let needed = target.saturating_sub(f.len());
+    if needed == 0 || !needed.is_multiple_of(5) {
+        return f;
+    }
+    let seq = f[1];
+    let mut v = vec![0u8, seq];
+    v.extend_from_slice(payload);
+    for _ in 0..needed / 5 {
+        v.push(PAD_CMD as u8);
+        v.extend_from_slice(&0u32.to_le_bytes());
     }
     v[0] = (v.len() + 3) as u8;
     let c = crc16(&v);
@@ -226,9 +252,9 @@ impl Dev {
             return self.rpos > 0;
         }
         if self.rpos + PKT <= RX_BUF {
-            if let Some(p) = self.usb_read_bulk_out()
-                && !p.is_empty()
-            {
+            if let Some(p) = self.usb_read_bulk_out() {
+                // cdc::bulk_out_task re-notifies after every successful read,
+                // including a zero-length packet, so the next poll re-arms RXFLVL.
                 self.rx[self.rpos..self.rpos + p.len()].copy_from_slice(&p);
                 self.rpos += p.len();
                 self.bulk_out_wake = true;
@@ -356,6 +382,7 @@ struct Host {
     rx: Vec<u8>,
     progress: u64,
     lost_frames: Vec<u64>,
+    zero_length_packets: bool,
     frames: Vec<(u64, Vec<u16>)>,
 }
 
@@ -374,6 +401,7 @@ impl Host {
             rx: Vec::new(),
             progress: 0,
             lost_frames: Vec::new(),
+            zero_length_packets: false,
             frames: Vec::new(),
         }
     }
@@ -385,6 +413,11 @@ impl Host {
                 return;
             }
             dev.inflight.push_back(chunk.to_vec());
+        }
+        // Hosts with URB_ZERO_PACKET semantics terminate a transfer that is a
+        // multiple of the packet size with a zero-length packet.
+        if self.zero_length_packets && buf.len().is_multiple_of(PKT) {
+            dev.inflight.push_back(Vec::new());
         }
     }
     fn send_new(&mut self, dev: &mut Dev, rng: &mut Rng, drop_p: f64) {
@@ -400,7 +433,10 @@ impl Host {
         }
         self.frames
             .push((self.send_seq, cmds.iter().map(|c| c.0).collect()));
-        let f = frame(self.send_seq as u8, &cmds);
+        let mut f = frame(self.send_seq as u8, &cmds);
+        if self.zero_length_packets && rng.chance(0.3) {
+            f = pad_frame_to(f, PKT);
+        }
         self.sent.push_back((self.send_seq, f.clone()));
         self.send_seq += 1;
         self.write(dev, rng, &f, drop_p);
@@ -488,13 +524,21 @@ struct Outcome {
     detail: String,
 }
 
-fn run(seed: u64, drop_p: f64, host_latency: u32, report_p: f64, iterations: u32) -> Outcome {
+fn run(
+    seed: u64,
+    drop_p: f64,
+    host_latency: u32,
+    report_p: f64,
+    zlp: bool,
+    iterations: u32,
+) -> Outcome {
     DEV_TX.with(|t| t.borrow_mut().clear());
     TRACE.with(|t| t.borrow_mut().clear());
     DISPATCHED.with(|d| d.borrow_mut().clear());
     USB_WAKE.with(|w| w.set(false));
     let dev = RefCell::new(Dev::new());
     let mut host = Host::new();
+    host.zero_length_packets = zlp;
     let mut rng = Rng(seed | 1);
     let counters = UsbPumpCounters::new();
     let transport: Transport<Cfg> = Transport::new(&CFG, Out);
@@ -623,8 +667,12 @@ fn run(seed: u64, drop_p: f64, host_latency: u32, report_p: f64, iterations: u32
 }
 
 fn sweep(drop_p: f64, latency: u32, report_p: f64, seeds: u64) {
+    sweep_with(drop_p, latency, report_p, false, seeds);
+}
+
+fn sweep_with(drop_p: f64, latency: u32, report_p: f64, zlp: bool, seeds: u64) {
     for seed in 1..=seeds {
-        let o = run(seed * 7919, drop_p, latency, report_p, 3000);
+        let o = run(seed * 7919, drop_p, latency, report_p, zlp, 3000);
         assert!(
             !o.wedged,
             "drop={drop_p} latency={latency} report_p={report_p}: {}",
@@ -648,4 +696,13 @@ fn retransmit_bursts_with_lost_packets_never_park_the_pump() {
 #[test]
 fn heavy_loss_with_report_preemption_still_makes_progress() {
     sweep(0.4, 2, 0.3, 40);
+}
+
+#[test]
+fn zero_length_packets_do_not_strand_the_following_frame() {
+    // A host that terminates 64-byte-multiple writes with a zero-length packet
+    // (URB_ZERO_PACKET semantics): the empty read must still lead to a poll
+    // that re-arms RXFLVL, or the next frame sits in the FIFO unread.
+    sweep_with(0.0, 3, 0.0, true, 40);
+    sweep_with(0.2, 3, 0.0, true, 40);
 }
