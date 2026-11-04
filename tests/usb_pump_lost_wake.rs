@@ -62,13 +62,22 @@ impl Config for Cfg {
     type TransportOutput = Out;
     type Context<'c> = Ctx;
     fn dispatch(cmd: u16, frame: &mut &[u8], _ctx: &mut Ctx) -> Result<(), ReadError> {
-        // Every test command carries a 4-byte payload after the VLQ id.
-        if frame.len() < 4 {
+        // Every test command carries a 4-byte payload after the VLQ id,
+        // except the padding command, which carries a length byte and that
+        // many bytes so a frame can be padded to any exact size.
+        if frame.len() < 2 {
             return Err(ReadError);
         }
-        if cmd != PAD_CMD {
-            DISPATCHED.with(|d| d.borrow_mut().push(cmd));
+        if cmd == PAD_CMD {
+            // Padding: a length byte followed by that many bytes.
+            let k = frame[0] as usize;
+            if frame.len() < 1 + k {
+                return Err(ReadError);
+            }
+            *frame = &frame[1 + k..];
+            return Ok(());
         }
+        DISPATCHED.with(|d| d.borrow_mut().push(cmd));
         *frame = &frame[4..];
         Ok(())
     }
@@ -117,26 +126,28 @@ fn frame(seq: u8, cmds: &[(u16, u32)]) -> Vec<u8> {
 const PAD_CMD: u16 = 63;
 
 /// Re-encode `f` (len, seq, cmds.., crc, sync) as an exact `target`-byte frame
-/// by appending padding commands, when the sizes allow it.
-fn pad_frame_to(f: Vec<u8>, target: usize) -> Vec<u8> {
+/// by appending one variable-length padding command. Returns `None` when the
+/// frame is already at least `target` bytes or the gap is too small to hold
+/// the two-byte padding header.
+fn pad_frame_to(f: &[u8], target: usize) -> Option<Vec<u8>> {
     let payload = &f[2..f.len() - 3];
     let needed = target.saturating_sub(f.len());
-    if needed == 0 || !needed.is_multiple_of(5) {
-        return f;
+    if needed < 2 {
+        return None;
     }
     let seq = f[1];
     let mut v = vec![0u8, seq];
     v.extend_from_slice(payload);
-    for _ in 0..needed / 5 {
-        v.push(PAD_CMD as u8);
-        v.extend_from_slice(&0u32.to_le_bytes());
-    }
+    v.push(PAD_CMD as u8);
+    v.push((needed - 2) as u8);
+    v.extend(std::iter::repeat_n(0u8, needed - 2));
     v[0] = (v.len() + 3) as u8;
     let c = crc16(&v);
     v.push((c >> 8) as u8);
     v.push(c as u8);
     v.push(SYNC);
-    v
+    debug_assert_eq!(v.len(), target);
+    Some(v)
 }
 
 enum Entry {
@@ -171,6 +182,7 @@ struct Dev {
     bulk_out_wake: bool,
     report_pending: bool,
     deliveries: u32,
+    zlps_delivered: u32,
     driver_wake: bool,
 }
 
@@ -186,6 +198,7 @@ impl Dev {
             bulk_out_wake: false,
             report_pending: false,
             deliveries: 0,
+            zlps_delivered: 0,
             driver_wake: false,
         }
     }
@@ -194,6 +207,9 @@ impl Dev {
         if self.ep_enabled
             && let Some(p) = self.inflight.pop_front()
         {
+            if p.is_empty() {
+                self.zlps_delivered += 1;
+            }
             self.fifo.push_back(Entry::Data(p));
             self.fifo.push_back(Entry::XferCompl);
             self.ep_enabled = false; // PKTCNT=1 exhausted
@@ -383,6 +399,7 @@ struct Host {
     progress: u64,
     lost_frames: Vec<u64>,
     zero_length_packets: bool,
+    padded_frames: u32,
     frames: Vec<(u64, Vec<u16>)>,
 }
 
@@ -402,6 +419,7 @@ impl Host {
             progress: 0,
             lost_frames: Vec::new(),
             zero_length_packets: false,
+            padded_frames: 0,
             frames: Vec::new(),
         }
     }
@@ -434,8 +452,12 @@ impl Host {
         self.frames
             .push((self.send_seq, cmds.iter().map(|c| c.0).collect()));
         let mut f = frame(self.send_seq as u8, &cmds);
-        if self.zero_length_packets && rng.chance(0.3) {
-            f = pad_frame_to(f, PKT);
+        if self.zero_length_packets
+            && rng.chance(0.3)
+            && let Some(padded) = pad_frame_to(&f, PKT)
+        {
+            f = padded;
+            self.padded_frames += 1;
         }
         self.sent.push_back((self.send_seq, f.clone()));
         self.send_seq += 1;
@@ -522,6 +544,9 @@ impl Host {
 struct Outcome {
     wedged: bool,
     detail: String,
+    padded_frames: u32,
+    zlps_delivered: u32,
+    dispatched: usize,
 }
 
 fn run(
@@ -577,6 +602,9 @@ fn run(
                 return Outcome {
                     wedged: true,
                     detail: "device livelock".into(),
+                    padded_frames: 0,
+                    zlps_delivered: 0,
+                    dispatched: 0,
                 };
             }
         }
@@ -627,6 +655,9 @@ fn run(
             return Outcome {
                 wedged: true,
                 detail: format!("{detail}\n{trace}  rx[..rpos]={:02x?}", &d.rx[..d.rpos]),
+                padded_frames: 0,
+                zlps_delivered: 0,
+                dispatched: 0,
             };
         }
     }
@@ -652,6 +683,9 @@ fn run(
                 &got[first_bad.saturating_sub(3)..(first_bad + 3).min(got.len())],
                 &exp[first_bad.saturating_sub(3)..(first_bad + 3).min(exp.len())]
             ),
+            padded_frames: 0,
+            zlps_delivered: 0,
+            dispatched: 0,
         };
     }
     Outcome {
@@ -663,6 +697,9 @@ fn run(
             host.bytes_retransmit,
             dev.borrow().deliveries
         ),
+        padded_frames: host.padded_frames,
+        zlps_delivered: dev.borrow().zlps_delivered,
+        dispatched: got.len(),
     }
 }
 
@@ -670,15 +707,27 @@ fn sweep(drop_p: f64, latency: u32, report_p: f64, seeds: u64) {
     sweep_with(drop_p, latency, report_p, false, seeds);
 }
 
-fn sweep_with(drop_p: f64, latency: u32, report_p: f64, zlp: bool, seeds: u64) {
+/// Aggregate counters over a sweep: (padded frames, zero-length packets, dispatched commands).
+fn sweep_with(
+    drop_p: f64,
+    latency: u32,
+    report_p: f64,
+    zlp: bool,
+    seeds: u64,
+) -> (u32, u32, usize) {
+    let mut totals = (0u32, 0u32, 0usize);
     for seed in 1..=seeds {
         let o = run(seed * 7919, drop_p, latency, report_p, zlp, 3000);
         assert!(
             !o.wedged,
-            "drop={drop_p} latency={latency} report_p={report_p}: {}",
+            "drop={drop_p} latency={latency} report_p={report_p} zlp={zlp}: {}",
             o.detail
         );
+        totals.0 += o.padded_frames;
+        totals.1 += o.zlps_delivered;
+        totals.2 += o.dispatched;
     }
+    totals
 }
 
 #[test]
@@ -702,7 +751,51 @@ fn heavy_loss_with_report_preemption_still_makes_progress() {
 fn zero_length_packets_do_not_strand_the_following_frame() {
     // A host that terminates 64-byte-multiple writes with a zero-length packet
     // (URB_ZERO_PACKET semantics): the empty read must still lead to a poll
-    // that re-arms RXFLVL, or the next frame sits in the FIFO unread.
-    sweep_with(0.0, 3, 0.0, true, 40);
+    // that re-arms RXFLVL, or the next frame sits in the FIFO unread. Assert
+    // the scenario really occurred: exact-64-byte frames were generated and
+    // zero-length packets were delivered, on a lossless link.
+    let (padded, zlps, dispatched) = sweep_with(0.0, 3, 0.0, true, 40);
+    assert!(padded > 0, "no frame was padded to a full packet");
+    assert!(zlps > 0, "no zero-length packet was delivered");
+    assert!(dispatched > 0);
     sweep_with(0.2, 3, 0.0, true, 40);
+}
+
+#[test]
+fn a_zero_length_packet_followed_by_a_frame_is_dispatched() {
+    DEV_TX.with(|t| t.borrow_mut().clear());
+    DISPATCHED.with(|d| d.borrow_mut().clear());
+    USB_WAKE.with(|w| w.set(false));
+    let dev = RefCell::new(Dev::new());
+    let transport: Transport<Cfg> = Transport::new(&CFG, Out);
+    let mut backend = Backend {
+        dev: &dev,
+        host_steps_during_yield: 1,
+        transport: &transport,
+    };
+    let counters = UsbPumpCounters::new();
+    {
+        // The host offers an empty packet, then a valid frame carrying the
+        // sequence the device expects first.
+        let mut d = dev.borrow_mut();
+        d.inflight.push_back(Vec::new());
+        d.inflight.push_back(frame(0, &[(7, 1), (8, 2)]));
+        d.deliver();
+        d.isr();
+    }
+    let mut guard = 0;
+    while USB_WAKE.with(|w| w.get()) {
+        block_on(run_once(&mut backend, &counters));
+        let mut d = dev.borrow_mut();
+        d.deliver();
+        d.isr();
+        guard += 1;
+        assert!(guard < 100, "pump did not settle");
+    }
+    assert_eq!(dev.borrow().zlps_delivered, 1);
+    assert_eq!(DISPATCHED.with(|d| d.borrow().clone()), vec![7, 8]);
+    assert!(
+        dev.borrow().rxflvlm,
+        "RXFLVL must be re-armed before the task sleeps"
+    );
 }
